@@ -6,6 +6,7 @@
 //! path or a baseline.
 
 pub mod baseline;
+pub mod cli;
 pub mod config;
 pub mod daemon;
 pub mod decide;
