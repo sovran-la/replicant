@@ -6,7 +6,7 @@ use crate::daemon::wire::{HomeRequest, HomeSnapshot};
 use crate::decide::Decision;
 use crate::guard::{self, Refusal};
 use crate::marker::Direction;
-use crate::rsync::{ChangeKind, Itemized, Transfer};
+use crate::rsync::{ChangeKind, Itemized, Runner, Transfer};
 use crate::units::{self, Discovered, SideUnit, SubSpec};
 use crate::{Result, paths, state};
 use std::sync::mpsc;
@@ -89,6 +89,7 @@ pub(super) fn run(
         })
         .collect();
 
+    let runner = Runner::new(ctx.cfg.rsync_timeout());
     let results = state::parallel_map(
         &jobs,
         RSYNC_WORKERS,
@@ -123,7 +124,7 @@ pub(super) fn run(
                 excludes,
                 source_absent: remove || source.is_none_or(|u| u.state.is_empty()),
             };
-            let it = transfer.dry_run()?;
+            let it = transfer.dry_run(&runner)?;
 
             let mut refusals = Vec::new();
             if !remove {

@@ -172,6 +172,7 @@ impl Leaf {
                     address: with_port(&home),
                     credentials: None,
                     rsync_host: None,
+                    rsync_timeout_secs: None,
                 },
                 as_local: Default::default(),
             },

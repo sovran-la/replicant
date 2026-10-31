@@ -94,20 +94,20 @@ fn args_always_dry_run_and_order_by_direction() {
     let home = Path::new("/h/work");
     let mut x = t(Direction::Pull, leaf, home);
     x.home_host = Some("thistledown".into());
-    let a = x.args(Path::new("/e"));
+    let a = x.args(&testutil::runner(), Path::new("/e"));
     assert!(a.contains(&"--dry-run".to_string()));
     assert!(a.contains(&"--delete".to_string()));
     assert!(a.contains(&"--exclude=target".to_string()));
     assert_eq!(&a[a.len() - 2..], ["thistledown:/h/work/", "/l/work/"]);
     x.direction = Direction::Push;
-    let a = x.args(Path::new("/e"));
+    let a = x.args(&testutil::runner(), Path::new("/e"));
     assert_eq!(&a[a.len() - 2..], ["/l/work/", "thistledown:/h/work/"]);
     x.is_file = true;
-    let a = x.args(Path::new("/e"));
+    let a = x.args(&testutil::runner(), Path::new("/e"));
     assert_eq!(&a[a.len() - 2..], ["/l/work", "thistledown:/h/work"]);
     x.is_file = false;
     x.source_absent = true;
-    let a = x.args(Path::new("/e"));
+    let a = x.args(&testutil::runner(), Path::new("/e"));
     assert_eq!(
         &a[a.len() - 2..],
         ["/e/", "thistledown:/h/work/"],
@@ -147,7 +147,9 @@ fn dry_run_against_a_temp_dir_pair_reports_and_writes_nothing() {
     testutil::write(&leaf.join("target/keep"), "excluded on target: protected");
     let before = (snapshot(&home), snapshot(&leaf));
 
-    let it = t(Direction::Pull, &leaf, &home).dry_run().unwrap();
+    let it = t(Direction::Pull, &leaf, &home)
+        .dry_run(&testutil::runner())
+        .unwrap();
     assert_eq!(
         before,
         (snapshot(&home), snapshot(&leaf)),
@@ -170,7 +172,9 @@ fn push_dry_run_into_missing_target() {
     let leaf = tmp.path().join("leaf");
     testutil::write(&leaf.join("x"), "x");
     let home = tmp.path().join("home/does/not/exist");
-    let it = t(Direction::Push, &leaf, &home).dry_run().unwrap();
+    let it = t(Direction::Push, &leaf, &home)
+        .dry_run(&testutil::runner())
+        .unwrap();
     assert!(it.touched().any(|p| p == "x"), "{it:?}");
     assert!(!home.exists());
 }
@@ -183,7 +187,7 @@ fn absent_source_deletes_everything_on_target() {
     testutil::write(&home.join("d/b"), "b");
     let mut x = t(Direction::Push, &tmp.path().join("leaf-gone"), &home);
     x.source_absent = true;
-    let it = x.dry_run().unwrap();
+    let it = x.dry_run(&testutil::runner()).unwrap();
     assert_eq!(it.deleted(), 2);
     assert!(home.join("a").exists());
 }
@@ -193,7 +197,7 @@ fn absent_single_file_source_is_one_delete() {
     let mut x = t(Direction::Pull, Path::new("/l/f"), Path::new("/h/f"));
     x.is_file = true;
     x.source_absent = true;
-    assert_eq!(x.dry_run().unwrap().deleted(), 1);
+    assert_eq!(x.dry_run(&testutil::runner()).unwrap().deleted(), 1);
 }
 
 #[test]
@@ -205,7 +209,7 @@ fn single_file_unit_dry_run() {
     testutil::write(&l, "{}");
     let mut x = t(Direction::Pull, &l, &h);
     x.is_file = true;
-    let it = x.dry_run().unwrap();
+    let it = x.dry_run(&testutil::runner()).unwrap();
     assert_eq!(it.files_changed(), 1, "{it:?}");
     assert_eq!(std::fs::read_to_string(&l).unwrap(), "{}");
 }
@@ -217,6 +221,6 @@ fn rsync_failure_is_an_error_naming_the_command() {
         Path::new("/nonexistent/leaf"),
         Path::new("/nonexistent/home"),
     );
-    let err = x.dry_run().unwrap_err().to_string();
+    let err = x.dry_run(&testutil::runner()).unwrap_err().to_string();
     assert!(err.contains("rsync") && err.contains("--dry-run"), "{err}");
 }

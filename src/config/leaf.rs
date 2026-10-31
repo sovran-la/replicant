@@ -16,6 +16,11 @@ use std::path::{Path, PathBuf};
 /// the dogfood timing run); a real leaf rsyncs over ssh.
 pub const LOCAL_RSYNC: &str = "local";
 
+/// Default wall-clock bound on one rsync to or from home. A dry run of a whole
+/// work tree takes seconds; past this, something is wedged (a partition, a
+/// dead ssh) and is holding the head of home's queue.
+pub const DEFAULT_RSYNC_TIMEOUT_SECS: u64 = 300;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HomeEntry {
@@ -30,6 +35,10 @@ pub struct HomeEntry {
     /// [`LOCAL_RSYNC`] means no ssh at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rsync_host: Option<String>,
+    /// Kill an rsync that has not finished after this many seconds. Defaults
+    /// to [`DEFAULT_RSYNC_TIMEOUT_SECS`]; at least 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rsync_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +115,15 @@ impl LeafConfig {
         }
     }
 
+    /// The wall-clock bound on one rsync.
+    pub fn rsync_timeout(&self) -> std::time::Duration {
+        let secs = self
+            .home
+            .rsync_timeout_secs
+            .unwrap_or(DEFAULT_RSYNC_TIMEOUT_SECS);
+        std::time::Duration::from_secs(secs.max(1))
+    }
+
     /// Home's bundle on this machine.
     pub fn credentials(&self, dirs: &super::Dirs) -> PathBuf {
         match &self.home.credentials {
@@ -157,6 +175,7 @@ mod tests {
                 address: "thistledown:7750".into(),
                 credentials: None,
                 rsync_host: None,
+                rsync_timeout_secs: None,
             },
             as_local: BTreeMap::from([(
                 "work/tundra".into(),
@@ -204,6 +223,32 @@ mod tests {
         assert_eq!(c.rsync_host().as_deref(), Some("tc.tailnet"));
         c.home.rsync_host = Some(LOCAL_RSYNC.into());
         assert_eq!(c.rsync_host(), None);
+    }
+
+    #[test]
+    fn rsync_timeout_defaults_and_floors_at_one_second() {
+        let mut c = cfg();
+        assert_eq!(
+            c.rsync_timeout(),
+            std::time::Duration::from_secs(DEFAULT_RSYNC_TIMEOUT_SECS)
+        );
+        c.home.rsync_timeout_secs = Some(42);
+        assert_eq!(c.rsync_timeout(), std::time::Duration::from_secs(42));
+        c.home.rsync_timeout_secs = Some(0);
+        assert_eq!(c.rsync_timeout(), std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn rsync_timeout_reads_from_leaf_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("leaf.toml");
+        std::fs::write(
+            &p,
+            "[home]\nname=\"h\"\naddress=\"h:1\"\nrsync_timeout_secs = 7\n",
+        )
+        .unwrap();
+        let c = LeafConfig::load(&p).unwrap().unwrap();
+        assert_eq!(c.rsync_timeout(), std::time::Duration::from_secs(7));
     }
 
     #[test]

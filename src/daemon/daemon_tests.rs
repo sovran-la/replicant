@@ -16,6 +16,7 @@ fn leaf_toml(bed: &Bed, address: &str) {
             address: address.into(),
             credentials: None,
             rsync_host: Some(LOCAL_RSYNC.into()),
+            rsync_timeout_secs: None,
         },
         as_local: Default::default(),
     }

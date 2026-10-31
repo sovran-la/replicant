@@ -66,7 +66,7 @@ fn g1_dirty_target_file_that_rsync_would_overwrite_is_refused() {
         excludes: Excludes::for_root(&[]),
         source_absent: false,
     }
-    .dry_run()
+    .dry_run(&testutil::runner())
     .unwrap();
     let r = dirty_target(&leaf_units[0], &diff).expect("refused");
     assert_eq!(r.guard, Guard::DirtyTarget);

@@ -7,12 +7,44 @@
 //! Output is read with `--itemize-changes --out-format=%i %n`, which both
 //! rsync 3 (Linux) and openrsync (macOS's /usr/bin/rsync, protocol 29) print
 //! the same way, apart from the width of the change code (11 vs 9 columns).
+//!
+//! Every run is bounded: ssh never prompts (`BatchMode`), gives up on a dead
+//! connection, and the child is killed at [`Runner::timeout`]. A wedged
+//! transfer would otherwise hold the head of home's queue for the whole fleet.
+
+mod child;
+mod parse;
+
+pub use parse::parse;
 
 use crate::exclude::Excludes;
 use crate::marker::Direction;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
+
+/// ssh's options for every transfer to home: never prompt (a host-key or
+/// check-mode prompt would wait forever on a daemon), and notice a dead peer.
+pub const SSH_OPTIONS: &str =
+    "-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=2";
+
+/// How rsync is run: the same for every unit of a plan.
+#[derive(Debug, Clone)]
+pub struct Runner {
+    /// Wall-clock bound on one rsync; the child is killed past it.
+    pub timeout: Duration,
+    /// The ssh program rsync runs for a transfer over ssh.
+    pub ssh: String,
+}
+
+impl Runner {
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            timeout,
+            ssh: "ssh".into(),
+        }
+    }
+}
 
 /// rsync's "some files vanished before they could be transferred". Benign in
 /// a dry run of a live tree; reported, not fatal.
@@ -111,11 +143,15 @@ impl Transfer {
 
     /// The full argument list. `empty` is the directory standing in for an
     /// absent source.
-    pub fn args(&self, empty: &Path) -> Vec<String> {
+    pub fn args(&self, runner: &Runner, empty: &Path) -> Vec<String> {
         let mut a: Vec<String> = ["-a", "--delete", "--dry-run", "--itemize-changes"]
             .map(String::from)
             .into();
         a.push("--out-format=%i %n".into());
+        if self.home_host.is_some() {
+            a.push("-e".into());
+            a.push(format!("{} {SSH_OPTIONS}", runner.ssh));
+        }
         a.extend(self.excludes.rsync_args());
         let home = self.endpoint(true, empty);
         let leaf = self.endpoint(false, empty);
@@ -127,7 +163,7 @@ impl Transfer {
     }
 
     /// Run the dry run and parse what it would do.
-    pub fn dry_run(&self) -> Result<Itemized> {
+    pub fn dry_run(&self, runner: &Runner) -> Result<Itemized> {
         if self.is_file && self.source_absent {
             // rsync cannot express "delete this one file"; the answer is known.
             return Ok(Itemized {
@@ -146,16 +182,14 @@ impl Transfer {
         if self.source_absent {
             std::fs::create_dir_all(&empty)?;
         }
-        let args = self.args(&empty);
+        let args = self.args(runner, &empty);
         debug_assert!(args.iter().any(|a| a == "--dry-run"));
-        let out = Command::new("rsync")
-            .args(&args)
-            .output()
-            .map_err(|e| Error::Rsync(format!("could not run rsync: {e}")))?;
+        let out = child::run("rsync", &args, runner.timeout);
         if self.source_absent {
             let _ = std::fs::remove_dir(&empty);
         }
-        let code = out.status.code().unwrap_or(-1);
+        let out = out?;
+        let code = out.code.unwrap_or(-1);
         if code != 0 && code != VANISHED {
             return Err(Error::Rsync(format!(
                 "rsync {} exited {code}: {}",
@@ -173,69 +207,10 @@ impl Transfer {
     }
 }
 
-/// Parse `--itemize-changes --out-format=%i %n` output.
-pub fn parse(text: &str) -> Itemized {
-    let mut out = Itemized::default();
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        if let Some(rest) = line.strip_prefix("*deleting") {
-            let name = rest.trim_start();
-            out.changes.push(Change {
-                kind: ChangeKind::Delete,
-                is_dir: name.ends_with('/'),
-                path: name.trim_end_matches('/').to_string(),
-            });
-            continue;
-        }
-        let Some((code, name)) = line.split_once(' ') else {
-            out.notes.push(line.to_string());
-            continue;
-        };
-        let b = code.as_bytes();
-        let shaped = b.len() >= 9 && b"<>ch.".contains(&b[0]) && b"fdLDS".contains(&b[1]);
-        if !shaped {
-            out.notes.push(line.to_string());
-            continue;
-        }
-        let kind = if b[2..].iter().all(|c| *c == b'+') {
-            ChangeKind::Create
-        } else if b[0] == b'.' {
-            ChangeKind::Attr
-        } else {
-            ChangeKind::Update
-        };
-        let name = name.strip_suffix('/').unwrap_or(name);
-        // The transfer root itself: its creation or attributes are not a change
-        // anybody needs to read.
-        if name == "." || name.is_empty() {
-            continue;
-        }
-        out.changes.push(Change {
-            kind,
-            is_dir: b[1] == b'd',
-            path: name.to_string(),
-        });
-    }
-    // openrsync prints a deleted directory without its trailing slash, so a
-    // deletion is a directory when other deletions lie beneath it.
-    let deleted: Vec<String> = out
-        .changes
-        .iter()
-        .filter(|c| c.kind == ChangeKind::Delete)
-        .map(|c| format!("{}/", c.path))
-        .collect();
-    for c in out
-        .changes
-        .iter_mut()
-        .filter(|c| c.kind == ChangeKind::Delete && !c.is_dir)
-    {
-        let prefix = format!("{}/", c.path);
-        c.is_dir = deleted
-            .iter()
-            .any(|d| d.len() > prefix.len() && d.starts_with(&prefix));
-    }
-    out
-}
-
 #[cfg(test)]
 #[path = "rsync_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "rsync/ssh_tests.rs"]
+mod ssh_tests;
