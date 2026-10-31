@@ -1,6 +1,6 @@
 # Replicant — Rough Plan
 
-*Draft 2026-10-31, rev 3 (daemon control plane, locks, resume, journal, dogfood via --as).
+*Draft 2026-10-31, rev 4 (daemon control plane, FIFO queue + leases, quarantine/rollback, journal, dogfood via --as).
 Captures the design discussion; nothing here is final.*
 
 ## Problem
@@ -45,7 +45,7 @@ leaf.
 **Control plane:** a replicant daemon on every machine, daemon-to-daemon
 over the tailnet with mTLS, the same pattern as sovran.la/agents remote
 (no ssh dependency). The daemon handles subscribe/approve, state and
-baseline exchange, per-path locks, the journal, and triggers (`--to`,
+baseline exchange, the FIFO queue and leases, the journal, and triggers (`--to`,
 `approve --sync`). It is what lets a brand-new leaf reach home *before* it
 has an authorized key, which ssh-only could not do.
 
@@ -290,30 +290,63 @@ Before any destructive apply, in order:
 
 `--dry-run` runs all five and prints the itemized rsync diff.
 
-## Locks
+## The queue
 
-Home's daemon holds one lock per subscribed path. A sync for a path takes
-it on home for the duration of the transfer; a second leaf asking for the
-same path waits (bounded) or fails loudly, never interleaves. birchbook
-pushing `work/tundra` while twinoaks pulls it is the case.
+Home's daemon keeps one FIFO queue. Every sync is an entry; a sync waits
+until every entry ahead of it is completely done. Nothing interleaves on
+home, ever. Per-path locking was considered and shelved: the fleet is small
+enough that strict serialization costs nothing noticeable, and one
+invariant beats two. It stays in the back pocket as an optimization.
 
-Anything that writes home directly also takes the lock — see *Agents on
-home* below. Locks are visible in `status` and recorded in the journal.
+Agent work on home is an entry too — a **hold** rather than a sync (see
+*Agents on home*). Same queue, same rules; an agent and a sync can never
+overlap on home.
+
+`status` on any machine shows the queue ("waiting: behind twinoaks pull
+work/tundra, started 40s ago"). `--no-wait` fails instead of queueing, for
+hooks where a long wait would only become a timeout.
+
+### Leases
+
+The head of the queue can die: a leaf loses power mid-push, an agent is
+killed before post_work. Every entry carries a lease the holder heartbeats
+to home's daemon. An entry that stops heartbeating is **expired**: journaled
+loudly, removed from the queue, and the next entry proceeds.
+
+Expiry releases the queue. It does **not** clear the marker (below). Those
+are different things on purpose.
 
 ## Interrupted sync
 
-rsync can die at 60%. The target is then a mix of old and new, and without
-care the next `sync` would read "target changed" and call it a conflict —
-wrongly. So:
+rsync can die at 60%. Single files are never torn — rsync writes to a temp
+name and renames — but the *set* is incomplete, and for a repo that can
+mean refs pointing at objects that never arrived. So:
 
 - Before rsync starts, the target side writes an **in-progress marker**
-  for the path (direction, source state, started-at).
+  for the path (direction, source host, source state, started-at).
 - Baselines are written only after rsync exits 0, and the marker is
   cleared in the same step.
-- A marker found on the next run means "resume this direction" (rsync is
-  idempotent), not "conflict". The decision table has a row for it.
-- A marker older than a configurable age is reported in `status` and
-  `--dry-run` shows what resuming would do.
+- A marker on a **leaf** (dead pull) is private: home is untouched, nobody
+  else can see the mess, and the leaf's next `sync` resumes the pull.
+- A marker on **home** (dead push) **quarantines that path**: pulls of it by
+  any other leaf are refused with the reason, while syncs of other paths
+  proceed. The queue keeps flowing; only the damaged path is fenced.
+
+A home marker clears one of three ways:
+
+- **Resume.** The pushing leaf's next `sync` sees home's marker for its own
+  push, reruns the same rsync (idempotent), finishes, writes the baseline,
+  clears the marker. The common case; needs nothing from anyone.
+- **Rollback.** `replicant rollback <path>` on home restores the pre-push
+  state from that push's `--backup-dir` plus its journaled itemized change
+  list: new files removed, changed and deleted files restored. Baselines
+  untouched. For when the leaf is not coming back soon and someone needs
+  the path.
+- **Accept.** `--force` declares the half-state the new truth. Almost never
+  right; exists so the other two are not the only exits.
+
+A marker older than a configurable age is reported in `status`, and
+`--dry-run` shows what resuming would do.
 
 ## Home is also the backup
 
@@ -330,7 +363,7 @@ Home's daemon keeps an append-only journal, one line per event:
 ```
 2026-10-31T12:04:11-07  sync      birchbook  push  work/tundra   3 repos 41 files 0 del  ok
 2026-10-31T12:06:02-07  sync      twinoaks   pull  work/tundra   3 repos 41 files 0 del  ok
-2026-10-31T12:30:40-07  lock      thistledown agent:beatrix work/tundra/tundra-beacon  held
+2026-10-31T12:30:40-07  hold      thistledown agent:beatrix work/tundra/tundra-beacon  acquired
 2026-10-31T13:02:15-07  sync      birchbook  push  work/sequoia  interrupted (rsync exit 20)
 2026-10-31T13:05:33-07  sync      birchbook  push  work/sequoia  resumed → ok
 2026-10-31T13:10:00-07  conflict  birchbook  work/scratch/notes.md  chose:birchbook
@@ -397,15 +430,15 @@ is just "home changed → pull" on the next sync. The only hazard is
 concurrency: an agent writing `tundra-beacon` on home while twinoaks pulls
 it.
 
-So on home the hooks are lock holders, not syncs:
+So on home the hooks are queue holds, not syncs:
 
 ```
-pre_work   →  replicant lock   <working_dir>   # waits on any in-flight sync for that path
-post_work  →  replicant unlock <working_dir>   # journal entry: what the agent touched
+pre_work   →  replicant hold    <working_dir>   # enqueues; waits its turn like any sync
+post_work  →  replicant release <working_dir>   # journal entry: what the agent touched
 ```
 
-A sync request for a locked path waits (bounded) or fails loudly with the
-agent's name. The daemon on home decides which hook script applies by
+Syncs queued behind a hold wait (or `--no-wait` fails) and `status` names the
+agent holding it. The daemon on home decides which hook script applies by
 knowing it is home; the leaf hooks are the sync ones above.
 
 ### Per-path baselines make lending a repo cheap
@@ -457,17 +490,17 @@ Daemon-to-daemon transport reuses the sovran.la/agents remote pattern
 
 ```
 src/
-  main.rs          clap: subscribe | unsubscribe | approve | sync | status | log | lock | unlock | daemon | config
+  main.rs          clap: subscribe | unsubscribe | approve | sync | status | log | hold | release | rollback | daemon | config
   config.rs        leaf config, fleet config (roots, hosts, allow, subscriptions), home_dir mapping
   daemon/
     mod.rs         listener, request dispatch, home-vs-leaf role
     remote.rs      mTLS client/server, the agents remote pattern
-    locks.rs       per-path locks on home; bounded wait; holder identity
+    queue.rs       the FIFO: syncs and holds, leases + heartbeats, expiry
     journal.rs     append-only journal; leaf-local copy of own entries
   subscribe.rs     subscribe/unsubscribe requests; pending hosts, approve, cap enforcement on home
   paths.rs         the one path normalizer (leaf and home)
   baseline.rs      per-leaf, per-path baseline read/write; last-N history on home
-  marker.rs        in-progress markers for interrupted syncs
+  marker.rs        in-progress markers; home-side quarantine; resume / rollback / accept
   state.rs         state hash: per-repo (HEAD, dirty hash) + manifest of non-repo files
   repos.rs         discover .git dirs and worktrees under a root; git status/lock/case checks
   decide.rs        the direction table, per path, including no-baseline and resume rows
@@ -481,7 +514,7 @@ Tests: every guardrail and every row of the decision table gets a
 fixture-repo test (dirty target, stale baseline, source lock, case
 collision, subscription escape, cap refusal, repo conflict, file conflict,
 skip persistence, worktree detection, non-interactive conflict exit,
-resume-from-marker, lock contention, journal round-trip). rsync
+resume-from-marker, queue ordering, lease expiry, quarantine refusal, rollback, journal round-trip). rsync
 invocations tested against a temp dir pair; daemon-to-daemon tested over
 loopback; no tailnet in unit tests.
 
@@ -499,11 +532,11 @@ v0.1's `--dry-run` is where we measure; caching by mtime is the fallback.
    table, rsync diff, guardrails 1/3/4/5. Read-only; proves the plan
    against the real tree and measures the state-hash cost.
 3. **v0.2.0 — apply.** Real pull and push into `~/work2` on a leaf (the
-   `--as` dogfood), baselines + history, locks, markers/resume, journal,
+   `--as` dogfood), baselines + history, the queue + leases, markers/resume/rollback, journal,
    guardrail 2, backup-dir on home.
 4. **v0.3.0 — conflicts.** Repo and file conflict prompts, collect-then-
    apply, skip tracking, `--adopt`, merge via peer-to-peer git.
-5. **v0.4.0 — agents.** Leaf hooks (sync), home hooks (lock/unlock),
+5. **v0.4.0 — agents.** Leaf hooks (sync), home hooks (hold/release),
    `--to`, `approve --sync`, pre-dispatch push on the agents side.
 6. **Cutover.** Deferred; not designed yet. Lives in `~/work2` until then.
 7. **Later, if wanted.** The daemon notices a machine switch and runs
