@@ -4,10 +4,10 @@
 //! shift a column:
 //!
 //! ```text
-//! 2026-10-31T19:04:11Z	dry-run	birchbook	work/tundra	push 3 repos 41 files 0 del
+//! 2026-10-31T19:04:11Z ⇥ dry-run ⇥ birchbook ⇥ work/tundra ⇥ push 3 repos 41 files 0 del
 //! ```
 //!
-//! Home journals everything. A leaf appends the lines home returns about it,
+//! (⇥ is a tab.) Home journals everything. A leaf appends the lines home returns about it,
 //! so its own history survives home being unreachable. v0.1 journals
 //! subscribe, unsubscribe, pending, approve, status, dry-run and lease expiry;
 //! the full event set is v0.2.
