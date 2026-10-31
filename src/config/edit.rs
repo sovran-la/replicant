@@ -1,7 +1,7 @@
 //! The daemon's writes to fleet.toml, through toml_edit so comments survive.
 //!
-//! Every function here reads the file fresh, changes one table, and writes it
-//! back atomically. The caller (home's daemon, under its fleet lock) reloads
+//! Every public function here reads the file fresh, makes its change, and
+//! writes it back in one atomic write. The caller (home's daemon, under its fleet lock) reloads
 //! the [`super::Fleet`] afterwards, so the in-memory view is always what the
 //! file says.
 
@@ -48,15 +48,49 @@ fn array(list: &[String]) -> Item {
     value(a)
 }
 
-pub fn set_subscription(path: &Path, host: &str, sub: &Subscription) -> Result<()> {
-    let mut doc = load(path)?;
-    let t = child(&mut doc, "subscriptions", host)?;
+/// Each change below is a step on a loaded document, so several can share
+/// one write: [`approve`] must never leave a host half-enrolled.
+fn put_subscription(doc: &mut DocumentMut, host: &str, sub: &Subscription) -> Result<()> {
+    let t = child(doc, "subscriptions", host)?;
     t.insert("paths", array(&sub.paths));
     if sub.except.is_empty() {
         t.remove("except");
     } else {
         t.insert("except", array(&sub.except));
     }
+    Ok(())
+}
+
+fn drop_pending(doc: &mut DocumentMut, host: &str) {
+    let now_empty = match doc.get_mut("pending").and_then(Item::as_table_mut) {
+        Some(t) => {
+            t.remove(host);
+            t.is_empty()
+        }
+        None => false,
+    };
+    if now_empty {
+        doc.remove("pending");
+    }
+}
+
+fn put_host(doc: &mut DocumentMut, host: &str, entry: &HostEntry) -> Result<()> {
+    let t = child(doc, "hosts", host)?;
+    t.insert("home_dir", value(entry.home_dir.display().to_string()));
+    match &entry.allow {
+        Some(allow) => {
+            t.insert("allow", array(allow));
+        }
+        None => {
+            t.remove("allow");
+        }
+    }
+    Ok(())
+}
+
+pub fn set_subscription(path: &Path, host: &str, sub: &Subscription) -> Result<()> {
+    let mut doc = load(path)?;
+    put_subscription(&mut doc, host, sub)?;
     store(path, &doc)
 }
 
@@ -71,31 +105,23 @@ pub fn set_pending(path: &Path, host: &str, p: &Pending) -> Result<()> {
 
 pub fn remove_pending(path: &Path, host: &str) -> Result<()> {
     let mut doc = load(path)?;
-    let now_empty = match doc.get_mut("pending").and_then(Item::as_table_mut) {
-        Some(t) => {
-            t.remove(host);
-            t.is_empty()
-        }
-        None => false,
-    };
-    if now_empty {
-        doc.remove("pending");
-    }
+    drop_pending(&mut doc, host);
     store(path, &doc)
 }
 
 pub fn set_host(path: &Path, host: &str, entry: &HostEntry) -> Result<()> {
     let mut doc = load(path)?;
-    let t = child(&mut doc, "hosts", host)?;
-    t.insert("home_dir", value(entry.home_dir.display().to_string()));
-    match &entry.allow {
-        Some(allow) => {
-            t.insert("allow", array(allow));
-        }
-        None => {
-            t.remove("allow");
-        }
-    }
+    put_host(&mut doc, host, entry)?;
+    store(path, &doc)
+}
+
+/// Enroll a pending host in one atomic write: its `[hosts]` entry, its
+/// subscription, and its `[pending]` entry gone. All or nothing.
+pub fn approve(path: &Path, host: &str, entry: &HostEntry, sub: &Subscription) -> Result<()> {
+    let mut doc = load(path)?;
+    put_host(&mut doc, host, entry)?;
+    put_subscription(&mut doc, host, sub)?;
+    drop_pending(&mut doc, host);
     store(path, &doc)
 }
 

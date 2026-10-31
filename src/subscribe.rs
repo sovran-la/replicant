@@ -255,23 +255,18 @@ pub fn preview_allow(fleet: &Fleet, host: &str, raw: &[String]) -> Result<AllowP
 pub fn approve(fleet: &Fleet, file: &Path, host: &str, raw_allow: &[String]) -> Result<Approved> {
     let preview = preview_allow(fleet, host, raw_allow)?;
     let p = &fleet.pending[host];
-    edit::set_host(
+    edit::approve(
         file,
         host,
         &HostEntry {
             home_dir: p.home_dir.clone(),
             allow: preview.allow.clone(),
         },
-    )?;
-    edit::set_subscription(
-        file,
-        host,
         &Subscription {
             paths: preview.keep.clone(),
             except: vec![],
         },
     )?;
-    edit::remove_pending(file, host)?;
     Ok(Approved {
         host: host.into(),
         allow: preview.allow,

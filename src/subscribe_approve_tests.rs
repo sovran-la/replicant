@@ -79,3 +79,35 @@ fn bad_allow_is_refused_before_anything_is_written() {
     assert!(approve(&load(&p), &p, "newbox", &s(&["~/work/../etc"])).is_err());
     assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
 }
+
+#[test]
+fn approve_is_one_write_a_failing_step_leaves_the_file_untouched() {
+    let (_t, p) = fixture();
+    subscribe(&load(&p), &p, "newbox", Path::new(MAC), &s(&["~/work"])).unwrap();
+    let f = load(&p);
+    // A hand edit after the daemon loaded the fleet: the subscription step
+    // cannot succeed, though the host step before it can.
+    let broken = format!(
+        "subscriptions = 3\n{}",
+        std::fs::read_to_string(&p).unwrap()
+    );
+    std::fs::write(&p, &broken).unwrap();
+    assert!(approve(&f, &p, "newbox", &s(&[""])).is_err());
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        broken,
+        "not enrolled and still pending: nothing half-written"
+    );
+}
+
+#[test]
+fn approve_writes_host_subscription_and_clears_pending_together() {
+    let (_t, p) = fixture();
+    subscribe(&load(&p), &p, "newbox", Path::new(MAC), &s(&["~/work"])).unwrap();
+    approve(&load(&p), &p, "newbox", &s(&["~/work"])).unwrap();
+    let text = std::fs::read_to_string(&p).unwrap();
+    assert!(text.contains("[hosts.newbox]"), "{text}");
+    assert!(text.contains("[subscriptions.newbox]"), "{text}");
+    assert!(!text.contains("[pending"), "{text}");
+    assert!(text.contains("[hosts.twinoaks]"), "others kept: {text}");
+}
