@@ -1,5 +1,6 @@
 use super::*;
-use crate::daemon::fleet::{HostRow, LastReport, PendingView};
+use crate::daemon::fleet::{FleetState, HostRow, LastReport, PendingView};
+use crate::daemon::journal::Line;
 use crate::daemon::wire::ReportedUnit;
 use crate::guard::{Guard, Refusal};
 use crate::plan::{DiffSummary, Timings};

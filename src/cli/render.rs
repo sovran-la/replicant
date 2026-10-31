@@ -2,14 +2,16 @@
 //! returns a string, so the rendering is tested without a terminal; colour is
 //! a flag (on when stdout is a tty), red for anything that needs a human.
 
-use crate::daemon::fleet::FleetState;
-use crate::daemon::journal::Line;
 use crate::daemon::wire::{Enrollment, SubscribeOutcome, UnsubscribeOutcome};
 use crate::decide::Decision;
 use crate::plan::{LeafStatus, Plan, PlannedUnit};
-use crate::timefmt::{ago, iso};
 use crate::units::UnitKind;
 use std::fmt::Write;
+
+#[path = "render_fleet.rs"]
+mod fleet_view;
+use fleet_view::queue;
+pub use fleet_view::{fleet, log};
 
 /// How many diff lines a unit shows without `--verbose`.
 pub const DIFF_PREVIEW: usize = 12;
@@ -236,127 +238,6 @@ pub fn leaf_status(l: &LeafStatus, st: Style) -> String {
     }
     s.push_str(&queue(&l.queue));
     s
-}
-
-fn queue(q: &[crate::daemon::queue::QueueView]) -> String {
-    if q.is_empty() {
-        return "queue: empty\n".into();
-    }
-    let mut s = String::from("queue:\n");
-    for (i, e) in q.iter().enumerate() {
-        let _ = writeln!(s, "  {}. {}", i + 1, crate::daemon::queue::describe(e));
-    }
-    s
-}
-
-pub fn fleet(f: &FleetState, st: Style) -> String {
-    let mut s = format!(
-        "home {} — {} hosts, {} pending, {} in queue\n",
-        f.home,
-        f.hosts.len(),
-        f.pending.len(),
-        f.queue.len()
-    );
-    for h in &f.hosts {
-        let contact = match h.last_contact {
-            Some(t) => format!("{} ago", ago(f.now.saturating_sub(t))),
-            None => "never".into(),
-        };
-        let contact = if h.stale {
-            st.red(&format!("STALE {contact}"))
-        } else {
-            contact
-        };
-        let mut counts: Vec<String> = Vec::new();
-        let mut blocking = false;
-        if let Some(r) = &h.report {
-            let mut by: std::collections::BTreeMap<String, usize> = Default::default();
-            for u in &r.units {
-                let k = match &u.decision {
-                    Decision::Nothing { .. } => continue,
-                    Decision::Conflict { .. } => "conflict".to_string(),
-                    Decision::Quarantined { .. } => "quarantined".to_string(),
-                    d => d.label(),
-                };
-                blocking |= u.decision.is_blocking();
-                *by.entry(k).or_default() += 1;
-            }
-            counts = by.into_iter().map(|(k, n)| format!("{n} {k}")).collect();
-            if counts.is_empty() {
-                counts.push("in sync".into());
-            }
-            counts.push(format!(
-                "(as of {} {} ago)",
-                r.event,
-                ago(f.now.saturating_sub(r.at))
-            ));
-        }
-        let pending = if counts.is_empty() {
-            "no report yet".to_string()
-        } else {
-            counts.join(", ")
-        };
-        let pending = if blocking { st.red(&pending) } else { pending };
-        let cap = h
-            .cap
-            .as_ref()
-            .map(|c| format!("  cap: {}", c.join(" ")))
-            .unwrap_or_default();
-        let q = h
-            .queue_position
-            .map(|p| format!("  queue #{}", p + 1))
-            .unwrap_or_default();
-        let _ = writeln!(s, "  {:<12} {:<14} {pending}{cap}{q}", h.name, contact);
-        let _ = writeln!(
-            s,
-            "  {:<12} {}",
-            "",
-            st.dim(&format!("subscribed: {}", h.paths.join(", ")))
-        );
-    }
-    if !f.pending.is_empty() {
-        s.push_str("pending (run `replicant approve`):\n");
-        for p in &f.pending {
-            let _ = writeln!(
-                s,
-                "  {:<12} {}  wants: {}",
-                p.host,
-                p.home_dir.display(),
-                p.paths.join(", ")
-            );
-        }
-    }
-    for m in &f.markers {
-        let _ = writeln!(
-            s,
-            "{}",
-            st.red(&format!(
-                "  quarantined: {} (dead {} by {}, since {})",
-                m.rel,
-                m.direction,
-                m.host,
-                iso(m.started_at)
-            ))
-        );
-    }
-    s.push_str(&queue(&f.queue));
-    s
-}
-
-pub fn log(lines: &[Line]) -> String {
-    lines
-        .iter()
-        .map(|l| {
-            format!(
-                "{}  {:<11} {:<12} {:<28} {}\n",
-                iso(l.ts),
-                l.event,
-                l.host,
-                l.path,
-                l.detail
-            )
-        })
-        .collect()
 }
 
 #[cfg(test)]
