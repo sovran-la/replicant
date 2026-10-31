@@ -188,6 +188,65 @@ dated directory on home (or home runs filesystem snapshots). Either way, a
 bad push is recoverable and the backup role of thistledown survives
 replicant.
 
+## Agents integration
+
+Agent-driven syncs run through the sovran.la/agents daemon's existing
+lifecycle hooks (added 2026-08-26, motivated by exactly this). Nothing new
+in the daemon's mechanism; the hook scripts call replicant. This works on
+every machine the agents MCP is installed on.
+
+```
+~/.sovran/agents/hooks/pre_work.sh    →  replicant sync --yes --non-interactive
+~/.sovran/agents/hooks/post_work.sh   →  replicant sync --yes --non-interactive
+```
+
+Handing work to an agent on another machine is then four syncs, two of
+which are automatic:
+
+1. birchbook `sync` — push to home *(you, or the local daemon pre-dispatch)*
+2. twinoaks `pre_work` — pull from home *(daemon)*
+3. twinoaks `post_work` — push to home *(daemon, on every terminal state)*
+4. birchbook `sync` — pull from home *(you, whenever)*
+
+### Contract with the daemon
+
+- **Hooks never prompt.** `--non-interactive` (or no tty): any conflict is a
+  nonzero exit with the full report on **stderr**. The daemon captures hook
+  stderr to a file and discards stdout, so stderr is the only channel.
+- **Pre_work failure aborts the spawn**, and the daemon's `HookFailed`
+  error carries the exit code plus a tail of stderr. The calling agent sees
+  *why* in the `agent_spawn` failure response — "Repo conflict:
+  tundra/tundra-beacon …" — rather than running on a mystery tree.
+- **Post_work failure is recorded on the agent** via
+  `registry.record_hook_error` and shows in `agent_status`. It cannot change
+  the agent's outcome (arch.md rule), but it cannot be missed either.
+  Replicant's own `status` on the leaf also shows "changed, not pushed".
+- **The one-agent-per-directory lock is held during hooks**, which doubles
+  as the guarantee nothing else on that machine writes the tree while
+  replicant copies it.
+
+### Remote spawns
+
+For `agent_spawn host=twinoaks`, step 1 must happen on the *spawning* side
+before the daemon routes the request, otherwise the remote pre_work pulls
+whatever home had rather than what the spawner has. Small addition to the
+agents daemon: run the local pre_work (or a dedicated pre_dispatch) before
+forwarding a remote spawn. Tracked in sovran.la/agents, not here.
+
+### Per-path baselines make lending a repo cheap
+
+Baselines and the direction table are per repo and per non-git directory,
+not tree-wide. While twinoaks holds `tundra/tundra-beacon`, birchbook can
+keep working on anything else; the next `sync` is push for some paths and
+pull for others in one run. Touching the lent-out repo on both machines
+puts that repo — and only that repo — into conflict resolution.
+
+### `--to <host>`
+
+`replicant sync --to twinoaks` is sugar: push to home, then ssh to twinoaks
+and run its `sync` (a pull from home). No data crosses leaf-to-leaf; only
+the trigger does. Home still sees every byte and enforces every prefix.
+
 ## Exclusions
 
 Regenerable or per-machine; never synced, rebuilt locally:
