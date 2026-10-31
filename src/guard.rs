@@ -65,7 +65,7 @@ impl Refusal {
     }
 }
 
-/// 1. Uncommitted target work that rsync would replace or delete.
+/// Guardrail 1: Uncommitted target work that rsync would replace or delete.
 ///
 /// `target` is the target side's view of a repo unit; `diff` the dry run in
 /// that direction. A dirty path rsync leaves alone is not at risk: either the
@@ -92,7 +92,7 @@ pub fn dirty_target(target: &SideUnit, diff: &Itemized) -> Option<Refusal> {
     })
 }
 
-/// 3. A git lock on the source: someone is writing the repo right now.
+/// Guardrail 3: A git lock on the source: someone is writing the repo right now.
 pub fn source_mid_write(source: &SideUnit) -> Option<Refusal> {
     (!source.locks.is_empty()).then(|| Refusal {
         guard: Guard::SourceMidWrite,
@@ -101,7 +101,7 @@ pub fn source_mid_write(source: &SideUnit) -> Option<Refusal> {
     })
 }
 
-/// 4. Case collisions on home headed for a case-insensitive leaf. Pull only:
+/// Guardrail 4: Case collisions on home headed for a case-insensitive leaf. Pull only:
 /// a case-insensitive leaf cannot hold a collision to push.
 pub fn case_collision(
     home: &SideUnit,
@@ -122,7 +122,7 @@ pub fn case_collision(
     })
 }
 
-/// 5. Whether a unit lies inside the host's subscriptions, outside its
+/// Guardrail 5: Whether a unit lies inside the host's subscriptions, outside its
 /// carve-outs, and inside its cap.
 pub fn bounds(
     rel: &str,
@@ -147,7 +147,7 @@ pub fn bounds(
     })
 }
 
-/// 5, on what rsync reports: every itemized path must stay inside the unit.
+/// Guardrail 5, on what rsync reports: every itemized path must stay inside the unit.
 /// rsync is handed exactly the unit's directory, so this cannot fire unless
 /// something upstream is wrong — which is exactly when it should.
 pub fn diff_bounds(unit: &str, diff: &Itemized) -> Option<Refusal> {
