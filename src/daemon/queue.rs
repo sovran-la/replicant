@@ -21,6 +21,10 @@ use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+/// What home answers for a lease id it does not hold: expired, released, or
+/// from before a restart. A leaf matches on it to tell "lost" from "unreachable".
+pub const NOT_QUEUED: &str = "is not in the queue";
+
 /// How often a waiter re-checks the queue and refreshes its lease.
 const WAIT_TICK: Duration = Duration::from_millis(250);
 
@@ -163,7 +167,7 @@ impl Queue {
                 Ok(())
             }
             None => Err(Error::Refused(format!(
-                "lease {id} is not in the queue (expired?)"
+                "lease {id} {NOT_QUEUED} (expired?)"
             ))),
         }
     }
@@ -173,7 +177,7 @@ impl Queue {
         let mut q = self.lock();
         let Some(pos) = q.entries.iter().position(|e| e.id == id) else {
             return Err(Error::Refused(format!(
-                "lease {id} is not in the queue (expired?)"
+                "lease {id} {NOT_QUEUED} (expired?)"
             )));
         };
         let e = q.entries.remove(pos).expect("position is in range");

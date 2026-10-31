@@ -1,45 +1,18 @@
 //! The dry-run half of a plan: one rsync `--dry-run` per unit that would move,
 //! and guardrails 1, 3, 4 and 5 against what it reports.
 
-use super::{DiffSummary, HomeLink, LeafCtx, PlannedUnit, leaf_case_insensitive};
-use crate::daemon::wire::{HomeRequest, HomeSnapshot};
+use super::{DiffSummary, LeafCtx, PlannedUnit, leaf_case_insensitive};
+use crate::daemon::wire::HomeSnapshot;
 use crate::decide::Decision;
 use crate::guard::{self, Refusal};
 use crate::marker::Direction;
 use crate::rsync::{ChangeKind, Client, Itemized, Runner, Transfer};
 use crate::units::{self, Discovered, SideUnit, SubSpec};
 use crate::{Result, paths, state};
-use std::sync::mpsc;
-use std::time::Duration;
 
 /// Concurrent rsync dry runs. Each is an ssh session to home; a handful is
 /// plenty and does not look like an attack to sshd.
 const RSYNC_WORKERS: usize = 4;
-
-/// Run `f` while a thread heartbeats the lease, if there is one.
-pub(super) fn with_heartbeat<T>(
-    link: &dyn HomeLink,
-    lease: Option<(u64, u64)>,
-    f: impl FnOnce() -> Result<T>,
-) -> Result<T> {
-    let Some((id, secs)) = lease else {
-        return f();
-    };
-    let every = Duration::from_millis((secs * 1000 / 3).max(200));
-    let (stop, stopped) = mpsc::channel::<()>();
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(every) {
-                if link.call(HomeRequest::Heartbeat { lease: id }).is_err() {
-                    break;
-                }
-            }
-        });
-        let r = f();
-        drop(stop);
-        r
-    })
-}
 
 fn spec_for<'s>(specs: &'s [SubSpec], rel: &str) -> Option<&'s SubSpec> {
     specs

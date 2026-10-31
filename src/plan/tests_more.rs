@@ -150,3 +150,81 @@ fn unenrolled_leaf_cannot_plan() {
         .to_string();
     assert!(err.contains("not enrolled"), "{err}");
 }
+
+/// The leaf's link, but home forgets the entry (a restart, an expiry) as soon
+/// as the plan asks for state, and the plan is held until a heartbeat has
+/// been told so. Leases are shortened to one second so that happens quickly.
+struct DropsEntry<'a> {
+    inner: InProcess<'a>,
+    lease: std::sync::Mutex<Option<u64>>,
+    refused: std::sync::atomic::AtomicBool,
+}
+
+impl HomeLink for DropsEntry<'_> {
+    fn call(&self, request: HomeRequest) -> Result<HomeReply> {
+        use std::sync::atomic::Ordering;
+        match request {
+            HomeRequest::Acquire { .. } => match self.inner.call(request)? {
+                HomeReply::Lease { lease, .. } => {
+                    *self.lease.lock().unwrap() = Some(lease);
+                    Ok(HomeReply::Lease {
+                        lease,
+                        lease_secs: 1,
+                    })
+                }
+                other => Ok(other),
+            },
+            HomeRequest::State { .. } => {
+                let id = self.lease.lock().unwrap().expect("acquired first");
+                self.inner.home.queue.release(id).unwrap();
+                let by = std::time::Instant::now() + Duration::from_secs(10);
+                while !self.refused.load(Ordering::SeqCst) {
+                    assert!(std::time::Instant::now() < by, "no heartbeat was refused");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                self.inner.call(request)
+            }
+            HomeRequest::Heartbeat { .. } => {
+                let r = self.inner.call(request);
+                if r.is_err() {
+                    self.refused.store(true, Ordering::SeqCst);
+                }
+                r
+            }
+            other => self.inner.call(other),
+        }
+    }
+}
+
+#[test]
+fn home_dropping_the_entry_mid_plan_fails_the_dry_run_loudly() {
+    let bed = Bed::enrolled();
+    diverged(&bed);
+    let home = bed.home();
+    let link = DropsEntry {
+        inner: InProcess {
+            home: &home,
+            host: "leaf".into(),
+            home_dir: bed.leaf_hd.clone(),
+        },
+        lease: Default::default(),
+        refused: Default::default(),
+    };
+    let cfg = bed.leaf_cfg();
+    let (state, scratch) = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let ctx = LeafCtx {
+        me: "leaf",
+        home_dir: &bed.leaf_hd,
+        cfg: &cfg,
+        state_dir: &state,
+        scratch_dir: &scratch,
+    };
+    let err = plan(&link, ctx, true, false).unwrap_err().to_string();
+    assert!(err.contains("lease lost"), "{err}");
+    assert!(home.queue.view().is_empty());
+    let log = home.log(&Default::default()).unwrap();
+    assert!(
+        !log.iter().any(|l| l.event == "dry-run"),
+        "a void plan is not reported as a dry run: {log:?}"
+    );
+}

@@ -6,6 +6,7 @@
 //! `--dry-run`, and nothing here writes a baseline, a marker, or a synced path.
 
 mod diff;
+mod lease;
 mod types;
 
 pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings};
@@ -85,7 +86,7 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         None
     };
 
-    let result = diff::with_heartbeat(link, lease, || {
+    let result = lease::with_heartbeat(link, lease, |watch| {
         let started = Instant::now();
         let snap = match link.call(HomeRequest::State {
             leaf_repos: found.repos(),
@@ -108,6 +109,8 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         t.leaf_state_ms = ms(started);
         let mut planned = decide_all(ctx, &snap, &leaf_units)?;
         if dry_run {
+            // Do not start an rsync on a lease that is already gone.
+            watch.check()?;
             let started = Instant::now();
             diff::run(ctx, &snap, &found, &union, &leaf_units, &mut planned)?;
             t.rsync_ms = ms(started);
@@ -115,7 +118,13 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         Ok((planned, snap))
     });
     if let Some((id, _)) = lease {
-        let _ = link.call(HomeRequest::Release { lease: id });
+        let released = lease::release(link, id);
+        match (&result, released) {
+            (Ok(_), Err(e)) => return Err(e),
+            // The plan's own failure is the one to report.
+            (Err(_), Err(e)) => eprintln!("replicant: {e}"),
+            (_, Ok(())) => {}
+        }
     }
     let (units, _snap) = result?;
     t.total_ms = ms(total);

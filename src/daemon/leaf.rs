@@ -14,6 +14,9 @@ use std::time::Duration;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Long enough to wait out the queue and hash home's side of a large tree.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(900);
+/// Heartbeats and releases: short, so a hung call cannot outlast the lease
+/// it is meant to keep, and the heartbeat thread gets to retry.
+const LEASE_CALL_DEADLINE: Duration = Duration::from_secs(10);
 
 pub struct Leaf {
     pub dirs: Dirs,
@@ -31,13 +34,17 @@ struct Remote<'a> {
 
 impl HomeLink for Remote<'_> {
     fn call(&self, request: HomeRequest) -> Result<HomeReply> {
+        let deadline = match request {
+            HomeRequest::Heartbeat { .. } | HomeRequest::Release { .. } => LEASE_CALL_DEADLINE,
+            _ => REQUEST_DEADLINE,
+        };
         let call = HomeCall {
             version: WIRE_VERSION,
             host: self.me.clone(),
             home_dir: self.home_dir.clone(),
             request,
         };
-        let answer: HomeAnswer = self.dialer.call(&self.address, &call, REQUEST_DEADLINE)?;
+        let answer: HomeAnswer = self.dialer.call(&self.address, &call, deadline)?;
         for line in &answer.journal {
             if let Err(e) = self.journal.append_raw(line) {
                 eprintln!("replicant: could not keep a local copy of a journal line: {e}");
