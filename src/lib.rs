@@ -5,13 +5,18 @@
 //! reports status and computes `sync --dry-run`, and never writes a synced
 //! path or a baseline.
 
+pub mod baseline;
 pub mod config;
+pub mod decide;
 pub mod error;
 pub mod exclude;
 pub mod git;
+pub mod marker;
 pub mod paths;
+pub mod record;
 pub mod repos;
 pub mod state;
+pub mod units;
 
 #[cfg(test)]
 pub(crate) mod testutil;
