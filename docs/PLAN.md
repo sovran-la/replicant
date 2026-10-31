@@ -384,21 +384,16 @@ leaf's per-path state against its baseline (so the direction table for
 markers and quarantines, unresolved conflicts, the journal. The daemon
 exposes all of it as one query, `fleet_state`, so every renderer is thin.
 
-Renderers, in build order:
+The one renderer in scope: **`replicant status --fleet`** from any
+machine. One row per host: last contact, pending direction per path, queue
+position; red for conflicts, quarantine, expired leases. Zero new
+infrastructure.
 
-1. **`replicant status --fleet`** from any machine. One row per host: last
-   contact, pending direction per path, queue position; red for conflicts,
-   quarantine, expired leases. Zero new infrastructure.
-2. **An MCP panel.** Same pattern as the agents MCP's `fleet_panel` and the
-   cli MCP's `process_panel`: a `replicant` MCP whose panel puts the state
-   of the world in chat on request, and before an agent spawn when
-   something is red.
-3. **A pane in the sovran dashboard app** (native GPUI, decided 2026-08-14)
-   when that exists. Not before.
-
-Not a web UI served by the daemon: it would be the first HTTP surface on
-any sovran daemon and a second UI stack, for nothing the three above do
-not cover.
+An MCP panel and a pane in the sovran dashboard app are deliberately out
+of scope. If this works for us they get built later and separately, on
+top of the same `fleet_state` query. Not a web UI served by the daemon,
+then or now: it would be the first HTTP surface on any sovran daemon and
+a second UI stack.
 
 The fleet view carries one thing `status` does not: **staleness**. A leaf
 that has not talked to home in nine days looks different from one that
