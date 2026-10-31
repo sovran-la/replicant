@@ -11,10 +11,12 @@ pub mod decide;
 pub mod error;
 pub mod exclude;
 pub mod git;
+pub mod guard;
 pub mod marker;
 pub mod paths;
 pub mod record;
 pub mod repos;
+pub mod rsync;
 pub mod state;
 pub mod units;
 

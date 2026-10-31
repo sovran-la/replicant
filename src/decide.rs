@@ -98,13 +98,11 @@ pub struct Inputs<'a> {
 }
 
 pub fn decide(i: Inputs<'_>) -> Decision {
-    if let Some(m) = i.home_marker {
-        if m.host != i.me {
-            return Decision::Quarantined {
-                by: m.host.clone(),
-                since: m.started_at,
-            };
-        }
+    if let Some(m) = i.home_marker.filter(|m| m.host != i.me) {
+        return Decision::Quarantined {
+            by: m.host.clone(),
+            since: m.started_at,
+        };
     }
     if let Some(m) = i.leaf_marker {
         return Decision::Resume {
