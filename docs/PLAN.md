@@ -142,6 +142,56 @@ A leaf's local config is nothing but where home is, and `subscribe` writes
 that. SSH keys are per host; a capped host's key is additionally confined
 server-side so it physically cannot read outside its cap.
 
+### Enrolling a new machine
+
+A `subscribe` from a host with no `[hosts.*]` entry is recorded as
+**pending**: home stores the host, its `home_dir` (learned from the leaf's
+`$HOME`), and the requested paths, serves nothing, and tells the leaf what
+happens next. Auto-enrolling with full access was considered and rejected:
+it is exactly how twinoaks would end up with `rust/` on it, because the cap
+did not exist yet when it asked.
+
+On home, `replicant approve` lists what is waiting and forces the one
+decision that matters — whether this box gets a cap:
+
+```
+$ replicant approve
+Pending:
+  twinoaks   /Users/morgan   wants: work/tundra, work/sequoia   (2m ago)
+
+Approve twinoaks? [y/N] y
+Allow list (relative to home dir, space-separated, empty = anything):
+> /Users/morgan/work/sequoia ~/work/tundra
+  → work/sequoia, work/tundra
+Confirm? [Y/n] y
+Approved. Run `replicant sync` on twinoaks to pull.
+```
+
+`approve` is also where the leaf's SSH key gets authorized on home (and
+confined to its cap, if any), so enrollment is "subscribe on the leaf,
+approve on home" and nothing else.
+
+`approve` does **not** start a sync. Home never initiates writes to a leaf;
+the first pull onto a fresh machine is the largest, least-reviewed sync it
+will ever do and you want to be sitting at it. `approve <host> --sync` is
+the opt-in: it triggers the leaf's own `sync` over ssh, the same way `--to`
+does.
+
+### Path normalization
+
+One normalizer serves `subscribe`, `unsubscribe`, `approve`, and `allow`,
+so a path means the same thing on both ends:
+
+- `~/x` → `x`
+- absolute under the *leaf's* `home_dir` (`/Users/morgan/…`) → stripped
+- absolute under *home's* own home dir (`/home/morgan/…`, typed on
+  thistledown from muscle memory) → stripped
+- trailing slashes dropped, duplicates collapsed, `..` refused
+- anything not under a configured root → refused, with the roots listed
+
+The normalized list is echoed back before it is written, so what was
+approved is what was seen, not what was typed.
+
 ## Conflicts
 
 A conflict is a path both sides changed since the baseline. In the
@@ -319,9 +369,10 @@ leaves; home just has `fleet.toml`.
 
 ```
 src/
-  main.rs          clap: subscribe | unsubscribe | sync | status | config
+  main.rs          clap: subscribe | unsubscribe | approve | sync | status | config
   config.rs        leaf config, fleet config (roots, hosts, allow, subscriptions), home_dir mapping
-  subscribe.rs     subscribe/unsubscribe requests; cap enforcement on home
+  subscribe.rs     subscribe/unsubscribe requests; pending hosts, approve, cap enforcement on home
+  paths.rs         the one path normalizer (leaf and home)
   baseline.rs      per-leaf, per-path baseline read/write (both sides)
   state.rs         state hash: per-repo (HEAD, dirty hash) + manifest of non-repo files
   repos.rs         discover .git dirs and worktrees under a root; git status/lock/case checks
