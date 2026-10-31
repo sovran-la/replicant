@@ -7,7 +7,12 @@
 
 pub mod config;
 pub mod error;
+pub mod exclude;
 pub mod paths;
+pub mod repos;
+
+#[cfg(test)]
+pub(crate) mod testutil;
 
 pub use error::{Error, Result};
 
