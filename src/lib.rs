@@ -15,10 +15,12 @@ pub mod git;
 pub mod guard;
 pub mod marker;
 pub mod paths;
+pub mod plan;
 pub mod record;
 pub mod repos;
 pub mod rsync;
 pub mod state;
+pub mod subscribe;
 pub mod timefmt;
 pub mod units;
 
