@@ -8,8 +8,10 @@
 pub mod config;
 pub mod error;
 pub mod exclude;
+pub mod git;
 pub mod paths;
 pub mod repos;
+pub mod state;
 
 #[cfg(test)]
 pub(crate) mod testutil;

@@ -29,7 +29,7 @@ fn star_globs_stay_within_a_component() {
 fn double_star_crosses_slashes() {
     let e = Excludes::new(&["**/*.sock"]);
     assert!(e.matches("x/y/z.sock", false));
-    let e = Excludes::new(&BUILTIN.to_vec());
+    let e = Excludes::new(BUILTIN);
     assert!(e.matches("repo/.git/index.lock", false));
     assert!(e.matches("repo/.git/refs/heads/main.lock", false));
     assert!(e.matches(".git/HEAD.lock", false));
