@@ -117,7 +117,7 @@ it off the leaf, through the dirty-target guard like any other delete.
 ### Config lives on home
 
 ```toml
-# thistledown: ~/.config/replicant/fleet.toml
+# thistledown: ~/.sovran/replicant/fleet.toml
 
 [roots.work]
 path    = "/home/morgan/work"

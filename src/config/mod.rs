@@ -1,6 +1,6 @@
 //! Where replicant keeps things, and the two configs it reads.
 //!
-//! One directory per machine, `$HOME/.config/replicant` unless
+//! One directory per machine, `$HOME/.sovran/replicant` unless
 //! `REPLICANT_HOME` points elsewhere (every test does). Its contents decide the
 //! role: a directory with `fleet.toml` is **home**; anything else is a leaf.
 //!
@@ -38,12 +38,12 @@ pub struct Dirs {
 
 impl Dirs {
     /// The directory for this process: `REPLICANT_HOME`, else
-    /// `$HOME/.config/replicant`.
+    /// `$HOME/.sovran/replicant`, beside the other sovran daemons.
     pub fn discover() -> Result<Self> {
         if let Some(dir) = std::env::var_os(HOME_ENV).filter(|v| !v.is_empty()) {
             return Ok(Self::at(PathBuf::from(dir)));
         }
-        Ok(Self::at(user_home()?.join(".config").join("replicant")))
+        Ok(Self::at(user_home()?.join(".sovran").join("replicant")))
     }
 
     pub fn at(root: PathBuf) -> Self {

@@ -35,7 +35,7 @@ pub enum Cmd {
         /// The ssh destination rsync uses for home ("local" for same machine).
         #[arg(long)]
         rsync_host: Option<String>,
-        /// Home's bundle, if not ~/.config/replicant/home.pem.
+        /// Home's bundle, if not ~/.sovran/replicant/home.pem.
         #[arg(long)]
         credentials: Option<String>,
     },
