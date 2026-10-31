@@ -35,10 +35,12 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
 
 /// The rsync runner tests use: real ssh options, a bound no test reaches, and
 /// rsync 3's quoting so argument assertions do not depend on the machine.
+/// Its scratch dir cannot be created: a test that needs one sets its own.
 pub fn runner() -> crate::rsync::Runner {
     crate::rsync::Runner::new(
         std::time::Duration::from_secs(60),
         crate::rsync::Client::Rsync,
+        "/nonexistent/replicant-scratch".into(),
     )
 }
 

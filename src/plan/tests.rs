@@ -19,6 +19,7 @@ fn go(bed: &Bed, home: &Home, cfg: &LeafConfig, dry: bool) -> Result<Plan> {
     };
     let hd = cfg.home_dir().unwrap();
     let state = bed.leaf_dirs.state();
+    let scratch = bed.leaf_dirs.scratch();
     plan(
         &link,
         LeafCtx {
@@ -26,6 +27,7 @@ fn go(bed: &Bed, home: &Home, cfg: &LeafConfig, dry: bool) -> Result<Plan> {
             home_dir: &hd,
             cfg,
             state_dir: &state,
+            scratch_dir: &scratch,
         },
         dry,
         false,

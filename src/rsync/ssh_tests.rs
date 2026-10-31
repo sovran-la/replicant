@@ -20,7 +20,7 @@ fn over_ssh(leaf: &Path, home: &Path) -> Transfer {
 fn runner_with(ssh: &Path, timeout: Duration) -> Runner {
     Runner {
         ssh: ssh.display().to_string(),
-        ..Runner::new(timeout, Client::Rsync)
+        ..Runner::new(timeout, Client::Rsync, "/nonexistent".into())
     }
 }
 

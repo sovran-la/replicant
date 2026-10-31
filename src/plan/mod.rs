@@ -36,6 +36,8 @@ pub struct LeafCtx<'a> {
     pub home_dir: &'a Path,
     pub cfg: &'a LeafConfig,
     pub state_dir: &'a Path,
+    /// [`crate::config::Dirs::scratch`].
+    pub scratch_dir: &'a Path,
 }
 
 fn ms(since: Instant) -> u64 {

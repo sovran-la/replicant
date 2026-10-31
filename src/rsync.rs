@@ -15,6 +15,7 @@
 mod child;
 mod client;
 mod parse;
+mod scratch;
 
 pub use client::Client;
 pub use parse::parse;
@@ -39,14 +40,17 @@ pub struct Runner {
     pub ssh: String,
     /// The local rsync, which decides how home's path is quoted.
     pub client: Client,
+    /// A private directory (the config dir's) for the empty stand-in.
+    pub scratch: PathBuf,
 }
 
 impl Runner {
-    pub fn new(timeout: Duration, client: Client) -> Self {
+    pub fn new(timeout: Duration, client: Client, scratch: PathBuf) -> Self {
         Self {
             timeout,
             ssh: "ssh".into(),
             client,
+            scratch,
         }
     }
 }
@@ -184,20 +188,14 @@ impl Transfer {
                 notes: vec![],
             });
         }
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let empty =
-            std::env::temp_dir().join(format!("replicant-empty-{}-{n}", std::process::id()));
-        if self.source_absent {
-            std::fs::create_dir_all(&empty)?;
-        }
-        let args = self.args(runner, &empty);
+        let empty = match self.source_absent {
+            true => Some(scratch::EmptyDir::new(&runner.scratch)?),
+            false => None,
+        };
+        let args = self.args(runner, empty.as_ref().map_or(Path::new(""), |e| e.path()));
         debug_assert!(args.iter().any(|a| a == "--dry-run"));
-        let out = child::run("rsync", &args, runner.timeout);
-        if self.source_absent {
-            let _ = std::fs::remove_dir(&empty);
-        }
-        let out = out?;
+        let out = child::run("rsync", &args, runner.timeout)?;
+        drop(empty);
         let code = out.code.unwrap_or(-1);
         if code != 0 && code != VANISHED {
             return Err(Error::Rsync(format!(

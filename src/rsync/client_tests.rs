@@ -59,7 +59,7 @@ fn remote_word(client: Client) -> String {
     };
     let runner = Runner {
         ssh: ssh.display().to_string(),
-        ..Runner::new(Duration::from_secs(30), client)
+        ..Runner::new(Duration::from_secs(30), client, "/nonexistent".into())
     };
     assert!(x.dry_run(&runner).is_err(), "the fake ssh is not a server");
     let got = std::fs::read_to_string(&argv).unwrap();
@@ -94,7 +94,11 @@ fn local_paths_are_never_quoted() {
         excludes: Excludes::for_root(&[]),
         source_absent: false,
     };
-    let r = Runner::new(Duration::from_secs(1), Client::OpenRsync);
+    let r = Runner::new(
+        Duration::from_secs(1),
+        Client::OpenRsync,
+        "/nonexistent".into(),
+    );
     let a = x.args(&r, Path::new("/e"));
     assert_eq!(&a[a.len() - 2..], [format!("{NASTY}/"), "/h/w/".into()]);
 }

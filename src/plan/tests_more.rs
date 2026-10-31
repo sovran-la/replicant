@@ -124,11 +124,13 @@ fn dry_run_takes_and_releases_a_queue_entry_and_journals() {
     };
     let cfg = bed.leaf_cfg();
     let state = bed.leaf_dirs.state();
+    let scratch = bed.leaf_dirs.scratch();
     let ctx = LeafCtx {
         me: "leaf",
         home_dir: &bed.leaf_hd,
         cfg: &cfg,
         state_dir: &state,
+        scratch_dir: &scratch,
     };
     let err = plan(&link, ctx, true, true).unwrap_err().to_string();
     assert!(

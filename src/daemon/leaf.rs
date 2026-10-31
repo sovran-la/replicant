@@ -118,11 +118,13 @@ impl Leaf {
                 let cfg = self.cfg()?;
                 let link = self.remote(&cfg)?;
                 let (me, hd, state) = (cfg.name()?, cfg.home_dir()?, self.dirs.state());
+                let scratch = self.dirs.scratch();
                 let ctx = LeafCtx {
                     me: &me,
                     home_dir: &hd,
                     cfg: &cfg,
                     state_dir: &state,
+                    scratch_dir: &scratch,
                 };
                 Ok(LocalReply::Plan(Box::new(plan::plan(
                     &link, ctx, true, no_wait,
@@ -202,7 +204,7 @@ impl Leaf {
         let link = self.remote(&cfg)?;
         let me = cfg.name()?;
         let view = plan::subscriptions(&link)?;
-        let (hd, state) = (cfg.home_dir()?, self.dirs.state());
+        let (hd, state, scratch) = (cfg.home_dir()?, self.dirs.state(), self.dirs.scratch());
         let planned = match view.enrollment {
             Enrollment::Enrolled => Some(plan::plan(
                 &link,
@@ -211,6 +213,7 @@ impl Leaf {
                     home_dir: &hd,
                     cfg: &cfg,
                     state_dir: &state,
+                    scratch_dir: &scratch,
                 },
                 false,
                 false,

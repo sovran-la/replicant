@@ -92,7 +92,11 @@ pub(super) fn run(
     if jobs.is_empty() {
         return Ok(());
     }
-    let runner = Runner::new(ctx.cfg.rsync_timeout(), Client::detect()?);
+    let runner = Runner::new(
+        ctx.cfg.rsync_timeout(),
+        Client::detect()?,
+        ctx.scratch_dir.to_path_buf(),
+    );
     let results = state::parallel_map(
         &jobs,
         RSYNC_WORKERS,

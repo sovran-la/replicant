@@ -188,9 +188,16 @@ fn absent_source_deletes_everything_on_target() {
     testutil::write(&home.join("d/b"), "b");
     let mut x = t(Direction::Push, &tmp.path().join("leaf-gone"), &home);
     x.source_absent = true;
-    let it = x.dry_run(&testutil::runner()).unwrap();
+    let mut r = testutil::runner();
+    r.scratch = tmp.path().join("config/tmp");
+    let it = x.dry_run(&r).unwrap();
     assert_eq!(it.deleted(), 2);
     assert!(home.join("a").exists());
+    assert_eq!(
+        std::fs::read_dir(&r.scratch).unwrap().count(),
+        0,
+        "the stand-in, made under the config dir, is gone afterwards"
+    );
 }
 
 #[test]
