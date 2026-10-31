@@ -33,9 +33,13 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// The rsync runner tests use: real ssh options, a bound no test reaches.
+/// The rsync runner tests use: real ssh options, a bound no test reaches, and
+/// rsync 3's quoting so argument assertions do not depend on the machine.
 pub fn runner() -> crate::rsync::Runner {
-    crate::rsync::Runner::new(std::time::Duration::from_secs(60))
+    crate::rsync::Runner::new(
+        std::time::Duration::from_secs(60),
+        crate::rsync::Client::Rsync,
+    )
 }
 
 /// An executable `sh` script at `dir/name`, for standing in for ssh.

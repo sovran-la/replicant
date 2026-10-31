@@ -13,8 +13,10 @@
 //! transfer would otherwise hold the head of home's queue for the whole fleet.
 
 mod child;
+mod client;
 mod parse;
 
+pub use client::Client;
 pub use parse::parse;
 
 use crate::exclude::Excludes;
@@ -35,13 +37,16 @@ pub struct Runner {
     pub timeout: Duration,
     /// The ssh program rsync runs for a transfer over ssh.
     pub ssh: String,
+    /// The local rsync, which decides how home's path is quoted.
+    pub client: Client,
 }
 
 impl Runner {
-    pub fn new(timeout: Duration) -> Self {
+    pub fn new(timeout: Duration, client: Client) -> Self {
         Self {
             timeout,
             ssh: "ssh".into(),
+            client,
         }
     }
 }
@@ -121,7 +126,7 @@ impl Itemized {
 impl Transfer {
     /// One end of the command line: `host:/path/`, `/path/`, or the empty
     /// stand-in for an absent source.
-    fn endpoint(&self, home_side: bool, empty: &Path) -> String {
+    fn endpoint(&self, runner: &Runner, home_side: bool, empty: &Path) -> String {
         let is_source = home_side == (self.direction == Direction::Pull);
         if is_source && self.source_absent {
             return format!("{}/", empty.display());
@@ -136,7 +141,7 @@ impl Transfer {
             s.push('/');
         }
         match (&self.home_host, home_side) {
-            (Some(h), true) => format!("{h}:{s}"),
+            (Some(h), true) => format!("{h}:{}", runner.client.remote_path(&s)),
             _ => s,
         }
     }
@@ -153,8 +158,8 @@ impl Transfer {
             a.push(format!("{} {SSH_OPTIONS}", runner.ssh));
         }
         a.extend(self.excludes.rsync_args());
-        let home = self.endpoint(true, empty);
-        let leaf = self.endpoint(false, empty);
+        let home = self.endpoint(runner, true, empty);
+        let leaf = self.endpoint(runner, false, empty);
         match self.direction {
             Direction::Pull => a.extend([home, leaf]),
             Direction::Push => a.extend([leaf, home]),
@@ -214,3 +219,7 @@ mod tests;
 #[cfg(test)]
 #[path = "rsync/ssh_tests.rs"]
 mod ssh_tests;
+
+#[cfg(test)]
+#[path = "rsync/client_tests.rs"]
+mod client_tests;

@@ -6,7 +6,7 @@ use crate::daemon::wire::{HomeRequest, HomeSnapshot};
 use crate::decide::Decision;
 use crate::guard::{self, Refusal};
 use crate::marker::Direction;
-use crate::rsync::{ChangeKind, Itemized, Runner, Transfer};
+use crate::rsync::{ChangeKind, Client, Itemized, Runner, Transfer};
 use crate::units::{self, Discovered, SideUnit, SubSpec};
 use crate::{Result, paths, state};
 use std::sync::mpsc;
@@ -89,7 +89,10 @@ pub(super) fn run(
         })
         .collect();
 
-    let runner = Runner::new(ctx.cfg.rsync_timeout());
+    if jobs.is_empty() {
+        return Ok(());
+    }
+    let runner = Runner::new(ctx.cfg.rsync_timeout(), Client::detect()?);
     let results = state::parallel_map(
         &jobs,
         RSYNC_WORKERS,
