@@ -114,6 +114,34 @@ fn excepted(rel: &str, except: &[String]) -> bool {
     except.iter().any(|e| paths::is_within(rel, e))
 }
 
+/// The exclude list for one unit, relative to the unit's directory: the
+/// root's excludes and the built-ins, plus every carve-out and worktree
+/// checkout inside it, plus (for a loose unit) every repo inside it, which is
+/// a unit of its own.
+///
+/// rsync gets this list too, with *both* sides' worktrees: the source's so a
+/// checkout is never sent, the target's so `--delete` never removes one.
+pub fn excludes(
+    spec: &SubSpec,
+    rel: &str,
+    kind: UnitKind,
+    union_repos: &[String],
+    worktrees: &[String],
+) -> Excludes {
+    let mut ex = Excludes::for_root(&spec.exclude);
+    let repos: &[String] = if kind == UnitKind::Loose {
+        union_repos
+    } else {
+        &[]
+    };
+    for b in spec.except.iter().chain(worktrees).chain(repos) {
+        if let Some(x) = paths::relative_to(b, rel).filter(|x| !x.is_empty()) {
+            ex.push_exact(x, true);
+        }
+    }
+    ex
+}
+
 /// This side's units, against the union of both sides' repos.
 pub fn snapshot(
     found: &Discovered,
@@ -137,12 +165,7 @@ pub fn snapshot(
             .collect();
         for r in &repos_here {
             let inner = paths::relative_to(r, &spec.rel).unwrap_or("");
-            let mut ex = Excludes::for_root(&spec.exclude);
-            for e in &spec.except {
-                if let Some(x) = paths::relative_to(e, r).filter(|x| !x.is_empty()) {
-                    ex.push_exact(x, true);
-                }
-            }
+            let ex = excludes(spec, r, UnitKind::Repo, union_repos, &[]);
             jobs.push(Job {
                 spec,
                 abs: if inner.is_empty() {
@@ -176,12 +199,7 @@ pub fn snapshot(
             .cloned()
             .collect();
         let is_file = d.loose.len() == 1 && d.loose[0].rel.is_empty();
-        let mut ex = Excludes::for_root(&spec.exclude);
-        for b in &blocked {
-            if let Some(x) = paths::relative_to(b, &spec.rel).filter(|x| !x.is_empty()) {
-                ex.push_exact(x, true);
-            }
-        }
+        let ex = excludes(spec, &spec.rel, UnitKind::Loose, union_repos, &[]);
         jobs.push(Job {
             spec,
             abs: sub_abs.clone(),

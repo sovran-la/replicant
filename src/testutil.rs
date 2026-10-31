@@ -75,3 +75,137 @@ pub fn tree(base: &Path) {
     write(&base.join("data/blob.bin"), "0123456789");
     write(&base.join("target/junk"), "build output");
 }
+
+/// A home and a leaf on one machine, in one tempdir, wired in-process.
+///
+/// ```text
+/// tmp/home-cfg/fleet.toml   home's replicant dir (state, journal)
+/// tmp/home-hd/work/          home's root `work`
+/// tmp/leaf-cfg/             leaf's replicant dir (state, journal)
+/// tmp/leaf-hd/work/          the leaf's identity mapping of `work`
+/// ```
+pub struct Bed {
+    pub tmp: tempfile::TempDir,
+    pub home_dirs: crate::config::Dirs,
+    pub home_hd: PathBuf,
+    pub leaf_dirs: crate::config::Dirs,
+    pub leaf_hd: PathBuf,
+}
+
+impl Bed {
+    /// `hosts` is extra fleet.toml text (hosts, subscriptions).
+    pub fn new(hosts: &str) -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let home_hd = tmp.path().join("home-hd");
+        let leaf_hd = tmp.path().join("leaf-hd");
+        std::fs::create_dir_all(home_hd.join("work")).unwrap();
+        std::fs::create_dir_all(leaf_hd.join("work")).unwrap();
+        let home_dirs = crate::config::Dirs::at(tmp.path().join("home-cfg"));
+        let leaf_dirs = crate::config::Dirs::at(tmp.path().join("leaf-cfg"));
+        std::fs::create_dir_all(&leaf_dirs.root).unwrap();
+        let fleet = format!(
+            "[daemon]\nname = \"home\"\nhome_dir = \"{}\"\nlisten = \"127.0.0.1:0\"\n\n\
+             [roots.work]\npath = \"{}/work\"\nexclude = [\"target\"]\n\n{hosts}",
+            home_hd.display(),
+            home_hd.display()
+        );
+        write(&home_dirs.fleet(), &fleet);
+        Self {
+            tmp,
+            home_dirs,
+            home_hd,
+            leaf_dirs,
+            leaf_hd,
+        }
+    }
+
+    /// The bed with `leaf` enrolled (no cap) and subscribed to `work`.
+    pub fn enrolled() -> Self {
+        let b = Self::new("");
+        let extra = format!(
+            "[hosts.leaf]\nhome_dir = \"{}\"\n\n[subscriptions.leaf]\npaths = [\"work\"]\n",
+            b.leaf_hd.display()
+        );
+        let mut text = std::fs::read_to_string(b.home_dirs.fleet()).unwrap();
+        text.push_str(&extra);
+        write(&b.home_dirs.fleet(), &text);
+        b
+    }
+
+    pub fn home(&self) -> crate::daemon::home::Home {
+        crate::daemon::home::Home::open(self.home_dirs.clone()).unwrap()
+    }
+
+    pub fn leaf_cfg(&self) -> crate::config::LeafConfig {
+        crate::config::LeafConfig {
+            name: Some("leaf".into()),
+            home_dir: Some(self.leaf_hd.clone()),
+            home: crate::config::HomeEntry {
+                name: "home".into(),
+                address: "127.0.0.1:1".into(),
+                credentials: None,
+                rsync_host: Some(crate::config::leaf::LOCAL_RSYNC.into()),
+            },
+            as_local: Default::default(),
+        }
+    }
+}
+
+/// A [`crate::plan::HomeLink`] that calls a [`crate::daemon::home::Home`]
+/// directly, as `host`.
+pub struct InProcess<'a> {
+    pub home: &'a crate::daemon::home::Home,
+    pub host: String,
+    pub home_dir: PathBuf,
+}
+
+impl crate::plan::HomeLink for InProcess<'_> {
+    fn call(
+        &self,
+        request: crate::daemon::wire::HomeRequest,
+    ) -> crate::Result<crate::daemon::wire::HomeReply> {
+        let call = crate::daemon::wire::HomeCall {
+            version: crate::daemon::wire::WIRE_VERSION,
+            host: self.host.clone(),
+            home_dir: self.home_dir.clone(),
+            request,
+        };
+        self.home.handle(call).result.map_err(crate::Error::Remote)
+    }
+}
+
+/// Every file under `root` with its bytes and mode, for "nothing was written".
+pub fn fingerprint(
+    root: &Path,
+) -> std::collections::BTreeMap<String, (Vec<u8>, u32, std::time::SystemTime)> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd {
+            let p = e.unwrap().path();
+            let m = std::fs::symlink_metadata(&p).unwrap();
+            let rel = p.strip_prefix(root).unwrap().display().to_string();
+            if m.is_dir() {
+                out.insert(
+                    format!("{rel}/"),
+                    (vec![], m.permissions().mode(), m.modified().unwrap()),
+                );
+                stack.push(p);
+            } else if m.is_file() {
+                out.insert(
+                    rel,
+                    (
+                        std::fs::read(&p).unwrap(),
+                        m.permissions().mode(),
+                        m.modified().unwrap(),
+                    ),
+                );
+            }
+        }
+    }
+    out
+}

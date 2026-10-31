@@ -38,6 +38,10 @@ pub struct LeafConfig {
     /// This machine's fleet name. Defaults to the hostname.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// This machine's home dir as replicant maps paths. Defaults to `$HOME`;
+    /// set for tests and same-machine experiments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_dir: Option<PathBuf>,
     pub home: HomeEntry,
     /// `--as`: normalized home path → absolute local path.
     #[serde(default, rename = "as", skip_serializing_if = "BTreeMap::is_empty")]
@@ -78,6 +82,18 @@ impl LeafConfig {
             Some(n) => Ok(n.clone()),
             None => super::hostname()
                 .ok_or_else(|| Error::Config("no usable hostname; set `name` in leaf.toml".into())),
+        }
+    }
+
+    /// The home dir paths are mapped through.
+    pub fn home_dir(&self) -> Result<PathBuf> {
+        match &self.home_dir {
+            Some(h) if h.is_absolute() => Ok(h.clone()),
+            Some(h) => Err(Error::Config(format!(
+                "home_dir {} must be absolute",
+                h.display()
+            ))),
+            None => super::user_home(),
         }
     }
 
@@ -135,6 +151,7 @@ mod tests {
     fn cfg() -> LeafConfig {
         LeafConfig {
             name: Some("birchbook".into()),
+            home_dir: None,
             home: HomeEntry {
                 name: "thistledown".into(),
                 address: "thistledown:7750".into(),

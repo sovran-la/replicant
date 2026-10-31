@@ -204,7 +204,9 @@ pub fn parse(text: &str) -> Itemized {
             ChangeKind::Update
         };
         let name = name.strip_suffix('/').unwrap_or(name);
-        if (name == "." || name.is_empty()) && kind == ChangeKind::Attr {
+        // The transfer root itself: its creation or attributes are not a change
+        // anybody needs to read.
+        if name == "." || name.is_empty() {
             continue;
         }
         out.changes.push(Change {
