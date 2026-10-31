@@ -7,6 +7,7 @@
 
 pub mod baseline;
 pub mod config;
+pub mod daemon;
 pub mod decide;
 pub mod error;
 pub mod exclude;
@@ -18,6 +19,7 @@ pub mod record;
 pub mod repos;
 pub mod rsync;
 pub mod state;
+pub mod timefmt;
 pub mod units;
 
 #[cfg(test)]
