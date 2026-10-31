@@ -1,6 +1,6 @@
 # Replicant — Rough Plan
 
-*Draft 2026-10-31, rev 2 (home-base model, single `sync`, conflict UX).
+*Draft 2026-10-31, rev 3 (daemon control plane, locks, resume, journal, dogfood via --as).
 Captures the design discussion; nothing here is final.*
 
 ## Problem
@@ -36,11 +36,22 @@ continuous-bidirectional model that is the actual root cause.
 
 **thistledown is home.** It is always on, headless, holds the unrestricted
 tree, and is already the Syncthing hub and the de facto backup of `~/work`.
-Nobody works on it directly; it only ever changes via `sync`.
+Home may change by any means — a push from a leaf, or an agent working on
+thistledown directly — and leaves cannot tell the difference, nor need to.
 
 Every other machine is a leaf. A leaf talks only to home, never to another
-leaf. Transport is `rsync -a --delete` over Tailscale SSH. Replicant never
-copies bytes itself; it is policy and guardrails around rsync.
+leaf.
+
+**Control plane:** a replicant daemon on every machine, daemon-to-daemon
+over the tailnet with mTLS, the same pattern as sovran.la/agents remote
+(no ssh dependency). The daemon handles subscribe/approve, state and
+baseline exchange, per-path locks, the journal, and triggers (`--to`,
+`approve --sync`). It is what lets a brand-new leaf reach home *before* it
+has an authorized key, which ssh-only could not do.
+
+**Data plane:** `rsync -a --delete` over Tailscale SSH. Replicant never
+copies bytes itself; it is policy and guardrails around rsync. The daemon
+never carries file data.
 
 ### One command
 
@@ -53,14 +64,18 @@ replicant sync --dry-run    # decision + itemized rsync diff, no writes
 replicant status            # the decision table without acting; unresolved conflicts in red
 ```
 
-Direction is inferred, never typed. Each leaf keeps a **baseline**: the
-state it and home last agreed on. Home keeps one baseline per leaf.
+Direction is inferred, never typed. Each leaf keeps a **baseline** per
+subscribed path: the state it and home last agreed on. Home keeps the same
+baselines per leaf, plus the last N per path as history.
 
 ```
+no baseline, target empty   → pull (or push, whichever side has content)
+no baseline, both populated → conflict; `--adopt home|leaf` is the bulk answer
 home same,    leaf same     → nothing to do
 home changed, leaf same     → pull   (make leaf match home)
 home same,    leaf changed  → push   (make home match leaf)
 both changed                → conflict resolution, see below
+interrupted marker present  → resume that direction; never a conflict
 ```
 
 `sync` always prints what it decided before touching anything:
@@ -85,7 +100,12 @@ should be identical everywhere too.
 replicant subscribe thistledown ~/work/tundra ~/work/sequoia
 replicant subscribe thistledown ~/.claude/skills ~/.claude/commands ~/.claude/settings.json
 replicant subscribe thistledown ~/.sovran/agents/types ~/.sovran/agents/hooks
+replicant subscribe thistledown ~/work/tundra --as ~/work2/tundra   # local path override
 ```
+
+`--as` maps a home path to a different local path; default is identity.
+This is how we dogfood: `~/work` stays on Syncthing untouched while the
+same content is subscribed into `~/work2` and lived in for a while.
 
 `subscribe` is a request to home. Home records it in the fleet config and
 starts serving it; `sync` on the leaf reads its subscriptions back from
@@ -270,13 +290,58 @@ Before any destructive apply, in order:
 
 `--dry-run` runs all five and prints the itemized rsync diff.
 
+## Locks
+
+Home's daemon holds one lock per subscribed path. A sync for a path takes
+it on home for the duration of the transfer; a second leaf asking for the
+same path waits (bounded) or fails loudly, never interleaves. birchbook
+pushing `work/tundra` while twinoaks pulls it is the case.
+
+Anything that writes home directly also takes the lock — see *Agents on
+home* below. Locks are visible in `status` and recorded in the journal.
+
+## Interrupted sync
+
+rsync can die at 60%. The target is then a mix of old and new, and without
+care the next `sync` would read "target changed" and call it a conflict —
+wrongly. So:
+
+- Before rsync starts, the target side writes an **in-progress marker**
+  for the path (direction, source state, started-at).
+- Baselines are written only after rsync exits 0, and the marker is
+  cleared in the same step.
+- A marker found on the next run means "resume this direction" (rsync is
+  idempotent), not "conflict". The decision table has a row for it.
+- A marker older than a configurable age is reported in `status` and
+  `--dry-run` shows what resuming would do.
+
 ## Home is also the backup
 
-Push is the only thing that writes to home, so a bad push is the one way to
-damage the backup. Pushes run with `rsync --backup --backup-dir` into a
-dated directory on home (or home runs filesystem snapshots). Either way, a
-bad push is recoverable and the backup role of thistledown survives
-replicant.
+Push and local agents are the only things that write home, so a bad push
+is the one way to damage the backup from outside. Pushes run with
+`rsync --backup --backup-dir` into a dated directory on home (or home runs
+filesystem snapshots). Either way, a bad push is recoverable and the backup
+role of thistledown survives replicant.
+
+## Journal
+
+Home's daemon keeps an append-only journal, one line per event:
+
+```
+2026-10-31T12:04:11-07  sync      birchbook  push  work/tundra   3 repos 41 files 0 del  ok
+2026-10-31T12:06:02-07  sync      twinoaks   pull  work/tundra   3 repos 41 files 0 del  ok
+2026-10-31T12:30:40-07  lock      thistledown agent:beatrix work/tundra/tundra-beacon  held
+2026-10-31T13:02:15-07  sync      birchbook  push  work/sequoia  interrupted (rsync exit 20)
+2026-10-31T13:05:33-07  sync      birchbook  push  work/sequoia  resumed → ok
+2026-10-31T13:10:00-07  conflict  birchbook  work/scratch/notes.md  chose:birchbook
+2026-10-31T13:10:00-07  conflict  birchbook  work/rust/sysdirs      skipped
+2026-10-31T14:00:00-07  approve   spruce     allow:(none)
+```
+
+`replicant log [--host H] [--path P] [--since T]` reads it. Leaves keep a
+local copy of their own entries so the history survives home being
+unreachable. Together with per-path baseline history this answers "what
+did home look like before that push" and "which sync did that."
 
 ## Agents integration
 
@@ -323,6 +388,26 @@ whatever home had rather than what the spawner has. Small addition to the
 agents daemon: run the local pre_work (or a dedicated pre_dispatch) before
 forwarding a remote spawn. Tracked in sovran.la/agents, not here.
 
+### Agents on home
+
+thistledown runs the agents daemon too, and agents may work there
+directly. That is not a drift problem: baselines are leaf↔home, and *how*
+home changed is invisible to a leaf — an agent committing on thistledown
+is just "home changed → pull" on the next sync. The only hazard is
+concurrency: an agent writing `tundra-beacon` on home while twinoaks pulls
+it.
+
+So on home the hooks are lock holders, not syncs:
+
+```
+pre_work   →  replicant lock   <working_dir>   # waits on any in-flight sync for that path
+post_work  →  replicant unlock <working_dir>   # journal entry: what the agent touched
+```
+
+A sync request for a locked path waits (bounded) or fails loudly with the
+agent's name. The daemon on home decides which hook script applies by
+knowing it is home; the leaf hooks are the sync ones above.
+
 ### Per-path baselines make lending a repo cheap
 
 Baselines and the direction table are per repo and per non-git directory,
@@ -333,9 +418,10 @@ puts that repo — and only that repo — into conflict resolution.
 
 ### `--to <host>`
 
-`replicant sync --to twinoaks` is sugar: push to home, then ssh to twinoaks
-and run its `sync` (a pull from home). No data crosses leaf-to-leaf; only
-the trigger does. Home still sees every byte and enforces every subscription.
+`replicant sync --to twinoaks` is sugar: push to home, then ask twinoaks's
+daemon to run its `sync` (a pull from home). No data crosses leaf-to-leaf;
+only the trigger does. Home still sees every byte and enforces every
+subscription.
 
 ## Exclusions
 
@@ -364,47 +450,71 @@ the disposable checkout stays machine-local.
 
 ## Implementation sketch
 
-Rust crate, single binary, no daemon for v1. Same binary on home and
-leaves; home just has `fleet.toml`.
+Rust crate, single binary: CLI plus daemon mode (`replicant daemon`),
+same binary on home and leaves. Home is whichever daemon has `fleet.toml`.
+Daemon-to-daemon transport reuses the sovran.la/agents remote pattern
+(mTLS over plain TCP on the tailnet, `std::thread` + channels, no Tokio).
 
 ```
 src/
-  main.rs          clap: subscribe | unsubscribe | approve | sync | status | config
+  main.rs          clap: subscribe | unsubscribe | approve | sync | status | log | lock | unlock | daemon | config
   config.rs        leaf config, fleet config (roots, hosts, allow, subscriptions), home_dir mapping
+  daemon/
+    mod.rs         listener, request dispatch, home-vs-leaf role
+    remote.rs      mTLS client/server, the agents remote pattern
+    locks.rs       per-path locks on home; bounded wait; holder identity
+    journal.rs     append-only journal; leaf-local copy of own entries
   subscribe.rs     subscribe/unsubscribe requests; pending hosts, approve, cap enforcement on home
   paths.rs         the one path normalizer (leaf and home)
-  baseline.rs      per-leaf, per-path baseline read/write (both sides)
+  baseline.rs      per-leaf, per-path baseline read/write; last-N history on home
+  marker.rs        in-progress markers for interrupted syncs
   state.rs         state hash: per-repo (HEAD, dirty hash) + manifest of non-repo files
   repos.rs         discover .git dirs and worktrees under a root; git status/lock/case checks
-  decide.rs        the direction table, per path
+  decide.rs        the direction table, per path, including no-baseline and resume rows
   conflict.rs      conflict detection, prompting, collect-then-apply, skip tracking, non-interactive mode
   guard.rs         the five refusals, with human-readable reports
   rsync.rs         build and run the rsync command, parse itemized output
-  ssh.rs           remote exec over tailscale ssh (state, baseline, lock checks)
+  ssh.rs           the data-plane ssh invocation only; control goes through the daemon
 ```
 
 Tests: every guardrail and every row of the decision table gets a
 fixture-repo test (dirty target, stale baseline, source lock, case
 collision, subscription escape, cap refusal, repo conflict, file conflict,
-skip persistence, worktree detection, non-interactive conflict exit).
-rsync invocations tested against a temp dir pair; no network in unit tests.
+skip persistence, worktree detection, non-interactive conflict exit,
+resume-from-marker, lock contention, journal round-trip). rsync
+invocations tested against a temp dir pair; daemon-to-daemon tested over
+loopback; no tailnet in unit tests.
+
+Performance note: state hashing runs `git status` across every repo on
+both sides per sync. Might be fine, might be twenty seconds on `~/work`.
+v0.1's `--dry-run` is where we measure; caching by mtime is the fallback.
 
 ## Phases
 
 1. **Mitigation now.** Add `.git/index`, `.git/*.lock`, `.git/worktrees` to
    the Syncthing `.stignore`. Kills the most frequent symptom while replicant
    is built. (Does not fix ordering or concurrency.)
-2. **v0.1.0 — `sync --dry-run` and `status`.** Config, discovery, state
-   hash, decision table, rsync diff, guardrails 1/3/4/5. Read-only; proves
-   the plan against the real tree.
-3. **v0.2.0 — apply.** Real pull and push, baselines, guardrail 2,
-   backup-dir on home.
+2. **v0.1.0 — daemon skeleton, `subscribe`, `approve`, `status`,
+   `sync --dry-run`.** Config, enrollment, discovery, state hash, decision
+   table, rsync diff, guardrails 1/3/4/5. Read-only; proves the plan
+   against the real tree and measures the state-hash cost.
+3. **v0.2.0 — apply.** Real pull and push into `~/work2` on a leaf (the
+   `--as` dogfood), baselines + history, locks, markers/resume, journal,
+   guardrail 2, backup-dir on home.
 4. **v0.3.0 — conflicts.** Repo and file conflict prompts, collect-then-
-   apply, skip tracking, merge via peer-to-peer git.
-5. **v0.4.0 — cutover.** Syncthing off for `~/work`. Keep it for anything
-   outside.
-6. **Later, if wanted.** Small daemon that notices a machine switch and runs
+   apply, skip tracking, `--adopt`, merge via peer-to-peer git.
+5. **v0.4.0 — agents.** Leaf hooks (sync), home hooks (lock/unlock),
+   `--to`, `approve --sync`, pre-dispatch push on the agents side.
+6. **Cutover.** Deferred; not designed yet. Lives in `~/work2` until then.
+7. **Later, if wanted.** The daemon notices a machine switch and runs
    `--dry-run` + notifies. It never applies on its own.
+
+## Deferred on purpose
+
+- **Cutover from Syncthing.** Dogfood in `~/work2` first; design the
+  checklist when there is something to cut over to.
+- **Secrets.** `.env`, `*.pem`, keys under `~/work` sync today over the
+  tailnet and keep doing so. Nothing special until there is a reason.
 
 ## Explicitly not doing
 
