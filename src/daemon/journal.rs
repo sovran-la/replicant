@@ -142,10 +142,10 @@ impl Journal {
         };
         let mut out = Vec::new();
         for l in std::io::BufReader::new(f).lines() {
-            if let Some(line) = Line::parse(&l?) {
-                if filter.admits(&line) {
-                    out.push(line);
-                }
+            if let Some(line) = Line::parse(&l?)
+                && filter.admits(&line)
+            {
+                out.push(line);
             }
         }
         Ok(out)

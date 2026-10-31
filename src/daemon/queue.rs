@@ -107,13 +107,11 @@ impl Queue {
         max_wait: Duration,
     ) -> Result<u64> {
         let mut q = self.lock();
-        if no_wait {
-            if let Some(head) = q.entries.front() {
-                return Err(Error::Refused(format!(
-                    "queue busy: {}",
-                    describe(&head.view())
-                )));
-            }
+        if no_wait && let Some(head) = q.entries.front() {
+            return Err(Error::Refused(format!(
+                "queue busy: {}",
+                describe(&head.view())
+            )));
         }
         q.next_id += 1;
         let id = q.next_id;
