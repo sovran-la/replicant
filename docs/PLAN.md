@@ -376,6 +376,35 @@ local copy of their own entries so the history survives home being
 unreachable. Together with per-path baseline history this answers "what
 did home look like before that push" and "which sync did that."
 
+## Fleet view
+
+Home's daemon already knows the whole world: enrolled hosts and caps, each
+leaf's per-path state against its baseline (so the direction table for
+*every* machine, not just this one), the queue and in-flight leases,
+markers and quarantines, unresolved conflicts, the journal. The daemon
+exposes all of it as one query, `fleet_state`, so every renderer is thin.
+
+Renderers, in build order:
+
+1. **`replicant status --fleet`** from any machine. One row per host: last
+   contact, pending direction per path, queue position; red for conflicts,
+   quarantine, expired leases. Zero new infrastructure.
+2. **An MCP panel.** Same pattern as the agents MCP's `fleet_panel` and the
+   cli MCP's `process_panel`: a `replicant` MCP whose panel puts the state
+   of the world in chat on request, and before an agent spawn when
+   something is red.
+3. **A pane in the sovran dashboard app** (native GPUI, decided 2026-08-14)
+   when that exists. Not before.
+
+Not a web UI served by the daemon: it would be the first HTTP surface on
+any sovran daemon and a second UI stack, for nothing the three above do
+not cover.
+
+The fleet view carries one thing `status` does not: **staleness**. A leaf
+that has not talked to home in nine days looks different from one that
+synced an hour ago, because "spruce is quietly diverging" is exactly what
+you want to see from birchbook and cannot today.
+
 ## Agents integration
 
 Agent-driven syncs run through the sovran.la/agents daemon's existing
@@ -493,7 +522,7 @@ src/
   main.rs          clap: subscribe | unsubscribe | approve | sync | status | log | hold | release | rollback | daemon | config
   config.rs        leaf config, fleet config (roots, hosts, allow, subscriptions), home_dir mapping
   daemon/
-    mod.rs         listener, request dispatch, home-vs-leaf role
+    mod.rs         listener, request dispatch, home-vs-leaf role, fleet_state query
     remote.rs      mTLS client/server, the agents remote pattern
     queue.rs       the FIFO: syncs and holds, leases + heartbeats, expiry
     journal.rs     append-only journal; leaf-local copy of own entries
@@ -527,7 +556,7 @@ v0.1's `--dry-run` is where we measure; caching by mtime is the fallback.
 1. **Mitigation now.** Add `.git/index`, `.git/*.lock`, `.git/worktrees` to
    the Syncthing `.stignore`. Kills the most frequent symptom while replicant
    is built. (Does not fix ordering or concurrency.)
-2. **v0.1.0 — daemon skeleton, `subscribe`, `approve`, `status`,
+2. **v0.1.0 — daemon skeleton, `subscribe`, `approve`, `status` (+ `--fleet`),
    `sync --dry-run`.** Config, enrollment, discovery, state hash, decision
    table, rsync diff, guardrails 1/3/4/5. Read-only; proves the plan
    against the real tree and measures the state-hash cost.
