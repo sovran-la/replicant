@@ -1,0 +1,56 @@
+[package]
+name = "replicant"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Home-base-mediated rsync for keeping ~/work identical across machines"
+license = "MIT"
+authors = ["Brandon Sneed <brandon@redf.net>"]
+
+[lib]
+name = "replicant"
+path = "src/lib.rs"
+
+[[bin]]
+name = "replicant"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+
+# The control-plane wire format (one JSON line per request and reply), the
+# daemon's small state files, markers and baselines.
+serde_json = "1"
+
+# fleet.toml and leaf.toml.
+toml = "0.9"
+
+# Daemon writes to fleet.toml ([subscriptions], [pending], [hosts] on approve)
+# go through toml_edit so the hand-written comments and layout in that file
+# survive. A round trip through `toml` would silently strip them.
+toml_edit = "0.25"
+
+# State hashing: per-repo (HEAD, dirty tree) and the non-repo manifest.
+sha2 = "0.10"
+
+# gethostname(2) for this machine's fleet name and flock(2) for the
+# one-daemon-per-directory lock, exactly as sovran.la/agents uses it; std has
+# neither.
+libc = "0.2"
+
+# The daemon-to-daemon mTLS, pinned to the agents crate's stack and feature set
+# (`ring`, never `aws-lc-rs`), so the sovran family has one CryptoProvider.
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "logging",
+    "tls12",
+] }
+rustls-pemfile = "2.2"
+rustls-pki-types = "1.12"
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+
+[dev-dependencies]
+# Every fixture tree, config directory and daemon in the tests lives in one.
+tempfile = "3"
