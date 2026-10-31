@@ -195,15 +195,23 @@ Regenerable or per-machine; never synced, rebuilt locally:
 ```
 target/  .build/  node_modules/  bin/  .DS_Store
 .git/index.lock  .git/*.lock
+.git/worktrees/
 ```
 
-Open question: `.git/index`. Syncing it is what caused failure 1 above, but
-with a quiescent source and a full-tree copy the stat cache is merely stale,
-not wrong, and `git status` refreshes it. Default to syncing it; revisit.
+**`.git/index` is synced** (decided 2026-10-31). Failure 1 above came from
+syncing it while both machines were live. With a quiescent source and a
+full-tree copy the stat cache is merely stale, not wrong, and the first
+`git status` on the receiver refreshes it. Not syncing it would lose the
+staged/unstaged distinction, which is real state.
 
-Worktrees: `.git/worktrees/*/gitdir` and a worktree's `.git` file hold
-absolute paths. Either rewrite on arrival (`/Users/morgan` ↔ `/home/morgan`)
-or require worktrees to live outside `~/work`. Decide in design.
+**Worktrees are not synced** (decided 2026-10-31). They are short-lived and
+only matter to the agent using them. Replicant detects them rather than
+relying on a path convention: a worktree is any directory whose `.git` is a
+*file* pointing into some repo's `.git/worktrees/`. Both ends are excluded —
+the checkout directory and the parent's `.git/worktrees/<name>/`. The
+worktree's commits still travel, because its branch ref lives in the
+parent's `refs/heads/` and its objects in the shared `.git/objects/`. Only
+the disposable checkout stays machine-local.
 
 ## Implementation sketch
 
