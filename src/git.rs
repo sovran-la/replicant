@@ -4,7 +4,9 @@
 //! refreshes the index's stat cache opportunistically, which writes
 //! `.git/index` — a synced path, and the very file whose per-machine stat data
 //! caused PLAN.md's failure 1. Every call here runs with `--no-optional-locks`
-//! and `GIT_OPTIONAL_LOCKS=0`, which turns that refresh off.
+//! and `GIT_OPTIONAL_LOCKS=0`, which turns that refresh off, and with
+//! `core.fsmonitor=false`: a repo with fsmonitor enabled would otherwise have
+//! `git status` start a daemon (or run a hook) that writes into `.git/`.
 
 use crate::{Error, Result};
 use std::path::Path;
@@ -40,6 +42,7 @@ pub struct RepoStatus {
 fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
         .arg("--no-optional-locks")
+        .args(["-c", "core.fsmonitor=false"])
         .args(args)
         .current_dir(repo)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -73,14 +76,33 @@ pub fn status(repo: &Path) -> Result<RepoStatus> {
     Ok(RepoStatus {
         head,
         refs: String::from_utf8_lossy(&refs).into_owned(),
-        entries: parse_porcelain_v2(&porcelain)?,
+        entries: parse_porcelain_v2(&porcelain).map_err(|e| match e {
+            Error::Git(m) => Error::Git(format!("{}: {m}", repo.display())),
+            other => other,
+        })?,
     })
 }
 
 /// Parse `git status --porcelain=v2 -z` output.
+///
+/// A path that is not UTF-8 (possible on Linux) is refused by name: decoding
+/// it lossily would hash a path that does not exist and hide the file from
+/// guardrail 1.
 pub fn parse_porcelain_v2(out: &[u8]) -> Result<Vec<StatusEntry>> {
-    let text = String::from_utf8_lossy(out);
-    let mut tokens = text.split('\0').filter(|t| !t.is_empty());
+    let tokens = out
+        .split(|b| *b == 0)
+        .filter(|t| !t.is_empty())
+        .map(|t| {
+            std::str::from_utf8(t).map_err(|_| {
+                Error::Git(format!(
+                    "git status reports a path that is not UTF-8, which replicant cannot \
+                     hash or guard: {:?}; rename it",
+                    String::from_utf8_lossy(t)
+                ))
+            })
+        })
+        .collect::<Result<Vec<&str>>>()?;
+    let mut tokens = tokens.into_iter();
     let mut entries = Vec::new();
     let bad = |t: &str| Error::Git(format!("unreadable porcelain v2 entry {t:?}"));
     while let Some(t) = tokens.next() {

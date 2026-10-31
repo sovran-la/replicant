@@ -228,3 +228,39 @@ fn home_dropping_the_entry_mid_plan_fails_the_dry_run_loudly() {
         "a void plan is not reported as a dry run: {log:?}"
     );
 }
+
+/// The leaf's link, with home refusing to journal the plan's report.
+struct NoReport<'a>(InProcess<'a>);
+
+impl HomeLink for NoReport<'_> {
+    fn call(&self, request: HomeRequest) -> Result<HomeReply> {
+        match request {
+            HomeRequest::Report { .. } => Err(Error::Remote("journal disk full".into())),
+            other => self.0.call(other),
+        }
+    }
+}
+
+#[test]
+fn a_failed_final_report_does_not_fail_finished_work() {
+    let bed = Bed::enrolled();
+    diverged(&bed);
+    let home = bed.home();
+    let link = NoReport(InProcess {
+        home: &home,
+        host: "leaf".into(),
+        home_dir: bed.leaf_hd.clone(),
+    });
+    let cfg = bed.leaf_cfg();
+    let (state, scratch) = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let ctx = LeafCtx {
+        me: "leaf",
+        home_dir: &bed.leaf_hd,
+        cfg: &cfg,
+        state_dir: &state,
+        scratch_dir: &scratch,
+    };
+    let p = plan(&link, ctx, true, false).expect("the plan stands");
+    assert!(p.units.iter().any(|u| u.rel == "work/r"));
+    assert!(home.queue.view().is_empty(), "still released");
+}

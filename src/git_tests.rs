@@ -103,3 +103,38 @@ fn status_outside_a_repo_is_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     assert!(status(tmp.path()).is_err());
 }
+
+#[test]
+fn a_non_utf8_path_is_refused_by_name_not_hashed_as_something_else() {
+    let err = parse_porcelain_v2(b"1 .M N... 100644 100644 100644 aa bb ok.rs\0? caf\xe9.txt\0")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not UTF-8"), "{err}");
+    assert!(err.contains("caf"), "names the path: {err}");
+    let err = parse_porcelain_v2(b"2 R. N... 100644 100644 100644 cc dd R100 new.rs\0\xffold\0")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not UTF-8"), "a rename's source too: {err}");
+}
+
+#[test]
+fn status_never_runs_a_repo_s_fsmonitor() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("r");
+    testutil::repo(&repo);
+    let ran = tmp.path().join("fsmonitor-ran");
+    let hook = testutil::script(
+        tmp.path(),
+        "fsmonitor",
+        &format!("touch {}\nexit 1", ran.display()),
+    );
+    testutil::git(
+        &repo,
+        &["config", "core.fsmonitor", &hook.display().to_string()],
+    );
+    status(&repo).unwrap();
+    assert!(
+        !ran.exists(),
+        "git status started the repo's fsmonitor hook"
+    );
+}

@@ -39,11 +39,12 @@ impl UnitState {
         matches!(self, UnitState::Empty)
     }
 
-    /// The first 12 hex digits, for display.
+    /// The first 12 hex digits, for display. The value may come from the
+    /// wire, so a non-ASCII one is shown whole rather than cut mid-character.
     pub fn short(&self) -> &str {
         match self {
             UnitState::Empty => "empty",
-            UnitState::Present(h) => &h[..h.len().min(12)],
+            UnitState::Present(h) => h.get(..12).unwrap_or(h),
         }
     }
 }

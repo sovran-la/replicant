@@ -17,7 +17,7 @@ const RSYNC3: &str = "*deleting   gone.txt
 >f+++++++++ new.txt
 >f.st...... changed.txt
 .d..t...... dir/
-cL+++++++++ link -> target
+cL+++++++++ link
 <f+++++++++ pushed.txt
 ";
 
@@ -54,8 +54,10 @@ fn parses_rsync3_output() {
             .any(|c| c.path == "gone.txt" && c.kind == ChangeKind::Delete)
     );
     assert!(
-        it.changes.iter().any(|c| c.path == "link -> target"),
-        "raw %n kept as printed"
+        it.changes
+            .iter()
+            .any(|c| c.path == "link" && c.kind == ChangeKind::Create),
+        "%n prints a symlink's name only (%L would add ` -> target`)"
     );
 }
 

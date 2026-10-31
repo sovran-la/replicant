@@ -145,11 +145,14 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         })
         .collect();
     let event = if dry_run { "dry-run" } else { "status" };
-    link.call(HomeRequest::Report {
+    // The work is done and correct; only home's journal line is missing.
+    if let Err(e) = link.call(HomeRequest::Report {
         event: event.into(),
         units: reported,
         summary: plan.summary().join("; "),
-    })?;
+    }) {
+        eprintln!("replicant: the {event} finished, but home did not journal it: {e}");
+    }
     Ok(plan)
 }
 

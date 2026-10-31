@@ -139,3 +139,17 @@ fn parallel_map_preserves_order_and_handles_edges() {
         "zero workers still runs"
     );
 }
+
+#[test]
+fn short_of_a_non_ascii_value_from_the_wire_does_not_panic() {
+    // 11 ASCII bytes then a two-byte char straddling byte 12.
+    let s = UnitState::Present("0123456789aé-tail".into());
+    assert_eq!(
+        s.short(),
+        "0123456789aé-tail",
+        "no boundary at 12: shown whole"
+    );
+    let s = UnitState::Present("ééééééé".into());
+    assert_eq!(s.short(), "éééééé", "boundary at 12: cut there");
+    assert_eq!(UnitState::Present("abc".into()).short(), "abc");
+}
