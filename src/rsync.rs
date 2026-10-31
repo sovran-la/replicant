@@ -153,6 +153,10 @@ impl Transfer {
             .map(String::from)
             .into();
         a.push("--out-format=%i %n".into());
+        // Names as raw bytes: rsync 3 under a daemon with no LANG escapes
+        // high-bit bytes as \#ooo, which guardrail 1 could not match against
+        // git's raw UTF-8 paths.
+        a.push("-8".into());
         if self.home_host.is_some() {
             a.push("-e".into());
             a.push(format!("{} {SSH_OPTIONS}", runner.ssh));

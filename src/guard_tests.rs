@@ -55,6 +55,7 @@ fn g1_dirty_target_file_that_rsync_would_overwrite_is_refused() {
     testutil::git(&home, &["commit", "-qam", "edit"]);
     testutil::write(&leaf.join("README"), "leaf's uncommitted work\n");
     testutil::write(&leaf.join("scratch.txt"), "untracked, not on home\n");
+    testutil::write(&leaf.join("café.txt"), "non-ASCII, untracked\n");
 
     let leaf_units = units_at(&tmp.path().join("leaf"), "work/r", false);
     let diff = Transfer {
@@ -74,6 +75,10 @@ fn g1_dirty_target_file_that_rsync_would_overwrite_is_refused() {
     assert!(
         r.detail.contains(&"scratch.txt".to_string()),
         "--delete would remove it: {r:?}"
+    );
+    assert!(
+        r.detail.contains(&"café.txt".to_string()),
+        "a non-ASCII name matches git's raw UTF-8: {r:?}"
     );
     assert!(r.headline().contains("guardrail 1"));
 }

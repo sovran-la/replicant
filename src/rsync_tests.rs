@@ -98,6 +98,7 @@ fn args_always_dry_run_and_order_by_direction() {
     assert!(a.contains(&"--dry-run".to_string()));
     assert!(a.contains(&"--delete".to_string()));
     assert!(a.contains(&"--exclude=target".to_string()));
+    assert!(a.contains(&"-8".to_string()), "names unescaped: {a:?}");
     assert_eq!(&a[a.len() - 2..], ["thistledown:/h/work/", "/l/work/"]);
     x.direction = Direction::Push;
     let a = x.args(&testutil::runner(), Path::new("/e"));
