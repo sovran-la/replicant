@@ -141,7 +141,7 @@ fn case_collisions_finds_pairs_differing_only_by_case() {
         case_collisions(names),
         vec![
             ("Docs/a".to_string(), "docs/a".to_string()),
-            ("src/Readme.md".to_string(), "src/README.md".to_string()),
+            ("src/README.md".to_string(), "src/Readme.md".to_string()),
         ]
     );
     assert!(

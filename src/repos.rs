@@ -229,13 +229,23 @@ fn walk_names(abs: &Path, rel: &str, ex: &Excludes, out: &mut Vec<String>) -> Re
 
 /// Pairs of paths that differ only by case. PLAN.md guardrail 4: these would be
 /// silently merged by a case-insensitive target.
+///
+/// Each pair is ordered and the list is sorted, so the result does not depend
+/// on directory read order (ext4 and APFS disagree about it).
 pub fn case_collisions<'a>(paths: impl IntoIterator<Item = &'a str>) -> Vec<(String, String)> {
     let mut seen: std::collections::BTreeMap<String, String> = Default::default();
     let mut out = Vec::new();
     for p in paths {
         let folded = p.to_lowercase();
         match seen.get(&folded) {
-            Some(first) if first != p => out.push((first.clone(), p.to_string())),
+            Some(first) if first != p => {
+                let (a, b) = if first.as_str() < p {
+                    (first.clone(), p.to_string())
+                } else {
+                    (p.to_string(), first.clone())
+                };
+                out.push((a, b));
+            }
             Some(_) => {}
             None => {
                 seen.insert(folded, p.to_string());
