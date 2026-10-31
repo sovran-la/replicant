@@ -45,6 +45,8 @@ copies bytes itself; it is policy and guardrails around rsync.
 ### One command
 
 ```
+replicant subscribe thistledown ~/work/tundra ~/work/sequoia   # enroll; what this machine wants
+replicant unsubscribe ~/work/rust                              # stop; next sync cleans it off
 replicant sync              # figure out the direction, show it, do it
 replicant sync --yes        # don't wait for confirmation
 replicant sync --dry-run    # decision + itemized rsync diff, no writes
@@ -68,40 +70,77 @@ push → thistledown: 3 repos, 41 files changed, 0 deleted
 ```
 
 State is a hash over per-repo `(HEAD, dirty-tree hash)` plus a manifest of
-non-repo files, scoped to the leaf's prefixes.
+non-repo files, scoped to the leaf's subscriptions.
+
+### Subscriptions
+
+A leaf declares what it wants with `subscribe`: home, plus one or more
+paths. A path is anything under a root home serves — a directory or a
+single file — expressed as the leaf's local path; home maps it through its
+own root table (`/Users/morgan` ↔ `/home/morgan`). Roots are plural:
+`~/work` is the big one, but `~/.claude` and `~/.sovran` carry config that
+should be identical everywhere too.
+
+```
+replicant subscribe thistledown ~/work/tundra ~/work/sequoia
+replicant subscribe thistledown ~/.claude/skills ~/.claude/commands ~/.claude/settings.json
+replicant subscribe thistledown ~/.sovran/agents/types ~/.sovran/agents/hooks
+```
+
+`subscribe` is a request to home. Home records it in the fleet config and
+starts serving it; `sync` on the leaf reads its subscriptions back from
+home. Home is the record of truth: `replicant status` on thistledown shows
+the whole fleet, and a leaf whose disk was wiped re-subscribes and gets
+exactly what it had. `unsubscribe` removes a path; the next `sync` cleans
+it off the leaf, through the dirty-target guard like any other delete.
 
 ### Config lives on home
 
-Home holds the fleet config: hosts, each host's prefixes, excludes. A leaf's
-local config is one line — where home is. Everything else comes down on
-first contact. Adding or restricting a host is an edit on thistledown, and
-home enforces it: it serves and accepts only what a host's prefixes allow.
-
 ```toml
 # thistledown: ~/.config/replicant/fleet.toml
-root    = "/home/morgan/work"
+
+[roots.work]
+path    = "/home/morgan/work"
 exclude = ["target", ".build", "node_modules", "bin", ".DS_Store"]
 
+[roots.claude]
+path    = "/home/morgan/.claude"
+# per-machine state, never synced: absolute-path slugs, sessions, credentials
+exclude = ["projects", "todos", "statsig", "*.jsonl", ".credentials.json"]
+
+[roots.sovran]
+path    = "/home/morgan/.sovran"
+# daemon state, locks, sockets, logs
+exclude = ["agents/state", "**/*.sock", "**/*.lock", "**/*.log"]
+
 [hosts.birchbook]
-root     = "/Users/morgan/work"
-prefixes = ["*"]
+home_dir = "/Users/morgan"
 
 [hosts.twinoaks]
-root     = "/Users/morgan/work"
-prefixes = ["tundra", "sequoia"]
+home_dir = "/Users/morgan"
+allow    = ["work/tundra", "work/sequoia"]   # subscribe may narrow this, never widen it
 
 [hosts.stonebox]
-root     = "/home/morgan/work"
-prefixes = ["*"]
+home_dir = "/home/morgan"
+
+# written by `subscribe`, not by hand
+[subscriptions.birchbook]
+paths = ["work", ".claude/skills", ".claude/commands", ".claude/settings.json",
+         ".sovran/agents/types", ".sovran/agents/hooks"]
+
+[subscriptions.twinoaks]
+paths = ["work/tundra", "work/sequoia"]
 ```
 
-```toml
-# leaf: ~/.config/replicant/config.toml
-home = "thistledown"
-```
+`allow` is an optional cap. Without it a host may subscribe to anything
+home serves. With it, home refuses anything outside the cap, loudly — the
+threat is not a hostile user but an agent or a reflex typing
+`subscribe thistledown ~/work` on the wrong box. twinoaks gets a cap;
+birchbook and stonebox do not.
 
-SSH keys are per host; a restricted host's key is additionally confined
-server-side so it physically cannot read outside its prefixes.
+A leaf's local config is nothing but where home is, and `subscribe` writes
+that. SSH keys are per host; a capped host's key is additionally confined
+server-side so it physically cannot read outside its cap.
 
 ## Conflicts
 
@@ -175,8 +214,9 @@ Before any destructive apply, in order:
 4. **Case collisions.** Two paths differing only by case headed from Linux
    home to a macOS leaf → refuse before rsync silently merges them. Only
    needed on pull.
-5. **Prefix bounds.** A host's prefixes bound everything; paths outside
-   them are never transferred, never deleted, in either direction.
+5. **Subscription bounds.** A host's subscriptions (and its `allow` cap)
+   bound everything; paths outside them are never transferred, never
+   deleted, in either direction.
 
 `--dry-run` runs all five and prints the itemized rsync diff.
 
@@ -245,7 +285,7 @@ puts that repo — and only that repo — into conflict resolution.
 
 `replicant sync --to twinoaks` is sugar: push to home, then ssh to twinoaks
 and run its `sync` (a pull from home). No data crosses leaf-to-leaf; only
-the trigger does. Home still sees every byte and enforces every prefix.
+the trigger does. Home still sees every byte and enforces every subscription.
 
 ## Exclusions
 
@@ -279,21 +319,23 @@ leaves; home just has `fleet.toml`.
 
 ```
 src/
-  main.rs        clap: sync | status | config
-  config.rs      leaf config, fleet config, platform path resolution
-  baseline.rs    per-leaf baseline read/write (both sides)
-  state.rs       state hash: per-repo (HEAD, dirty hash) + manifest of non-repo files
-  repos.rs       discover .git dirs under root; git status/lock/case checks
-  decide.rs      the direction table
-  conflict.rs    conflict detection, prompting, collect-then-apply, skip tracking
-  guard.rs       the five refusals, with human-readable reports
-  rsync.rs       build and run the rsync command, parse itemized output
-  ssh.rs         remote exec over tailscale ssh (state, baseline, lock checks)
+  main.rs          clap: subscribe | unsubscribe | sync | status | config
+  config.rs        leaf config, fleet config (roots, hosts, allow, subscriptions), home_dir mapping
+  subscribe.rs     subscribe/unsubscribe requests; cap enforcement on home
+  baseline.rs      per-leaf, per-path baseline read/write (both sides)
+  state.rs         state hash: per-repo (HEAD, dirty hash) + manifest of non-repo files
+  repos.rs         discover .git dirs and worktrees under a root; git status/lock/case checks
+  decide.rs        the direction table, per path
+  conflict.rs      conflict detection, prompting, collect-then-apply, skip tracking, non-interactive mode
+  guard.rs         the five refusals, with human-readable reports
+  rsync.rs         build and run the rsync command, parse itemized output
+  ssh.rs           remote exec over tailscale ssh (state, baseline, lock checks)
 ```
 
 Tests: every guardrail and every row of the decision table gets a
 fixture-repo test (dirty target, stale baseline, source lock, case
-collision, prefix escape, repo conflict, file conflict, skip persistence).
+collision, subscription escape, cap refusal, repo conflict, file conflict,
+skip persistence, worktree detection, non-interactive conflict exit).
 rsync invocations tested against a temp dir pair; no network in unit tests.
 
 ## Phases
