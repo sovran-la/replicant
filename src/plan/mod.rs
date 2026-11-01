@@ -5,6 +5,7 @@
 //! Read-only end to end: git runs without optional locks, rsync runs with
 //! `--dry-run`, and nothing here writes a baseline, a marker, or a synced path.
 
+mod bases;
 mod diff;
 mod lease;
 mod types;
@@ -69,6 +70,8 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
     let started = Instant::now();
     let found = Discovered::run(&view.specs, &local)?;
     t.discover_ms = ms(started);
+    let baselines: Vec<Baseline> = baseline::store(ctx.state_dir).all()?;
+    bases::check(&found.absent(), &baselines, ctx.me)?;
 
     let lease = if dry_run {
         let started = Instant::now();
@@ -100,6 +103,12 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
             }
         };
         t.home_state_ms = ms(started);
+        let home_absent: Vec<_> = snap
+            .absent
+            .iter()
+            .map(|rel| (rel.clone(), snap.home_dir.join(rel)))
+            .collect();
+        bases::check(&home_absent, &baselines, &view.home)?;
         let started = Instant::now();
         let mut union = found.repos();
         union.extend(snap.repos.iter().cloned());
@@ -107,7 +116,7 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         union.dedup();
         let leaf_units = units::snapshot(&found, &union, false)?;
         t.leaf_state_ms = ms(started);
-        let mut planned = decide_all(ctx, &snap, &leaf_units)?;
+        let mut planned = decide_all(ctx, &view.home, &baselines, &snap, &leaf_units)?;
         if dry_run {
             // Do not start an rsync on a lease that is already gone.
             watch.check()?;
@@ -163,10 +172,11 @@ pub fn leaf_case_insensitive() -> bool {
 
 fn decide_all(
     ctx: LeafCtx<'_>,
+    home_name: &str,
+    baselines: &[Baseline],
     snap: &HomeSnapshot,
     leaf_units: &[SideUnit],
 ) -> Result<Vec<PlannedUnit>> {
-    let baselines: Vec<Baseline> = baseline::store(ctx.state_dir).all()?;
     let leaf_markers: Vec<Marker> = marker::store(ctx.state_dir).all()?;
     let mut out = Vec::new();
     for l in leaf_units {
@@ -179,6 +189,7 @@ fn decide_all(
         let b = baselines.iter().find(|b| b.rel == l.rel);
         let decision = decide::decide(decide::Inputs {
             me: ctx.me,
+            home_name,
             leaf: &l.state,
             home: home_state,
             baseline: b,
@@ -197,11 +208,13 @@ fn decide_all(
             home_path: snap.home_dir.join(&l.rel),
             diff: None,
             refusals: vec![],
+            leaf_files: l.files,
+            home_files: h.map_or(0, |h| h.files),
         });
     }
     // A baseline outside every subscription is a path this leaf was synced
     // and has since unsubscribed: the next sync removes the leaf's copy.
-    for b in &baselines {
+    for b in baselines {
         let subscribed = snap.specs.iter().any(|s| {
             paths::is_within(&b.rel, &s.rel)
                 && !s.except.iter().any(|e| paths::is_within(&b.rel, e))
@@ -219,6 +232,8 @@ fn decide_all(
                 home_path: snap.home_dir.join(&b.rel),
                 diff: None,
                 refusals: vec![],
+                leaf_files: 0,
+                home_files: 0,
             });
         }
     }

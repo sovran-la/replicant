@@ -92,7 +92,29 @@ impl Home {
     ) -> Result<HomeSnapshot> {
         let (specs, home_dir) = {
             let f = self.fleet()?;
-            (self.served(&f, host)?.0, f.home_dir.clone())
+            let specs = self.served(&f, host)?.0;
+            // A missing root is home's own misconfiguration or an unmounted
+            // volume, never "empty" (review F4); `served` kept only specs
+            // under a root.
+            let mut missing: Vec<String> = specs
+                .iter()
+                .filter_map(|s| f.root_for(&s.rel))
+                .filter(|r| !r.path.exists())
+                .map(|r| {
+                    format!(
+                        "root {} ({}) does not exist on {}",
+                        r.name,
+                        r.path.display(),
+                        f.name
+                    )
+                })
+                .collect();
+            missing.sort();
+            missing.dedup();
+            if !missing.is_empty() {
+                return Err(Error::Missing(missing.join("; ")));
+            }
+            (specs, f.home_dir.clone())
         };
         let hd = home_dir.clone();
         let t0 = std::time::Instant::now();
@@ -130,7 +152,9 @@ impl Home {
             .into_iter()
             .filter(|m| specs.iter().any(|s| m.covers(&s.rel)))
             .collect();
+        let absent = found.absent().into_iter().map(|(rel, _)| rel).collect();
         Ok(HomeSnapshot {
+            absent,
             home_dir,
             specs,
             units,

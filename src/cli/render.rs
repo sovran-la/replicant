@@ -136,6 +136,9 @@ pub fn plan(p: &Plan, verbose: bool, st: Style) -> String {
             continue;
         }
         let _ = writeln!(s, "{}", unit_line(u, st));
+        if let Some(note) = u.deletion_note(&p.me, &p.home) {
+            let _ = writeln!(s, "    {}", st.red(&note));
+        }
         for r in &u.refusals {
             let _ = writeln!(s, "    {}", st.red(&format!("REFUSED {}", r.headline())));
             for d in &r.detail {

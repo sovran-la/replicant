@@ -294,3 +294,6 @@ fn baseline_rows_pull_push_nothing_and_guard1_on_pull() {
 
 #[path = "tests_more.rs"]
 mod more;
+
+#[path = "tests_deleted.rs"]
+mod deleted;

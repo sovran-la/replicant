@@ -17,6 +17,7 @@ fn unit(rel: &str) -> SideUnit {
         locks: vec![],
         collisions: vec![],
         is_file: false,
+        files: 0,
     }
 }
 

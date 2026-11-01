@@ -10,6 +10,19 @@
 //! interrupted marker present  → resume that direction; never a conflict
 //! ```
 //!
+//! And, from PLAN rev 5 (review F4):
+//!
+//! ```text
+//! unit vanished on one side since baseline → "deleted on X"; never a plain
+//!                                            pull/push, explicit confirmation
+//! ```
+//!
+//! "Vanished" is narrow: Present at baseline, Empty now, and the other side
+//! unchanged and still populated. A unit that vanished on one side and changed
+//! on the other is still a conflict. Everything becoming Empty is far more
+//! often a renamed directory or an unmounted volume than a real delete, and
+//! as an ordinary change it would send a whole-unit `rsync --delete`.
+//!
 //! Plus three rows the plan implies but does not tabulate:
 //!
 //! - **both empty, no baseline** → nothing (there is nothing to move);
@@ -49,6 +62,13 @@ pub enum Decision {
     /// No longer subscribed and a baseline says this leaf has it: the next
     /// sync deletes the leaf's copy (through guardrail 1).
     Remove,
+    /// Present at baseline, now empty on `host`, and unchanged on the other
+    /// side. Never a plain pull or push: carrying it out removes the whole
+    /// unit on the other side, so it needs explicit confirmation, and has no
+    /// [`Decision::direction`].
+    DeletedOn {
+        host: String,
+    },
 }
 
 impl Decision {
@@ -62,11 +82,12 @@ impl Decision {
         }
     }
 
-    /// Whether this unit needs a human: conflicts and quarantines.
+    /// Whether this unit needs a human: conflicts, quarantines, and deletions
+    /// awaiting confirmation.
     pub fn is_blocking(&self) -> bool {
         matches!(
             self,
-            Decision::Conflict { .. } | Decision::Quarantined { .. }
+            Decision::Conflict { .. } | Decision::Quarantined { .. } | Decision::DeletedOn { .. }
         )
     }
 
@@ -79,6 +100,7 @@ impl Decision {
             Decision::Resume { direction } => format!("resume {direction}"),
             Decision::Quarantined { by, .. } => format!("quarantined (dead push by {by})"),
             Decision::Remove => "remove (unsubscribed)".into(),
+            Decision::DeletedOn { host } => format!("deleted on {host}"),
         }
     }
 }
@@ -88,6 +110,8 @@ impl Decision {
 pub struct Inputs<'a> {
     /// This leaf's fleet name.
     pub me: &'a str,
+    /// Home's fleet name.
+    pub home_name: &'a str,
     pub leaf: &'a UnitState,
     pub home: &'a UnitState,
     pub baseline: Option<&'a Baseline>,
@@ -137,6 +161,14 @@ pub fn decide(i: Inputs<'_>) -> Decision {
         (false, false) => Decision::Nothing {
             why: "unchanged".into(),
         },
+        // Changed means it was Present at baseline; the other side still
+        // holds it. Carved out of the pull and push rows (review F4).
+        (true, false) if i.home.is_empty() && !i.leaf.is_empty() => Decision::DeletedOn {
+            host: i.home_name.into(),
+        },
+        (false, true) if i.leaf.is_empty() && !i.home.is_empty() => {
+            Decision::DeletedOn { host: i.me.into() }
+        }
         (true, false) => Decision::Pull,
         (false, true) => Decision::Push,
         (true, true) if i.leaf == i.home => Decision::Nothing {

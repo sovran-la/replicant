@@ -73,6 +73,9 @@ pub struct RepoFacts {
     pub dirty: Vec<String>,
     /// Git lock files, relative to the repo (guardrail 3, on the source).
     pub locks: Vec<String>,
+    /// Tracked files plus untracked ones: what removing the working tree
+    /// would remove, for "deleted on X" (`.git` itself not counted).
+    pub files: u64,
 }
 
 /// Remote-tracking refs, left out of the repo hash (module doc).
@@ -95,12 +98,14 @@ pub fn repo(abs: &Path, ex: &Excludes) -> Result<RepoFacts> {
     }
     h.update(b"\0dirty\0");
     let mut dirty = Vec::new();
+    let mut untracked = 0;
     for e in &st.entries {
         if ex.path_excluded(&e.path, e.path.ends_with('/')) {
             continue;
         }
         h.update(e.raw.as_bytes());
         h.update(b"\0");
+        untracked += u64::from(e.raw.starts_with('?'));
         if e.worktree_changed {
             content(&mut h, &abs.join(&e.path), e.worktree_deleted)?;
         }
@@ -114,6 +119,7 @@ pub fn repo(abs: &Path, ex: &Excludes) -> Result<RepoFacts> {
         head: st.head,
         dirty,
         locks: git::locks(abs)?,
+        files: git::index_entries(abs)? + untracked,
     })
 }
 
@@ -147,6 +153,11 @@ fn content(h: &mut Sha256, path: &Path, deleted: bool) -> Result<()> {
     }
     h.update(b"\0");
     Ok(())
+}
+
+/// How many non-directory entries a loose manifest holds.
+pub fn loose_files(entries: &[Entry]) -> u64 {
+    entries.iter().filter(|e| e.kind != Kind::Dir).count() as u64
 }
 
 /// Hash a loose manifest. An empty one is [`UnitState::Empty`].

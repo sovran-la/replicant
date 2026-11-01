@@ -33,6 +33,7 @@ fn marker(host: &str, direction: Direction) -> Marker {
 fn run(leaf: &UnitState, home: &UnitState, b: Option<&Baseline>) -> Decision {
     decide(Inputs {
         me: "birchbook",
+        home_name: "thistledown",
         leaf,
         home,
         baseline: b,
@@ -114,10 +115,91 @@ fn baseline_both_changed_to_the_same_state_is_nothing() {
     ));
 }
 
+/// F4: this test used to assert `Push`, i.e. a vanished leaf unit sent a
+/// whole-unit `rsync --delete` into home. PLAN rev 5's table makes it
+/// "deleted on X", never a plain push.
 #[test]
-fn baseline_with_deletion_on_leaf_pushes_the_delete() {
+fn baseline_with_deletion_on_leaf_is_deleted_on_the_leaf_not_a_push() {
     let b = base(p("l"), p("h"));
-    assert_eq!(run(&E, &p("h"), Some(&b)), Decision::Push);
+    let d = run(&E, &p("h"), Some(&b));
+    assert_eq!(
+        d,
+        Decision::DeletedOn {
+            host: "birchbook".into()
+        }
+    );
+    assert_eq!(
+        d.direction(),
+        None,
+        "apply must not have a direction to take"
+    );
+    assert!(d.is_blocking());
+    assert_eq!(d.label(), "deleted on birchbook");
+}
+
+#[test]
+fn baseline_with_deletion_on_home_is_deleted_on_home_not_a_pull() {
+    let b = base(p("l"), p("h"));
+    let d = run(&p("l"), &E, Some(&b));
+    assert_eq!(
+        d,
+        Decision::DeletedOn {
+            host: "thistledown".into()
+        }
+    );
+    assert_eq!(d.direction(), None);
+    assert!(d.is_blocking());
+}
+
+/// Every other row stays as it was: only Present → Empty against an
+/// unchanged, populated other side is a deletion.
+#[test]
+fn deleted_on_is_only_present_to_empty_against_an_unchanged_side() {
+    let b = base(p("l"), p("h"));
+    assert!(
+        matches!(run(&E, &p("h2"), Some(&b)), Decision::Conflict { .. }),
+        "vanished here, changed there: still a conflict"
+    );
+    assert!(
+        matches!(run(&p("l2"), &E, Some(&b)), Decision::Conflict { .. }),
+        "vanished on home, changed here: still a conflict"
+    );
+    assert!(
+        matches!(run(&E, &E, Some(&b)), Decision::Nothing { .. }),
+        "gone on both sides: both changed identically"
+    );
+    // Empty at baseline is not "vanished": it was never there.
+    let from_empty = base(E, E);
+    assert_eq!(run(&p("l"), &E, Some(&from_empty)), Decision::Push);
+    assert_eq!(run(&E, &p("h"), Some(&from_empty)), Decision::Pull);
+    // Vanished on one side while the other was already empty at baseline
+    // and still is: there is nothing on the other side to remove.
+    let half = base(E, p("h"));
+    assert_eq!(run(&E, &E, Some(&half)), Decision::Pull);
+    // No baseline: the first-sync rows, unchanged.
+    assert_eq!(run(&E, &p("h"), None), Decision::Pull);
+    assert_eq!(run(&p("l"), &E, None), Decision::Push);
+}
+
+#[test]
+fn markers_still_win_over_a_deletion() {
+    let b = base(p("l"), p("h"));
+    let m = marker("birchbook", Direction::Pull);
+    let d = decide(Inputs {
+        me: "birchbook",
+        home_name: "thistledown",
+        leaf: &E,
+        home: &p("h"),
+        baseline: Some(&b),
+        leaf_marker: Some(&m),
+        home_marker: None,
+    });
+    assert_eq!(
+        d,
+        Decision::Resume {
+            direction: Direction::Pull
+        }
+    );
 }
 
 #[test]
@@ -126,6 +208,7 @@ fn leaf_marker_resumes_pull_even_when_table_would_conflict() {
     let b = base(p("l"), p("h"));
     let d = decide(Inputs {
         me: "birchbook",
+        home_name: "thistledown",
         leaf: &p("half"),
         home: &p("h2"),
         baseline: Some(&b),
@@ -146,6 +229,7 @@ fn own_home_marker_resumes_push() {
     let m = marker("birchbook", Direction::Push);
     let d = decide(Inputs {
         me: "birchbook",
+        home_name: "thistledown",
         leaf: &p("l"),
         home: &p("half"),
         baseline: None,
@@ -167,6 +251,7 @@ fn other_leafs_home_marker_quarantines_even_over_own_leaf_marker() {
     let mine = marker("birchbook", Direction::Pull);
     let d = decide(Inputs {
         me: "birchbook",
+        home_name: "thistledown",
         leaf: &p("l"),
         home: &p("half"),
         baseline: None,

@@ -23,6 +23,8 @@ fn unit(rel: &str, decision: Decision) -> PlannedUnit {
         home_path: PathBuf::from("/h"),
         diff: None,
         refusals: vec![],
+        leaf_files: 0,
+        home_files: 0,
     }
 }
 
@@ -229,4 +231,45 @@ fn log_lines_are_aligned_and_utc() {
     }]);
     assert!(s.starts_with("1970-01-01T00:00:00Z  approve "), "{s}");
     assert!(s.trim_end().ends_with("allow:(none)"));
+}
+
+#[test]
+fn a_deleted_unit_says_what_it_would_remove_and_that_it_needs_confirmation() {
+    let mut on_home = unit(
+        "work/gone",
+        Decision::DeletedOn {
+            host: "home".into(),
+        },
+    );
+    on_home.leaf_files = 3;
+    let mut on_leaf = unit(
+        "work/left",
+        Decision::DeletedOn {
+            host: "leaf".into(),
+        },
+    );
+    on_leaf.home_files = 1;
+    let p = Plan {
+        me: "leaf".into(),
+        home: "home".into(),
+        dry_run: false,
+        units: vec![on_home, on_leaf],
+        refused: vec![],
+        timings: Timings::default(),
+    };
+    let text = plan(&p, false, PLAIN);
+    for want in [
+        "deleted on home — would remove 3 files on leaf; requires explicit confirmation",
+        "deleted on leaf — would remove 1 file on home; requires explicit confirmation",
+        "deleted, needs confirmation: 2 units",
+    ] {
+        assert!(text.contains(want), "{want:?} not in:\n{text}");
+    }
+    assert!(
+        plan(&p, false, COLOR).contains(
+            "\x1b[31mdeleted on home — would remove 3 files on leaf; requires explicit confirmation\x1b[0m"
+        ),
+        "blocking, so red"
+    );
+    assert!(p.blocked());
 }

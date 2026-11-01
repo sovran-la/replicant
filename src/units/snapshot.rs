@@ -118,10 +118,14 @@ pub fn snapshot_timed(
             locks: Vec::new(),
             collisions: Vec::new(),
             is_file: j.is_file,
+            files: 0,
         };
         match j.kind {
             UnitKind::Repo => repo_side(&j.abs, &j.excludes, &mut u)?,
-            UnitKind::Loose => u.state = state::loose(&j.loose),
+            UnitKind::Loose => {
+                u.state = state::loose(&j.loose);
+                u.files = state::loose_files(&j.loose);
+            }
         }
         let hash_ms = t.elapsed().as_millis();
         if case_check && !j.is_file {
@@ -156,6 +160,7 @@ fn repo_side(abs: &Path, ex: &Excludes, u: &mut SideUnit) -> Result<()> {
             u.head = Some(f.head);
             u.dirty = f.dirty;
             u.locks = f.locks;
+            u.files = f.files;
         }
         _ => {
             let d = repos::discover(abs, ex)?;
@@ -165,6 +170,7 @@ fn repo_side(abs: &Path, ex: &Excludes, u: &mut SideUnit) -> Result<()> {
                 UnitState::Present(h) => UnitState::Present(format!("notrepo-{h}")),
                 UnitState::Empty => UnitState::Empty,
             };
+            u.files = state::loose_files(&d.loose);
         }
     }
     Ok(())

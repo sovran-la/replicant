@@ -60,6 +60,11 @@ pub struct SideUnit {
     pub collisions: Vec<(String, String)>,
     /// Whether this side's path is a single file rather than a directory.
     pub is_file: bool,
+    /// Files this side holds in the unit, outside `.git`: tracked plus
+    /// untracked for a repo, non-directory entries for loose content. What
+    /// "deleted on X — would remove N files on Y" counts.
+    #[serde(default)]
+    pub files: u64,
 }
 
 /// One side's discovery of every subscription.
@@ -83,6 +88,17 @@ impl Discovered {
     /// Home-relative repo paths this side found, minus carve-outs.
     pub fn repos(&self) -> Vec<String> {
         self.collect(|d| &d.repos)
+    }
+
+    /// Subscriptions whose base does not exist on this side, with the path
+    /// looked at. [`repos::discover`] reports absence; the caller decides
+    /// what it means (see `plan::bases`).
+    pub fn absent(&self) -> Vec<(String, PathBuf)> {
+        self.subs
+            .iter()
+            .filter(|(_, _, d)| !d.exists)
+            .map(|(s, abs, _)| (s.rel.clone(), abs.clone()))
+            .collect()
     }
 
     /// Home-relative worktree checkouts this side found.

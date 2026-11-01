@@ -139,6 +139,11 @@ pub struct HomeSnapshot {
     pub worktrees: Vec<String>,
     /// Home's markers covering any of this host's subscriptions.
     pub markers: Vec<Marker>,
+    /// Subscriptions whose base does not exist on home (its root does). The
+    /// leaf, which holds the baselines, decides whether that is a first
+    /// sync or an error (review F4). Absent from an older home: none.
+    #[serde(default)]
+    pub absent: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

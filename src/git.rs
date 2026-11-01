@@ -172,6 +172,26 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Result<Vec<StatusEntry>> {
     Ok(entries)
 }
 
+/// How many entries the repo's index holds: its tracked files. Read from the
+/// index header (`DIRC`, version, count), so it costs no git process. A repo
+/// with no index yet has none. Under `core.splitIndex` this counts only the
+/// split part; nothing here enables that.
+pub fn index_entries(repo: &Path) -> Result<u64> {
+    use std::io::Read;
+    let path = repo.join(".git/index");
+    let mut f = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let mut head = [0u8; 12];
+    f.read_exact(&mut head)
+        .ok()
+        .filter(|_| &head[..4] == b"DIRC")
+        .ok_or_else(|| Error::Git(format!("{}: not a git index", path.display())))?;
+    Ok(u32::from_be_bytes([head[8], head[9], head[10], head[11]]).into())
+}
+
 /// Lock files inside a repo's `.git` (not its objects, not its worktrees'),
 /// relative to the repo: `.git/index.lock`, `.git/refs/heads/main.lock`.
 ///

@@ -15,6 +15,15 @@
 //!
 //! Symlinks are never followed. The walk is parallel ([`walk`]); every list
 //! in a [`Discovery`] is sorted, so the result is the same run to run.
+//!
+//! **A missing base is not an empty one** (review F4). [`discover`] reports a
+//! base that does not exist as `exists: false`, and its callers must not
+//! read that as "nothing here": on its own side a missing subscription base
+//! is an error naming the path and the host, unless no baseline lies under
+//! it (never synced: the first pull or push, the one legitimate empty case).
+//! The leaf holds the baselines and applies the rule to both sides
+//! (`plan::bases`); home reports its missing bases in the snapshot, and a
+//! missing *root* on home is always an error from home.
 
 use crate::Result;
 use crate::exclude::Excludes;
@@ -58,6 +67,8 @@ pub struct Discovery {
 }
 
 /// Discover under `base`, skipping anything `ex` excludes (relative to base).
+/// A `base` that does not exist is `exists: false`, never an error here: see
+/// the module doc for what callers must make of it.
 pub fn discover(base: &Path, ex: &Excludes) -> Result<Discovery> {
     let mut d = Discovery::default();
     let meta = match fs::symlink_metadata(base) {

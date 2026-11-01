@@ -170,3 +170,23 @@ fn a_non_utf8_ref_name_is_an_error_naming_the_repo() {
         "names the repo: {err}"
     );
 }
+
+#[test]
+fn index_entries_counts_tracked_files_from_the_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("r"));
+    assert_eq!(index_entries(&r).unwrap(), 1);
+    testutil::write(&r.join("a/b.txt"), "b\n");
+    testutil::write(&r.join("c.txt"), "c\n");
+    testutil::git(&r, &["add", "-A"]);
+    assert_eq!(index_entries(&r).unwrap(), 3);
+
+    let fresh = tmp.path().join("fresh");
+    std::fs::create_dir_all(&fresh).unwrap();
+    testutil::git(&fresh, &["init", "-q"]);
+    assert_eq!(index_entries(&fresh).unwrap(), 0, "no index yet");
+
+    std::fs::write(r.join(".git/index"), b"nope").unwrap();
+    let err = index_entries(&r).unwrap_err().to_string();
+    assert!(err.contains("not a git index"), "{err}");
+}
