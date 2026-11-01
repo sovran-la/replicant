@@ -1,5 +1,6 @@
 use super::*;
 use crate::testutil;
+use std::path::Path;
 
 fn spec(rel: &str) -> SubSpec {
     SubSpec {
