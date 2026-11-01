@@ -147,11 +147,19 @@ pub fn with_port(address: &str) -> String {
 
 /// Write a file by way of a temporary sibling and a rename, so a crash leaves
 /// either the old contents or the new ones.
+///
+/// The temporary name is unique per call, not just per process: home's
+/// request threads write the same contact record concurrently, and a shared
+/// temporary would be renamed away under the second writer. Concurrent
+/// writers each land whole; the last rename wins.
 pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp.{}.{n}", std::process::id()));
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
@@ -202,6 +210,33 @@ mod tests {
         write_atomic(&p, "one").unwrap();
         write_atomic(&p, "two").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "two");
+        let siblings: Vec<_> = std::fs::read_dir(p.parent().unwrap()).unwrap().collect();
+        assert_eq!(siblings.len(), 1, "no temporary file left behind");
+    }
+
+    /// Two request threads touching one host's contact record at once (a
+    /// leaf's heartbeat and its `State` call) must both succeed.
+    #[test]
+    fn concurrent_writers_of_one_file_do_not_collide() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("contacts/leaf.json");
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|i| {
+                    let (p, start) = (&p, &start);
+                    s.spawn(move || {
+                        start.wait();
+                        (0..200)
+                            .map(|n| write_atomic(p, &format!("{i}.{n}")))
+                            .collect::<Result<Vec<_>>>()
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap().unwrap();
+            }
+        });
         let siblings: Vec<_> = std::fs::read_dir(p.parent().unwrap()).unwrap().collect();
         assert_eq!(siblings.len(), 1, "no temporary file left behind");
     }
