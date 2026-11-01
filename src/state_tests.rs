@@ -7,6 +7,32 @@ fn h(abs: &Path) -> UnitState {
     repo(abs, &Excludes::default()).unwrap().state
 }
 
+/// Move a file's mtime forward by one second, whatever the clock says.
+fn bump_mtime(path: &Path) {
+    let f = std::fs::File::options().write(true).open(path).unwrap();
+    let was = f.metadata().unwrap().modified().unwrap();
+    f.set_modified(was + std::time::Duration::from_secs(1))
+        .unwrap();
+}
+
+/// The documented blind spot, pinned so it is a decision and not a surprise:
+/// a rewrite with the same size and the same mtime is invisible to the hash.
+#[test]
+fn same_size_same_mtime_rewrite_is_invisible_by_design() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("r"));
+    testutil::write(&r.join("README"), "one\n");
+    let f = std::fs::File::options()
+        .write(true)
+        .open(r.join("README"))
+        .unwrap();
+    let t = f.metadata().unwrap().modified().unwrap();
+    let before = h(&r);
+    testutil::write(&r.join("README"), "two\n");
+    f.set_modified(t).unwrap();
+    assert_eq!(h(&r), before);
+}
+
 #[test]
 fn repo_hash_is_stable_and_moves_with_every_kind_of_state() {
     let tmp = tempfile::tempdir().unwrap();
@@ -23,16 +49,23 @@ fn repo_hash_is_stable_and_moves_with_every_kind_of_state() {
     step("worktree edit", &|| {
         testutil::write(&r.join("README"), "one\n")
     });
-    // Same porcelain line (` .M` with the same blob ids), different bytes.
+    // Same porcelain line (` .M` with the same blob ids), same size: only
+    // the mtime moves. Bumped by a full second so no filesystem's clock
+    // granularity can make this flake.
     step("second worktree edit", &|| {
-        testutil::write(&r.join("README"), "two\n")
+        testutil::write(&r.join("README"), "two\n");
+        bump_mtime(&r.join("README"));
+    });
+    step("worktree size change", &|| {
+        testutil::write(&r.join("README"), "three!\n")
     });
     step("stage", &|| {
         testutil::git(&r, &["add", "README"]);
     });
     step("untracked", &|| testutil::write(&r.join("u.txt"), "u\n"));
-    step("untracked content", &|| {
-        testutil::write(&r.join("u.txt"), "v\n")
+    step("untracked mtime", &|| {
+        testutil::write(&r.join("u.txt"), "v\n");
+        bump_mtime(&r.join("u.txt"));
     });
     step("commit", &|| {
         testutil::git(&r, &["add", "-A"]);

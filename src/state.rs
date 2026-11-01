@@ -4,12 +4,19 @@
 //! - **Repo**: HEAD, every ref (branches, tags, `refs/stash` — the plan's
 //!   requirements list branches and stashes as state, so `HEAD` here means all
 //!   of them), and the dirty tree: each porcelain v2 entry, which names staged
-//!   content by blob id, plus the working-tree bytes of anything the index
-//!   does not describe (modified, untracked, deleted).
+//!   content by blob id, plus the working-tree *metadata* of anything the
+//!   index does not describe (modified, untracked, deleted): kind, size,
+//!   mtime to the nanosecond, mode, link target.
 //! - **Loose**: the sorted manifest of (path, kind, size, mtime, mode, link
-//!   target). Not content: rsync `-a` preserves mtimes, and a baseline is
-//!   compared with the same machine's next hash, so metadata is enough and
-//!   hashing a dataset directory would not be.
+//!   target).
+//!
+//! Neither reads file contents. rsync `-a` preserves mtimes, and a baseline is
+//! compared with the same machine's next hash, so metadata is enough. Content
+//! was tried first for dirty repo files and cost 1.7 GB of reads per `status`
+//! on thistledown (2026-11-01): a modified 400 MB zip is still a modified
+//! 400 MB zip. The one thing metadata cannot see is a same-size rewrite that
+//! lands in the same nanosecond, which is the same blind spot the loose
+//! manifest has always had.
 //!
 //! Status entries and manifest entries under an excluded path are dropped, so
 //! a tracked file under an excluded `bin/` does not read as "deleted" on the
@@ -21,7 +28,6 @@ use crate::git;
 use crate::repos::{Entry, Kind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::Read;
 use std::path::Path;
 
 /// One unit's state on one side.
@@ -97,8 +103,10 @@ pub fn repo(abs: &Path, ex: &Excludes) -> Result<RepoFacts> {
     })
 }
 
-/// Feed a working-tree path's bytes (or link target, or absence) to `h`.
+/// Feed a working-tree path's metadata (or link target, or absence) to `h`.
+/// Never its bytes; see the module doc.
 fn content(h: &mut Sha256, path: &Path, deleted: bool) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) if !deleted => m,
         _ => {
@@ -110,15 +118,16 @@ fn content(h: &mut Sha256, path: &Path, deleted: bool) -> Result<()> {
         h.update(b"<link>");
         h.update(std::fs::read_link(path)?.to_string_lossy().as_bytes());
     } else if meta.is_file() {
-        let mut f = std::fs::File::open(path)?;
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = f.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            h.update(&buf[..n]);
-        }
+        h.update(
+            format!(
+                "<file>{}\0{}.{:09}\0{:o}",
+                meta.len(),
+                meta.mtime(),
+                meta.mtime_nsec(),
+                meta.permissions().mode()
+            )
+            .as_bytes(),
+        );
     } else {
         h.update(b"<dir>");
     }
