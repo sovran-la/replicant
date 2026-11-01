@@ -95,7 +95,9 @@ impl Home {
             (self.served(&f, host)?.0, f.home_dir.clone())
         };
         let hd = home_dir.clone();
+        let t0 = std::time::Instant::now();
         let found = Discovered::run(&specs, &move |rel| hd.join(rel))?;
+        let discover_ms = t0.elapsed().as_millis();
         let mut union = found.repos();
         // Guardrail 5 on home: a leaf's repo list cannot steer home outside
         // the host's bounds. Anything malformed or out of bounds is ignored.
@@ -109,7 +111,19 @@ impl Home {
             }
         }
         union.sort();
-        let units = units::snapshot(&found, &union, case_check)?;
+        let t1 = std::time::Instant::now();
+        let (units, slowest) = units::snapshot_timed(&found, &union, case_check)?;
+        // Where home's time goes, for whoever is staring at a slow `status`.
+        eprintln!(
+            "snapshot for {host}: discover {discover_ms}ms, units {}ms ({} units, case_check {case_check}); slowest: {}",
+            t1.elapsed().as_millis(),
+            units.len(),
+            slowest
+                .iter()
+                .map(|(rel, ms)| format!("{rel} {ms}ms"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         let markers: Vec<Marker> = marker::store(&self.dirs.state())
             .all::<Marker>()?
             .into_iter()

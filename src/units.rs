@@ -148,6 +148,18 @@ pub fn snapshot(
     union_repos: &[String],
     case_check: bool,
 ) -> Result<Vec<SideUnit>> {
+    snapshot_timed(found, union_repos, case_check).map(|(u, _)| u)
+}
+
+/// How many of the slowest units `snapshot_timed` names.
+const SLOWEST: usize = 5;
+
+/// [`snapshot`], plus the slowest units and their wall time in ms.
+pub fn snapshot_timed(
+    found: &Discovered,
+    union_repos: &[String],
+    case_check: bool,
+) -> Result<(Vec<SideUnit>, Vec<(String, u128)>)> {
     struct Job<'a> {
         spec: &'a SubSpec,
         abs: PathBuf,
@@ -211,7 +223,8 @@ pub fn snapshot(
         });
     }
 
-    let results = state::parallel_map(&jobs, state::workers(), |j| -> Result<SideUnit> {
+    let results = state::parallel_map(&jobs, state::workers(), |j| -> Result<(SideUnit, u128)> {
+        let t = std::time::Instant::now();
         let mut u = SideUnit {
             rel: j.rel.clone(),
             sub: j.spec.rel.clone(),
@@ -231,9 +244,14 @@ pub fn snapshot(
             let names = repos::all_names(&j.abs, &j.excludes)?;
             u.collisions = repos::case_collisions(names.iter().map(String::as_str));
         }
-        Ok(u)
+        Ok((u, t.elapsed().as_millis()))
     });
-    results.into_iter().collect()
+    let timed: Vec<(SideUnit, u128)> = results.into_iter().collect::<Result<_>>()?;
+    let mut slowest: Vec<(String, u128)> =
+        timed.iter().map(|(u, ms)| (u.rel.clone(), *ms)).collect();
+    slowest.sort_by(|a, b| b.1.cmp(&a.1));
+    slowest.truncate(SLOWEST);
+    Ok((timed.into_iter().map(|(u, _)| u).collect(), slowest))
 }
 
 /// Fill a repo unit: a real repo here, a plain directory where the other side
