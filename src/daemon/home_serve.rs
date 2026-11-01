@@ -115,9 +115,10 @@ impl Home {
         let (units, slowest) = units::snapshot_timed(&found, &union, case_check)?;
         // Where home's time goes, for whoever is staring at a slow `status`.
         eprintln!(
-            "snapshot for {host}: discover {discover_ms}ms, units {}ms ({} units, case_check {case_check}); slowest: {}",
+            "snapshot for {host}: discover {discover_ms}ms, units {}ms ({} units on {} workers, case_check {case_check}); slowest: {}",
             t1.elapsed().as_millis(),
             units.len(),
+            crate::state::workers(),
             slowest
                 .iter()
                 .map(|(rel, ms)| format!("{rel} {ms}ms"))

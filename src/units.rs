@@ -19,6 +19,7 @@ use crate::paths;
 use crate::repos::{self, Discovery};
 use crate::state::{self, UnitState};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// A subscription as both sides see it: its path, its root's excludes, and
@@ -114,6 +115,11 @@ fn excepted(rel: &str, except: &[String]) -> bool {
     except.iter().any(|e| paths::is_within(rel, e))
 }
 
+/// Everything before the first `/`, or the whole thing.
+fn first_component(rel: &str) -> &str {
+    rel.split('/').next().unwrap_or(rel)
+}
+
 /// The exclude list for one unit, relative to the unit's directory: the
 /// root's excludes and the built-ins, plus every carve-out and worktree
 /// checkout inside it, plus (for a loose unit) every repo inside it, which is
@@ -198,18 +204,30 @@ pub fn snapshot_timed(
         if repos_here.iter().any(|r| **r == spec.rel) {
             continue;
         }
-        let blocked: Vec<String> = repos_here
+        // Blocked paths, made relative to the subscription so each loose entry
+        // is tested as-is, and bucketed by first component so an entry is
+        // compared only with the few that could contain it. The plain scan
+        // was 70k entries × 154 repos on thistledown: two seconds, serial.
+        let mut blocked: HashMap<&str, Vec<&str>> = HashMap::new();
+        for b in repos_here
             .iter()
-            .map(|r| (*r).clone())
-            .chain(spec.except.iter().cloned())
-            .collect();
+            .map(|r| r.as_str())
+            .chain(spec.except.iter().map(String::as_str))
+        {
+            if let Some(inner) = paths::relative_to(b, &spec.rel).filter(|x| !x.is_empty()) {
+                blocked
+                    .entry(first_component(inner))
+                    .or_default()
+                    .push(inner);
+            }
+        }
         let loose = d
             .loose
             .iter()
             .filter(|e| {
-                !blocked
-                    .iter()
-                    .any(|b| paths::is_within(&join(&spec.rel, &e.rel), b))
+                blocked
+                    .get(first_component(&e.rel))
+                    .is_none_or(|bs| !bs.iter().any(|b| paths::is_within(&e.rel, b)))
             })
             .cloned()
             .collect();
@@ -243,11 +261,20 @@ pub fn snapshot_timed(
             UnitKind::Repo => repo_side(&j.abs, &j.excludes, &mut u)?,
             UnitKind::Loose => u.state = state::loose(&j.loose),
         }
+        let hash_ms = t.elapsed().as_millis();
         if case_check && !j.is_file {
             let names = repos::all_names(&j.abs, &j.excludes)?;
             u.collisions = repos::case_collisions(names.iter().map(String::as_str));
         }
-        Ok((u, t.elapsed().as_millis()))
+        let total = t.elapsed().as_millis();
+        if total >= 100 {
+            eprintln!(
+                "  unit {}: hash {hash_ms}ms, case walk {}ms",
+                j.rel,
+                total - hash_ms
+            );
+        }
+        Ok((u, total))
     });
     let timed: Vec<(SideUnit, u128)> = results.into_iter().collect::<Result<_>>()?;
     let mut slowest: Vec<(String, u128)> =
