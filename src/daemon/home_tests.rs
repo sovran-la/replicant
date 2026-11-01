@@ -69,7 +69,7 @@ fn pending_host_flow_end_to_end() {
         "a pending host cannot take a queue entry"
     );
 
-    assert_eq!(home.pending()[0].host, "newbox");
+    assert_eq!(home.pending().unwrap()[0].host, "newbox");
     let prev = home
         .preview_allow("newbox", &["~/work/tundra".into()])
         .unwrap();

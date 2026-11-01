@@ -53,8 +53,8 @@ impl Home {
         Ok((specs, refused))
     }
 
-    pub(super) fn view(&self, host: &str) -> SubscriptionsView {
-        let f = self.fleet();
+    pub(super) fn view(&self, host: &str) -> Result<SubscriptionsView> {
+        let f = self.fleet()?;
         let base = SubscriptionsView {
             home: f.name.clone(),
             enrollment: Enrollment::Unknown,
@@ -64,7 +64,7 @@ impl Home {
             pending_paths: vec![],
             lease_secs: f.lease.as_secs(),
         };
-        match self.served(&f, host) {
+        Ok(match self.served(&f, host) {
             Ok((specs, refused)) => SubscriptionsView {
                 enrollment: Enrollment::Enrolled,
                 specs,
@@ -80,7 +80,7 @@ impl Home {
                 },
                 None => base,
             },
-        }
+        })
     }
 
     /// Home's side of every unit `host` is subscribed to.
@@ -91,7 +91,7 @@ impl Home {
         case_check: bool,
     ) -> Result<HomeSnapshot> {
         let (specs, home_dir) = {
-            let f = self.fleet();
+            let f = self.fleet()?;
             (self.served(&f, host)?.0, f.home_dir.clone())
         };
         let hd = home_dir.clone();

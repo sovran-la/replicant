@@ -3,17 +3,17 @@
 //!
 //! One mutex guards the fleet: every write to fleet.toml happens under it and
 //! is followed by a reload, so concurrent subscribes cannot lose each other's
-//! edits and every reader sees what the file says.
+//! edits. Every look also reloads after a hand edit ([`cache`]), so every
+//! reader sees what the file says.
 
 use super::fleet::{self, FleetState, LastReport, PendingView};
 use super::journal::{Filter, Journal, Line};
 use super::queue::{EntryKind, Queue};
 use super::wire::*;
-use crate::config::{Dirs, Fleet, short_hostname};
+use crate::config::{Dirs, short_hostname};
 use crate::marker::{self, Marker};
 use crate::record::Store;
 use crate::{Error, Result, subscribe};
-use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// How long a dry run may wait in the queue before giving up.
@@ -21,7 +21,7 @@ pub const MAX_QUEUE_WAIT: Duration = Duration::from_secs(600);
 
 pub struct Home {
     pub dirs: Dirs,
-    fleet: Mutex<Fleet>,
+    fleet: cache::FleetCache,
     pub queue: Queue,
     pub journal: Journal,
     contacts: Store,
@@ -29,28 +29,27 @@ pub struct Home {
 
 impl Home {
     pub fn open(dirs: Dirs) -> Result<Self> {
-        let fleet = Fleet::load(&dirs.fleet())?;
         Ok(Self {
             journal: Journal::at(dirs.journal()),
             contacts: fleet::contacts(&dirs.state()),
-            fleet: Mutex::new(fleet),
+            fleet: cache::FleetCache::open(dirs.fleet())?,
             queue: Queue::new(),
             dirs,
         })
     }
 
-    fn fleet(&self) -> MutexGuard<'_, Fleet> {
-        self.fleet.lock().unwrap_or_else(|e| e.into_inner())
+    /// The fleet as fleet.toml says it is now (reloaded after a hand edit).
+    fn fleet(&self) -> Result<cache::FleetGuard<'_>> {
+        self.fleet.get()
     }
 
     /// Reload after a write, under the same guard that wrote.
-    fn reload(&self, guard: &mut MutexGuard<'_, Fleet>) -> Result<()> {
-        **guard = Fleet::load(&self.dirs.fleet())?;
-        Ok(())
+    fn reload(&self, guard: &mut cache::FleetGuard<'_>) -> Result<()> {
+        guard.reload()
     }
 
-    pub fn name(&self) -> String {
-        self.fleet().name.clone()
+    pub fn name(&self) -> Result<String> {
+        Ok(self.fleet()?.name.clone())
     }
 
     fn journal(&self, out: &mut Vec<String>, line: Line) {
@@ -84,7 +83,7 @@ impl Home {
         let file = self.dirs.fleet();
         match call.request {
             HomeRequest::Subscribe { paths } => {
-                let mut f = self.fleet();
+                let mut f = self.fleet()?;
                 let out = subscribe::subscribe(&f, &file, &host, &call.home_dir, &paths)?;
                 self.reload(&mut f)?;
                 let (event, detail) = if out.enrolled {
@@ -103,7 +102,7 @@ impl Home {
                 Ok(HomeReply::Subscribed(out))
             }
             HomeRequest::Unsubscribe { paths } => {
-                let mut f = self.fleet();
+                let mut f = self.fleet()?;
                 let out = subscribe::unsubscribe(&f, &file, &host, &call.home_dir, &paths)?;
                 self.reload(&mut f)?;
                 let what: Vec<String> = out.removed.iter().chain(&out.carved).cloned().collect();
@@ -118,10 +117,10 @@ impl Home {
                 );
                 Ok(HomeReply::Unsubscribed(out))
             }
-            HomeRequest::Subscriptions => Ok(HomeReply::Subscriptions(self.view(&host))),
+            HomeRequest::Subscriptions => Ok(HomeReply::Subscriptions(self.view(&host)?)),
             HomeRequest::Acquire { no_wait } => {
                 let (specs, lease) = {
-                    let f = self.fleet();
+                    let f = self.fleet()?;
                     (self.served(&f, &host)?.0, f.lease)
                 };
                 let paths = specs.iter().map(|s| s.rel.clone()).collect();
@@ -139,7 +138,7 @@ impl Home {
                 })
             }
             HomeRequest::Heartbeat { lease } => {
-                self.queue.heartbeat(lease, self.fleet().lease)?;
+                self.queue.heartbeat(lease, self.fleet()?.lease)?;
                 Ok(HomeReply::Done)
             }
             HomeRequest::Release { lease } => {
@@ -160,7 +159,7 @@ impl Home {
                 summary,
             } => {
                 let paths: Vec<String> =
-                    self.view(&host).specs.into_iter().map(|s| s.rel).collect();
+                    self.view(&host)?.specs.into_iter().map(|s| s.rel).collect();
                 let report = LastReport {
                     at: crate::now_secs(),
                     event: event.clone(),
@@ -176,7 +175,7 @@ impl Home {
 
     pub fn fleet_state(&self) -> Result<FleetState> {
         let markers = marker::store(&self.dirs.state()).all::<Marker>()?;
-        let f = self.fleet();
+        let f = self.fleet()?;
         fleet::build(
             &f,
             &self.contacts,
@@ -186,16 +185,16 @@ impl Home {
         )
     }
 
-    pub fn pending(&self) -> Vec<PendingView> {
-        fleet::pending_views(&self.fleet())
+    pub fn pending(&self) -> Result<Vec<PendingView>> {
+        Ok(fleet::pending_views(&*self.fleet()?))
     }
 
     pub fn preview_allow(&self, host: &str, raw: &[String]) -> Result<AllowPreview> {
-        subscribe::preview_allow(&self.fleet(), host, raw)
+        subscribe::preview_allow(&*self.fleet()?, host, raw)
     }
 
     pub fn approve(&self, host: &str, raw: &[String]) -> Result<Approved> {
-        let mut f = self.fleet();
+        let mut f = self.fleet()?;
         let out = subscribe::approve(&f, &self.dirs.fleet(), host, raw)?;
         self.reload(&mut f)?;
         let allow = out
@@ -231,9 +230,16 @@ impl Home {
     }
 }
 
+#[path = "home_fleet.rs"]
+mod cache;
+
 #[path = "home_serve.rs"]
 mod serve;
 
 #[cfg(test)]
 #[path = "home_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "home_reload_tests.rs"]
+mod reload_tests;

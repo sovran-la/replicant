@@ -210,13 +210,15 @@ fn home_local(h: &home::Home, req: LocalRequest) -> Result<LocalReply> {
     match req {
         LocalRequest::Ping => Ok(LocalReply::Pong {
             role: "home".into(),
-            name: h.name(),
+            name: h.name()?,
         }),
         LocalRequest::Status | LocalRequest::Fleet => Ok(LocalReply::Fleet(h.fleet_state()?)),
         LocalRequest::Log { filter } => Ok(LocalReply::Log {
             lines: h.log(&filter)?,
         }),
-        LocalRequest::Pending => Ok(LocalReply::Pending { hosts: h.pending() }),
+        LocalRequest::Pending => Ok(LocalReply::Pending {
+            hosts: h.pending()?,
+        }),
         LocalRequest::PreviewAllow { host, raw } => {
             Ok(LocalReply::AllowPreview(h.preview_allow(&host, &raw)?))
         }
