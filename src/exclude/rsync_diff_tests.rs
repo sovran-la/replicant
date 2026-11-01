@@ -313,3 +313,6 @@ fn all_names_matches_rsync_on_the_same_list() {
         .collect();
     assert_eq!(walked, kept, "{}", flavour());
 }
+
+#[path = "rsync_diff_units_tests.rs"]
+mod units;

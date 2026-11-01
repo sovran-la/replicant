@@ -142,7 +142,8 @@ pub(crate) fn first_component(rel: &str) -> &str {
 /// The exclude list for one unit, relative to the unit's directory: the
 /// root's excludes and the built-ins, plus every carve-out and worktree
 /// checkout inside it, plus (for a loose unit) every repo inside it, which is
-/// a unit of its own.
+/// a unit of its own. A carve-out matches a file or a directory; repos and
+/// worktrees, directories only.
 ///
 /// rsync gets this list too, with *both* sides' worktrees: the source's so a
 /// checkout is never sent, the target's so `--delete` never removes one.
@@ -159,9 +160,14 @@ pub fn excludes(
     } else {
         &[]
     };
-    for b in spec.except.iter().chain(worktrees).chain(repos) {
+    // A carve-out may name a file or a directory, and the loose manifest drops
+    // either (`units/snapshot.rs`), so rsync must too: an anchored `/x`
+    // matches both. Repos and worktrees are always directories.
+    let carve_outs = spec.except.iter().map(|b| (b, false));
+    let units = worktrees.iter().chain(repos).map(|b| (b, true));
+    for (b, is_dir) in carve_outs.chain(units) {
         if let Some(x) = paths::relative_to(b, rel).filter(|x| !x.is_empty()) {
-            ex.push_exact(x, true);
+            ex.push_exact(x, is_dir);
         }
     }
     Ok(ex)

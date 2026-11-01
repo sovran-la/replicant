@@ -297,3 +297,6 @@ mod more;
 
 #[path = "tests_deleted.rs"]
 mod deleted;
+
+#[path = "tests_except.rs"]
+mod except;
