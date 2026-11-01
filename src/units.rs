@@ -154,12 +154,15 @@ pub fn snapshot(
 /// How many of the slowest units `snapshot_timed` names.
 const SLOWEST: usize = 5;
 
+/// A unit's home-relative path and how long its hash took, in ms.
+pub type UnitTiming = (String, u128);
+
 /// [`snapshot`], plus the slowest units and their wall time in ms.
 pub fn snapshot_timed(
     found: &Discovered,
     union_repos: &[String],
     case_check: bool,
-) -> Result<(Vec<SideUnit>, Vec<(String, u128)>)> {
+) -> Result<(Vec<SideUnit>, Vec<UnitTiming>)> {
     struct Job<'a> {
         spec: &'a SubSpec,
         abs: PathBuf,
