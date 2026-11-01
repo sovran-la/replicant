@@ -138,8 +138,9 @@ fn push(cur: &mut Vec<Tok>, globstar: bool, t: Tok) -> Result<(), String> {
     Ok(())
 }
 
-/// The body of a `[...]` class, after the `[`. Positive, ASCII, no specials:
-/// the only classes globset and rsync both read byte-for-byte the same.
+/// The body of a `[...]` class, after the `[`. Positive, ASCII, no specials,
+/// no range across `/`: the only classes globset and rsync both read
+/// byte-for-byte the same.
 fn class(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<String, String> {
     let mut body = String::new();
     loop {
@@ -164,8 +165,18 @@ fn class(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<String, Str
         return Err("a `-` at either end of a class is ambiguous; escape it outside one".into());
     }
     for i in 1..b.len() - 1 {
-        if b[i] == b'-' && (b[i - 1] > b[i + 1] || b.get(i + 2) == Some(&b'-')) {
+        if b[i] != b'-' {
+            continue;
+        }
+        let (lo, hi) = (b[i - 1], b[i + 1]);
+        if lo > hi || b.get(i + 2) == Some(&b'-') {
             return Err(format!("`[{body}]` has an invalid range"));
+        }
+        if lo <= b'/' && b'/' <= hi {
+            return Err(format!(
+                "`[{body}]` has a range that spans `/`: globset would match it across \
+                 path components, rsync never does"
+            ));
         }
     }
     Ok(body)

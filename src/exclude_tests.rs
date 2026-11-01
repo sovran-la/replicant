@@ -132,6 +132,22 @@ fn positive_ascii_classes() {
     assert!(e.matches("*x", false), "specials are literal in a class");
 }
 
+/// Review P2: globset's class matches `/` even with `literal_separator`, and
+/// rsync's never does, so a range that includes 0x2F would disagree.
+#[test]
+fn class_ranges_spanning_the_separator_are_refused() {
+    for pat in ["[+-0]", "x/a[+-0]b", "[.-0]", "[ -~]", "a[0-9 -~]"] {
+        let err = check(pat).expect_err(pat);
+        assert!(err.contains("spans `/`"), "{pat:?}: {err}");
+        let err = Excludes::new(&[pat]).unwrap_err().to_string();
+        assert!(err.contains("exclude pattern"), "{pat:?}: {err}");
+    }
+    // Up to `.` (0x2E) and from `0` (0x30) on are fine.
+    for pat in ["[#-.]", "[0-9]", "[*-.0-9]", "[+.0]"] {
+        check(pat).unwrap_or_else(|e| panic!("{pat:?}: {e}"));
+    }
+}
+
 #[test]
 fn dir_only_ignores_files_and_links() {
     let e = ex(&["build/"]);

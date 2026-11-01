@@ -40,6 +40,8 @@ const TREE: &[&str] = &[
     "x/",
     "x/a/",
     "x/a/b",
+    "x/a.b",
+    "x/a0b",
     "agents/",
     "agents/state/",
     "agents/state/db",
@@ -316,3 +318,6 @@ fn all_names_matches_rsync_on_the_same_list() {
 
 #[path = "rsync_diff_units_tests.rs"]
 mod units;
+
+#[path = "rsync_diff_class_tests.rs"]
+mod class;
