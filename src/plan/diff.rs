@@ -86,8 +86,8 @@ pub(super) fn run(
                 .find(|u| u.rel == p.rel && u.kind == p.kind);
             let spec = spec_for(&snap.specs, &p.rel);
             let excludes = match spec {
-                Some(s) => units::excludes(s, &p.rel, p.kind, union, &worktrees),
-                None => crate::exclude::Excludes::for_root(&[]),
+                Some(s) => units::excludes(s, &p.rel, p.kind, union, &worktrees)?,
+                None => crate::exclude::Excludes::for_root(&[])?,
             };
             let (source, target) = match direction {
                 Direction::Pull => (h, l),
@@ -142,7 +142,7 @@ fn remove_target(p: &PlannedUnit) -> Result<Option<SideUnit>> {
     if crate::repos::git_marker(&p.leaf_path) != crate::repos::GitMarker::Repo {
         return Ok(None);
     }
-    let f = state::repo(&p.leaf_path, &crate::exclude::Excludes::for_root(&[]))?;
+    let f = state::repo(&p.leaf_path, &crate::exclude::Excludes::for_root(&[])?)?;
     Ok(Some(SideUnit {
         rel: p.rel.clone(),
         sub: p.rel.clone(),

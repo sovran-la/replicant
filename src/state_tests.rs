@@ -107,7 +107,7 @@ fn identical_copies_hash_identically() {
 fn excluded_paths_do_not_count() {
     let tmp = tempfile::tempdir().unwrap();
     let r = testutil::repo(&tmp.path().join("r"));
-    let ex = Excludes::new(&["node_modules"]);
+    let ex = Excludes::new(&["node_modules"]).unwrap();
     let before = repo(&r, &ex).unwrap();
     testutil::write(&r.join("node_modules/pkg/index.js"), "x");
     let after = repo(&r, &ex).unwrap();

@@ -71,7 +71,7 @@ impl Discovered {
         let mut out = Vec::new();
         for s in subs {
             let abs = map(&s.rel);
-            let d = repos::discover(&abs, &Excludes::for_root(&s.exclude))?;
+            let d = repos::discover(&abs, &Excludes::for_root(&s.exclude)?)?;
             out.push((s.clone(), abs, d));
         }
         Ok(Self { subs: out })
@@ -133,8 +133,8 @@ pub fn excludes(
     kind: UnitKind,
     union_repos: &[String],
     worktrees: &[String],
-) -> Excludes {
-    let mut ex = Excludes::for_root(&spec.exclude);
+) -> Result<Excludes> {
+    let mut ex = Excludes::for_root(&spec.exclude)?;
     let repos: &[String] = if kind == UnitKind::Loose {
         union_repos
     } else {
@@ -145,7 +145,7 @@ pub fn excludes(
             ex.push_exact(x, true);
         }
     }
-    ex
+    Ok(ex)
 }
 
 /// This side's units, against the union of both sides' repos.
@@ -186,7 +186,7 @@ pub fn snapshot_timed(
             .collect();
         for r in &repos_here {
             let inner = paths::relative_to(r, &spec.rel).unwrap_or("");
-            let ex = excludes(spec, r, UnitKind::Repo, union_repos, &[]);
+            let ex = excludes(spec, r, UnitKind::Repo, union_repos, &[])?;
             jobs.push(Job {
                 spec,
                 abs: if inner.is_empty() {
@@ -232,7 +232,7 @@ pub fn snapshot_timed(
             .cloned()
             .collect();
         let is_file = d.loose.len() == 1 && d.loose[0].rel.is_empty();
-        let ex = excludes(spec, &spec.rel, UnitKind::Loose, union_repos, &[]);
+        let ex = excludes(spec, &spec.rel, UnitKind::Loose, union_repos, &[])?;
         jobs.push(Job {
             spec,
             abs: sub_abs.clone(),

@@ -1,0 +1,288 @@
+//! One exclude pattern: parsed once, rendered twice.
+//!
+//! The parser accepts the subset of globset syntax that rsync can express with
+//! the same meaning, and refuses the rest with a sentence saying why. Both the
+//! globset text replicant matches with and the rsync rules handed to rsync are
+//! rendered from the same tokens, so the two cannot drift by construction;
+//! `rsync_diff_tests.rs` checks it against the real rsync.
+
+/// How many `**/` a pattern may hold. Each doubles the rsync rules it becomes
+/// (see [`Parsed::rsync_rules`]); four is sixteen rules.
+const MAX_GLOBSTARS: usize = 4;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Tok {
+    Lit(char),
+    Star,
+    /// A positive class of ASCII characters and ranges, rendered verbatim.
+    Class(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Comp {
+    /// `**` as a whole component.
+    Globstar,
+    Parts(Vec<Tok>),
+}
+
+/// A pattern, split into `/`-separated components.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Parsed {
+    comps: Vec<Comp>,
+    /// Written with a leading `/`: matched against the unit-relative path only,
+    /// never the bare name.
+    pub anchored: bool,
+    /// Written with a trailing `/`: directories only.
+    pub dir_only: bool,
+}
+
+/// Parse a pattern as written in fleet.toml.
+pub(super) fn parse(raw: &str) -> Result<Parsed, String> {
+    if raw.is_empty() {
+        return Err("an empty pattern matches nothing".into());
+    }
+    if raw.trim() != raw || raw.contains(['\n', '\r']) {
+        return Err("leading or trailing whitespace and line breaks are not supported".into());
+    }
+    if raw == "!" || raw.starts_with("+ ") || raw.starts_with("- ") {
+        return Err("rsync reads a leading `!`, `+ ` or `- ` as a filter-rule prefix".into());
+    }
+    let anchored = raw.starts_with('/');
+    let dir_only = raw.len() > 1 && raw.ends_with('/');
+    let body = raw.strip_prefix('/').unwrap_or(raw);
+    let body = if dir_only {
+        &body[..body.len() - 1]
+    } else {
+        body
+    };
+    if body.is_empty() {
+        return Err("the pattern names the transfer root itself".into());
+    }
+    let mut comps = Vec::new();
+    let mut chars = body.chars().peekable();
+    let mut cur: Vec<Tok> = Vec::new();
+    let mut globstar = false;
+    let mut finish = |cur: &mut Vec<Tok>, globstar: &mut bool| -> Result<(), String> {
+        let comp = match (std::mem::take(globstar), cur.is_empty()) {
+            (true, true) => Comp::Globstar,
+            (true, false) => {
+                return Err("`**` must be a whole path component (`**/x`, `a/**`, \
+                            `a/**/b`); rsync's `**` crosses `/` where globset's does not"
+                    .into());
+            }
+            (false, true) => return Err("an empty path component (`//`) matches nothing".into()),
+            (false, false) => Comp::Parts(std::mem::take(cur)),
+        };
+        comps.push(comp);
+        Ok(())
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '/' => finish(&mut cur, &mut globstar)?,
+            '\\' => match chars.next() {
+                Some('/') => return Err("`\\/` is not supported".into()),
+                Some(e) => push(&mut cur, globstar, Tok::Lit(e))?,
+                None => return Err("a trailing `\\` escapes nothing".into()),
+            },
+            '*' => {
+                let mut run = 1;
+                while chars.next_if_eq(&'*').is_some() {
+                    run += 1;
+                }
+                match run {
+                    1 => push(&mut cur, globstar, Tok::Star)?,
+                    2 if cur.is_empty() && !globstar => globstar = true,
+                    2 => return Err("`**` must be a whole path component".into()),
+                    _ => return Err("`***` is rsync-only syntax; write `x/` and `x/**`".into()),
+                }
+            }
+            '?' => {
+                return Err(
+                    "`?` is refused: globset matches one character, rsync one byte, \
+                            so they disagree on non-ASCII names; use `*`"
+                        .into(),
+                );
+            }
+            '[' => {
+                let class = class(&mut chars)?;
+                push(&mut cur, globstar, Tok::Class(class))?;
+            }
+            '{' | '}' => {
+                return Err(
+                    "`{a,b}` alternation is globset-only; write one pattern per \
+                            alternative, or escape the brace (`\\{`)"
+                        .into(),
+                );
+            }
+            ']' => return Err("an unmatched `]`; escape it (`\\]`)".into()),
+            c => push(&mut cur, globstar, Tok::Lit(c))?,
+        }
+    }
+    finish(&mut cur, &mut globstar)?;
+    let p = Parsed {
+        comps,
+        anchored,
+        dir_only,
+    };
+    if p.droppable() > MAX_GLOBSTARS {
+        return Err(format!("more than {MAX_GLOBSTARS} `**/` in one pattern"));
+    }
+    Ok(p)
+}
+
+fn push(cur: &mut Vec<Tok>, globstar: bool, t: Tok) -> Result<(), String> {
+    if globstar {
+        return Err("`**` must be a whole path component".into());
+    }
+    cur.push(t);
+    Ok(())
+}
+
+/// The body of a `[...]` class, after the `[`. Positive, ASCII, no specials:
+/// the only classes globset and rsync both read byte-for-byte the same.
+fn class(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<String, String> {
+    let mut body = String::new();
+    loop {
+        match chars.next() {
+            None => return Err("an unterminated `[` class".into()),
+            Some(']') if !body.is_empty() => break,
+            Some(c @ ('!' | '^')) if body.is_empty() => {
+                return Err(format!(
+                    "negated classes (`[{c}...]`) are refused: globset excludes one character, \
+                     rsync one byte, so they disagree on non-ASCII names"
+                ));
+            }
+            Some(']') => return Err("an empty `[]` class".into()),
+            Some(c) if !c.is_ascii() || matches!(c, '/' | '\\' | '[') || c.is_ascii_control() => {
+                return Err(format!("{c:?} inside a `[...]` class is not supported"));
+            }
+            Some(c) => body.push(c),
+        }
+    }
+    let b = body.as_bytes();
+    if b[0] == b'-' || b[b.len() - 1] == b'-' {
+        return Err("a `-` at either end of a class is ambiguous; escape it outside one".into());
+    }
+    for i in 1..b.len() - 1 {
+        if b[i] == b'-' && (b[i - 1] > b[i + 1] || b.get(i + 2) == Some(&b'-')) {
+            return Err(format!("`[{body}]` has an invalid range"));
+        }
+    }
+    Ok(body)
+}
+
+/// An exact path relative to the transfer root, every character literal.
+pub(super) fn literal(rel: &str, is_dir: bool) -> Parsed {
+    let comps = rel
+        .split('/')
+        .filter(|c| !c.is_empty())
+        .map(|c| Comp::Parts(c.chars().map(Tok::Lit).collect()))
+        .collect();
+    Parsed {
+        comps,
+        anchored: true,
+        dir_only: is_dir,
+    }
+}
+
+impl Parsed {
+    /// Whether this is the empty pattern `literal("")` makes.
+    pub fn is_empty(&self) -> bool {
+        self.comps.is_empty()
+    }
+
+    /// Matched against a path (anchored at the unit root) rather than only a
+    /// name: anything with a `/`, or `**`.
+    fn is_path(&self) -> bool {
+        self.anchored || self.comps.len() > 1 || self.comps[0] == Comp::Globstar
+    }
+
+    /// `**` components with something after them: `**/` that may match zero
+    /// directories.
+    fn droppable(&self) -> usize {
+        let n = self.comps.len();
+        self.comps[..n - 1]
+            .iter()
+            .filter(|c| **c == Comp::Globstar)
+            .count()
+    }
+
+    /// The globset text, without the anchor or the dir-only slash.
+    pub fn glob(&self) -> String {
+        let comp = |c: &Comp| match c {
+            Comp::Globstar => "**".to_string(),
+            Comp::Parts(ts) => ts
+                .iter()
+                .map(|t| match t {
+                    Tok::Lit(c) if "*?[]{}\\".contains(*c) => format!("\\{c}"),
+                    Tok::Lit(c) => c.to_string(),
+                    Tok::Star => "*".into(),
+                    Tok::Class(b) => format!("[{b}]"),
+                })
+                .collect(),
+        };
+        self.comps.iter().map(comp).collect::<Vec<_>>().join("/")
+    }
+
+    /// The same set of paths as rsync exclude rules.
+    ///
+    /// A name pattern stays unanchored: rsync matches it against the final
+    /// component at any depth, as the bare-name arm does. A path pattern is
+    /// anchored with `/`, since globset matches it against the whole relative
+    /// path. globset's `**/` matches zero or more directories and rsync's
+    /// (openrsync's, at least) one or more, so each `**/` becomes two rules:
+    /// one without it and one with it.
+    pub fn rsync_rules(&self) -> Vec<String> {
+        let suffix = if self.dir_only { "/" } else { "" };
+        if !self.is_path() {
+            return vec![format!("{}{suffix}", render_rsync(&self.comps))];
+        }
+        let slots: Vec<usize> = (0..self.comps.len() - 1)
+            .filter(|&i| self.comps[i] == Comp::Globstar)
+            .collect();
+        let mut out: Vec<String> = Vec::new();
+        for mask in 0..1u32 << slots.len() {
+            let comps: Vec<Comp> = self
+                .comps
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| match slots.iter().position(|s| s == i) {
+                    Some(bit) => mask & (1 << bit) != 0,
+                    None => true,
+                })
+                .map(|(_, c)| c.clone())
+                .collect();
+            let rule = format!("/{}{suffix}", render_rsync(&comps));
+            if !out.contains(&rule) {
+                out.push(rule);
+            }
+        }
+        out
+    }
+}
+
+/// rsync text for some components. rsync treats `\` as an escape only when the
+/// pattern holds a `*`, `?` or `[` somewhere, so a pattern without one has its
+/// literals written raw.
+fn render_rsync(comps: &[Comp]) -> String {
+    let wild = comps.iter().any(|c| match c {
+        Comp::Globstar => true,
+        Comp::Parts(ts) => ts.iter().any(|t| match t {
+            Tok::Lit(c) => "*?[".contains(*c),
+            _ => true,
+        }),
+    });
+    let comp = |c: &Comp| match c {
+        Comp::Globstar => "**".to_string(),
+        Comp::Parts(ts) => ts
+            .iter()
+            .map(|t| match t {
+                Tok::Lit(c) if wild && "*?[\\".contains(*c) => format!("\\{c}"),
+                Tok::Lit(c) => c.to_string(),
+                Tok::Star => "*".into(),
+                Tok::Class(b) => format!("[{b}]"),
+            })
+            .collect(),
+    };
+    comps.iter().map(comp).collect::<Vec<_>>().join("/")
+}
