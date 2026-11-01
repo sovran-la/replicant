@@ -8,9 +8,13 @@
 //! entry proceeds. Expiry releases the queue and nothing else (it does not
 //! clear markers; see [`crate::marker`]).
 //!
-//! A waiter is a request thread blocked in [`Queue::acquire`]; while it waits,
-//! its own lease is kept alive by that wait, because a connected waiter is by
-//! definition not dead.
+//! A waiter is a request thread blocked in [`Queue::wait`]. While it waits,
+//! that wait keeps its own lease alive, but only while the waiter's
+//! connection is: each tick asks the caller's `connected` probe (home's
+//! request thread peeks its socket). A waiter whose leaf died stops being
+//! refreshed, so the next sweep expires it, loudly; one that reaches the head
+//! first is withdrawn there instead of being granted a lease nobody would
+//! heartbeat (v0.1 review, F8).
 //!
 //! v0.1 takes an entry for every dry run so the mechanism is exercised, and
 //! nothing holds one for long.
@@ -24,6 +28,9 @@ use std::time::{Duration, Instant};
 /// What home answers for a lease id it does not hold: expired, released, or
 /// from before a restart. A leaf matches on it to tell "lost" from "unreachable".
 pub const NOT_QUEUED: &str = "is not in the queue";
+
+/// Why a waiter whose connection closed was withdrawn instead of granted.
+pub const WAITER_GONE: &str = "the waiter disconnected before reaching the head";
 
 /// How often a waiter re-checks the queue and refreshes its lease.
 const WAIT_TICK: Duration = Duration::from_millis(250);
@@ -97,10 +104,8 @@ impl Queue {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Enqueue and wait to reach the head; returns the lease id.
-    ///
-    /// `no_wait` fails instead of queueing when anything is ahead. `max_wait`
-    /// bounds the wait; on timeout the entry is withdrawn.
+    /// Enqueue and wait to reach the head; returns the lease id. For a
+    /// caller that cannot tell whether it is still connected (tests, holds).
     pub fn acquire(
         &self,
         host: &str,
@@ -109,6 +114,21 @@ impl Queue {
         lease: Duration,
         no_wait: bool,
         max_wait: Duration,
+    ) -> Result<u64> {
+        let id = self.enqueue(host, kind, paths, lease, no_wait)?;
+        self.wait(id, lease, max_wait, &|| true)?;
+        Ok(id)
+    }
+
+    /// Add an entry at the back; returns its id. `no_wait` fails instead when
+    /// anything is ahead.
+    pub fn enqueue(
+        &self,
+        host: &str,
+        kind: EntryKind,
+        paths: Vec<String>,
+        lease: Duration,
+        no_wait: bool,
     ) -> Result<u64> {
         let mut q = self.lock();
         if no_wait && let Some(head) = q.entries.front() {
@@ -128,6 +148,23 @@ impl Queue {
             started_at: None,
             expires: Instant::now() + lease,
         });
+        Ok(id)
+    }
+
+    /// Block until entry `id` reaches the head, then start its lease.
+    ///
+    /// `max_wait` bounds the wait; on timeout the entry is withdrawn.
+    /// `connected` is asked once per tick, under the queue lock, so it must be
+    /// cheap: the lease is refreshed only while it says yes, and an entry that
+    /// reaches the head while it says no is withdrawn ([`WAITER_GONE`]).
+    pub fn wait(
+        &self,
+        id: u64,
+        lease: Duration,
+        max_wait: Duration,
+        connected: &dyn Fn() -> bool,
+    ) -> Result<()> {
+        let mut q = self.lock();
         let deadline = Instant::now() + max_wait;
         loop {
             let Some(pos) = q.entries.iter().position(|e| e.id == id) else {
@@ -135,11 +172,17 @@ impl Queue {
                     "this queue entry was removed while waiting".into(),
                 ));
             };
+            let alive = connected();
+            if pos == 0 && !alive {
+                q.entries.remove(0);
+                self.cv.notify_all();
+                return Err(Error::Refused(WAITER_GONE.into()));
+            }
             if pos == 0 {
                 let e = &mut q.entries[0];
                 e.started_at = Some(crate::now_secs());
                 e.expires = Instant::now() + lease;
-                return Ok(id);
+                return Ok(());
             }
             if Instant::now() >= deadline {
                 let ahead = describe(&q.entries[0].view());
@@ -149,7 +192,9 @@ impl Queue {
                     "gave up waiting in the queue: {ahead}"
                 )));
             }
-            q.entries[pos].expires = Instant::now() + lease;
+            if alive {
+                q.entries[pos].expires = Instant::now() + lease;
+            }
             q = self
                 .cv
                 .wait_timeout(q, WAIT_TICK)

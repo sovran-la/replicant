@@ -200,3 +200,6 @@ fn describe_names_host_kind_paths_and_age() {
     };
     assert_eq!(describe(&v), "twinoaks hold work/tundra, waiting");
 }
+
+#[path = "queue_waiter_tests.rs"]
+mod waiters;

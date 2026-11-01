@@ -59,14 +59,27 @@ impl Home {
         }
     }
 
-    /// Handle one leaf request.
+    /// Handle one leaf request from a caller that is always connected.
     pub fn handle(&self, call: HomeCall) -> HomeAnswer {
+        self.handle_from(call, &|| true)
+    }
+
+    /// Handle one leaf request. `connected` says whether the leaf is still on
+    /// the line; a queue wait refreshes its lease only while it is.
+    pub fn handle_from(&self, call: HomeCall, connected: &dyn Fn() -> bool) -> HomeAnswer {
         let mut journal = Vec::new();
-        let result = self.dispatch(call, &mut journal).map_err(|e| e.to_string());
+        let result = self
+            .dispatch(call, connected, &mut journal)
+            .map_err(|e| e.to_string());
         HomeAnswer { result, journal }
     }
 
-    fn dispatch(&self, call: HomeCall, j: &mut Vec<String>) -> Result<HomeReply> {
+    fn dispatch(
+        &self,
+        call: HomeCall,
+        connected: &dyn Fn() -> bool,
+        j: &mut Vec<String>,
+    ) -> Result<HomeReply> {
         if call.version != WIRE_VERSION {
             return Err(Error::Remote(format!(
                 "request is wire version {}, this home speaks {WIRE_VERSION}; run the same replicant on both",
@@ -123,15 +136,19 @@ impl Home {
                     let f = self.fleet()?;
                     (self.served(&f, &host)?.0, f.lease)
                 };
-                let paths = specs.iter().map(|s| s.rel.clone()).collect();
-                let id = self.queue.acquire(
-                    &host,
-                    EntryKind::DryRun,
-                    paths,
-                    lease,
-                    no_wait,
-                    MAX_QUEUE_WAIT,
-                )?;
+                let paths: Vec<String> = specs.iter().map(|s| s.rel.clone()).collect();
+                let what = paths.join(" ");
+                let id = self
+                    .queue
+                    .enqueue(&host, EntryKind::DryRun, paths, lease, no_wait)?;
+                if let Err(e) = self.queue.wait(id, lease, MAX_QUEUE_WAIT, connected) {
+                    // Withdrawn at the head: as loud as a sweep's expiry.
+                    if e.to_string().contains(super::queue::WAITER_GONE) {
+                        let detail = format!("{e} (queue released; markers untouched)");
+                        self.journal(j, Line::new("expired", &host, &what, detail));
+                    }
+                    return Err(e);
+                }
                 Ok(HomeReply::Lease {
                     lease: id,
                     lease_secs: lease.as_secs(),

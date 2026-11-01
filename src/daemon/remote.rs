@@ -50,6 +50,30 @@ pub fn recv<R: Read, T: DeserializeOwned>(r: R) -> Result<T> {
 
 pub type ServerStream = StreamOwned<ServerConnection, TcpStream>;
 
+/// Whether the peer of `sock` is still there, without consuming anything: a
+/// non-blocking peek that would block means connected; end-of-file or an
+/// error means it left (a dead process's socket is closed by its kernel).
+/// Bytes waiting count as connected. A peer that vanished without a FIN (a
+/// power cut, a partition) also reads as connected; nothing here can tell.
+pub fn connected(sock: &TcpStream) -> bool {
+    if sock.set_nonblocking(true).is_err() {
+        return true;
+    }
+    let peeked = sock.peek(&mut [0u8; 1]);
+    let restored = sock.set_nonblocking(false).is_ok();
+    match peeked {
+        Ok(0) => false,
+        Ok(_) => restored,
+        Err(e) => {
+            restored
+                && matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                )
+        }
+    }
+}
+
 /// The mTLS front door.
 pub struct MtlsListener {
     tcp: TcpListener,
