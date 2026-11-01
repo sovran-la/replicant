@@ -1,7 +1,9 @@
 # Replicant — Rough Plan
 
-*Draft 2026-10-31, rev 4 (daemon control plane, FIFO queue + leases, quarantine/rollback, journal, dogfood via --as).
-Captures the design discussion; nothing here is final.*
+*Draft 2026-10-31, rev 5 2026-11-01 (v0.1.0 shipped and deployed; review findings folded in; v0.2 entry criteria).
+Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
+quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
+`docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
 
 ## Problem
 
@@ -49,9 +51,43 @@ baseline exchange, the FIFO queue and leases, the journal, and triggers (`--to`,
 `approve --sync`). It is what lets a brand-new leaf reach home *before* it
 has an authorized key, which ssh-only could not do.
 
+Each machine's replicant state lives in `~/.sovran/replicant`, beside the
+other sovran daemons (`REPLICANT_HOME` relocates it). A directory holding
+`fleet.toml` is home; anything else is a leaf.
+
+**Trust, as of v0.1 — temporary, not design.** Home mints a CA and *one*
+credentials bundle (`replicant config export-creds`); each leaf saves it as
+`~/.sovran/replicant/home.pem`. A leaf **names itself** in each request, and
+the bundle also carries home's server key. So any holder of the bundle can act
+as any host: rewrite another host's subscriptions, resume or own another
+host's home marker, read the whole fleet, create pending entries under any
+name, hold the queue, even impersonate home. The realistic risk is accidental,
+not hostile — two boxes with the same short hostname share an identity
+completely. Caps guard against mistakes only, and the ssh-side confinement
+that would be the hard boundary is not built (v0.1's `approve` does not touch
+ssh keys). Acceptable for a read-only v0.1; **not** acceptable once anything
+applies. Scheduled for v0.2, before apply (review F12/Q1), no new
+dependencies:
+
+- `config export-creds <host>` mints a per-host client cert from the existing CA.
+- `fleet.toml` pins it: `[hosts.x] cert = "sha256:<DER fingerprint>"`.
+- After the handshake home hashes the peer's leaf certificate and derives the
+  host from the fingerprint; the host named in the request is ignored, or
+  refused on mismatch. Fingerprint pinning avoids an X.509 parser.
+- Home's server cert becomes separate from client certs.
+
+Enrollment already means copying a bundle by hand; the bundle just becomes
+per-host.
+
 **Data plane:** `rsync -a --delete` over Tailscale SSH. Replicant never
 copies bytes itself; it is policy and guardrails around rsync. The daemon
-never carries file data.
+never carries file data. ssh runs non-interactive with timeouts
+(`BatchMode=yes`, `ConnectTimeout`, `ServerAlive*`) and rsync runs under a
+wall-clock bound, so a hung transfer cannot wedge home's queue. Quoting home's
+path is the *client's* job: rsync ≥ 3.2.4 escapes it, macOS's openrsync does
+not, so replicant detects openrsync and single-quotes the path for it. (The
+v0.1 notes' "rsync ≥ 3.2.4 on home protects arguments" is wrong; escaping is
+client-side.)
 
 ### One command
 
@@ -65,18 +101,40 @@ replicant status            # the decision table without acting; unresolved conf
 ```
 
 Direction is inferred, never typed. Each leaf keeps a **baseline** per
-subscribed path: the state it and home last agreed on. Home keeps the same
+unit: the state it and home last agreed on, recording both sides' hashes,
+each compared only with its own side's next hash. Home keeps the same
 baselines per leaf, plus the last N per path as history.
 
 ```
-no baseline, target empty   → pull (or push, whichever side has content)
-no baseline, both populated → conflict; `--adopt home|leaf` is the bulk answer
-home same,    leaf same     → nothing to do
-home changed, leaf same     → pull   (make leaf match home)
-home same,    leaf changed  → push   (make home match leaf)
-both changed                → conflict resolution, see below
-interrupted marker present  → resume that direction; never a conflict
+subscription base missing on its own side → error, never read as Empty
+no baseline, target empty                 → pull (or push, whichever side has content)
+no baseline, both populated, identical    → nothing to do
+no baseline, both populated, different    → conflict; `--adopt home|leaf` is the bulk answer
+home same,    leaf same                   → nothing to do
+home changed, leaf same                   → pull   (make leaf match home)
+home same,    leaf changed                → push   (make home match leaf)
+unit vanished on one side since baseline  → "deleted on X"; never a plain pull/push,
+                                            explicit confirmation required
+both changed, to the same state           → nothing to do
+both changed, differently                 → conflict resolution, see below
+interrupted marker present (own push)     → resume that direction; never a conflict
+home marker from another leaf             → quarantined; refused with the reason
+unsubscribed baseline                     → remove from the leaf, only if the host
+                                            explicitly unsubscribed it AND leaf ==
+                                            baseline.leaf; otherwise conflict
 ```
+
+The two "identical" rows are what keep the Syncthing cutover from being a
+wall of conflicts: both sides already agree, so agreeing is free. The
+vanished and missing-base rows exist because "everything became Empty" is
+far more often a renamed `~/work2`, an unmounted volume or an `--as` pointed
+at nothing than a real delete, and reading it as an ordinary change sends a
+whole-unit `rsync --delete` into home, the backup (review F4). `Remove` is
+narrow for the same reason (F5): a path home stops serving because a cap was
+narrowed or a root removed or mistyped is *not* an unsubscribe, and deleting
+unpushed leaf work in a loose unit is exactly what guardrail 1 cannot see.
+v0.1 has the identical, same-state, quarantine and remove rows; the vanished
+row and the conditions on remove are v0.2 entry criteria.
 
 `sync` always prints what it decided before touching anything:
 
@@ -84,8 +142,39 @@ interrupted marker present  → resume that direction; never a conflict
 push → thistledown: 3 repos, 41 files changed, 0 deleted
 ```
 
-State is a hash over per-repo `(HEAD, dirty-tree hash)` plus a manifest of
-non-repo files, scoped to the leaf's subscriptions.
+### State hash
+
+The table is decided per **unit**: one per repo found under a subscription
+on *either* side (the union, so a repo only home has is still a unit), plus
+one *loose* unit per subscription holding every non-repo entry under it. A
+subscription that is itself a repo has no loose unit. Finer loose
+granularity can come with v0.3's per-file conflicts.
+
+- **Repo:** `.git/HEAD`, every ref (`for-each-ref`, including
+  `refs/stash`), and the dirty tree: each porcelain v2 entry (staged content
+  by blob id) plus the working-tree **metadata** of anything the index does
+  not describe — size, mtime to the nanosecond, mode, link target. Never
+  content (decided 2026-11-01): content cost 1.7 GB of reads per `status` on
+  thistledown, and a modified 400 MB zip is still a modified 400 MB zip.
+- **Ignored-but-not-excluded files inside repos** enter the repo hash as a
+  metadata manifest of `git ls-files --others --ignored --exclude-standard`,
+  filtered by the root's excludes (accepted from the v0.1 notes, widened by
+  review F6). rsync moves them — an `.env.local`, a local dataset — so they
+  are state. Not in v0.1; a v0.2 entry criterion.
+- **Loose:** the sorted manifest of (path, kind, size, mtime, mode, link
+  target).
+
+Same contract everywhere: metadata, not content. rsync `-a` preserves
+mtimes, and each side compares only against its own baseline, so metadata
+is enough and the hash need not be machine-independent. The one blind spot
+is a same-size rewrite landing in the same nanosecond; it is pinned by a
+test so it is a decision, not a surprise.
+
+Known gaps (review Q3): the hash does not see `.git/config`, hooks,
+`info/exclude`, reflogs (so stash entries below the top one), or
+`skip-worktree`/`assume-unchanged` flags. It is over-sensitive to
+`refs/remotes/*`, which IDE autofetch moves on every machine; dropping them is
+a v0.2 entry criterion (they are refetchable, and rsync moves them anyway).
 
 ### Subscriptions
 
@@ -106,13 +195,17 @@ replicant subscribe thistledown ~/work/tundra --as ~/work2/tundra   # local path
 `--as` maps a home path to a different local path; default is identity.
 This is how we dogfood: `~/work` stays on Syncthing untouched while the
 same content is subscribed into `~/work2` and lived in for a while.
+birchbook does exactly this today: `~/work → ~/work2`.
 
 `subscribe` is a request to home. Home records it in the fleet config and
 starts serving it; `sync` on the leaf reads its subscriptions back from
 home. Home is the record of truth: `replicant status` on thistledown shows
 the whole fleet, and a leaf whose disk was wiped re-subscribes and gets
 exactly what it had. `unsubscribe` removes a path; the next `sync` cleans
-it off the leaf, through the dirty-target guard like any other delete.
+it off the leaf, under the conditions on the remove row and through the
+dirty-target guard like any other delete. Unsubscribing a path inside a
+broader subscription carves it out (`except = [...]`); re-subscribing
+restores it.
 
 ### Config lives on home
 
@@ -121,7 +214,7 @@ it off the leaf, through the dirty-target guard like any other delete.
 
 [roots.work]
 path    = "/home/morgan/work"
-exclude = ["target", ".build", "node_modules", "bin", ".DS_Store"]
+exclude = ["target", ".build", "node_modules", ".DS_Store"]
 
 [roots.claude]
 path    = "/home/morgan/.claude"
@@ -130,8 +223,8 @@ exclude = ["projects", "todos", "statsig", "*.jsonl", ".credentials.json"]
 
 [roots.sovran]
 path    = "/home/morgan/.sovran"
-# daemon state, locks, sockets, logs
-exclude = ["agents/state", "**/*.sock", "**/*.lock", "**/*.log"]
+# daemon state, locks, sockets, logs — including replicant's own state dir
+exclude = ["agents/state", "replicant", "**/*.sock", "**/*.lock", "**/*.log"]
 
 [hosts.birchbook]
 home_dir = "/Users/morgan"
@@ -152,15 +245,24 @@ paths = ["work", ".claude/skills", ".claude/commands", ".claude/settings.json",
 paths = ["work/tundra", "work/sequoia"]
 ```
 
+`bin` is deliberately not in the work root's excludes: plenty of repos
+track `bin/`, and a root-wide exclude would silently drop it. Add it per
+root only where it is truly build output.
+
 `allow` is an optional cap. Without it a host may subscribe to anything
 home serves. With it, home refuses anything outside the cap, loudly — the
 threat is not a hostile user but an agent or a reflex typing
 `subscribe thistledown ~/work` on the wrong box. twinoaks gets a cap;
 birchbook and stonebox do not.
 
-A leaf's local config is nothing but where home is, and `subscribe` writes
-that. SSH keys are per host; a capped host's key is additionally confined
-server-side so it physically cannot read outside its cap.
+Hand edits to fleet.toml are not picked up until the daemon's next own write
+or a restart (review F11); reload on change is a v0.2 entry criterion.
+
+A leaf's local config is little more than where home is, and `subscribe`
+writes that (plus `home_dir`, the rsync host, and the rsync time bound, all
+defaulted). SSH keys are per host; a capped host's key is additionally
+confined server-side so it physically cannot read outside its cap. (Not
+built yet; see the trust note.)
 
 ### Enrolling a new machine
 
@@ -273,17 +375,24 @@ quietly become "ignore forever."
 Before any destructive apply, in order:
 
 1. **Dirty target.** `git status --porcelain` on every repo on the target
-   side. Anything that would be overwritten and isn't on the source → refuse
-   (`--force` after printing exactly what dies).
+   side, plus every ignored-but-not-excluded file there (review F6: a
+   leaf-only `.env.local` must not vanish on a pull triggered by some other
+   change). Anything that would be overwritten and isn't on the source →
+   refuse (`--force` after printing exactly what dies). Stays active on
+   resume.
 2. **Stale baseline.** Push refuses if home moved since this leaf last
    pulled (someone else pushed). That is the "both changed" row, caught
    before rsync.
-3. **Source mid-write.** Any `.git/index.lock` / `*.lock` on the source →
+3. **Source mid-write.** Any of git's own `*.lock` files inside `.git` on
+   the source (`.git/index.lock` and friends; a `Cargo.lock` is source) →
    refuse. (Alternative: capture git state via `git bundle`, which is
    consistent by construction. Evaluate.)
 4. **Case collisions.** Two paths differing only by case headed from Linux
    home to a macOS leaf → refuse before rsync silently merges them. Only
-   needed on pull.
+   needed on pull; applies whenever the leaf is macOS. v0.1 checks within
+   each unit only; collisions *between* units (`work/Foo` vs `work/foo`, a
+   repo vs a loose sibling) and NFC/NFD pairs are a v0.2 entry criterion
+   (F7).
 5. **Subscription bounds.** A host's subscriptions (and its `allow` cap)
    bound everything; paths outside them are never transferred, never
    deleted, in either direction.
@@ -304,7 +413,8 @@ overlap on home.
 
 `status` on any machine shows the queue ("waiting: behind twinoaks pull
 work/tundra, started 40s ago"). `--no-wait` fails instead of queueing, for
-hooks where a long wait would only become a timeout.
+hooks where a long wait would only become a timeout. `status` itself does
+not take a queue entry; `sync` (including `--dry-run`) does.
 
 ### Leases
 
@@ -315,6 +425,18 @@ loudly, removed from the queue, and the next entry proceeds.
 
 Expiry releases the queue. It does **not** clear the marker (below). Those
 are different things on purpose.
+
+Losing a lease is never silent. The holder retries heartbeats for as long
+as the lease could still be alive; a definitive "not queued", or silence for
+the whole lease, marks it lost and fails the run with "lease lost", whatever
+the work returned. A failed release is an error too. In v0.1 the flag is
+checked before rsync starts and at the end; once apply exists, a lost lease
+must also **kill the running rsync child**, or two real rsyncs interleave on
+home (v0.2 entry criterion, F3).
+
+A waiter's lease is currently refreshed without checking its connection, so
+a leaf that dies while waiting holds its place for up to the full lease
+(F8, v0.2 entry criterion).
 
 ## Interrupted sync
 
@@ -336,7 +458,9 @@ A home marker clears one of three ways:
 
 - **Resume.** The pushing leaf's next `sync` sees home's marker for its own
   push, reruns the same rsync (idempotent), finishes, writes the baseline,
-  clears the marker. The common case; needs nothing from anyone.
+  clears the marker. The common case; needs nothing from anyone. "Its own"
+  is only as good as host identity, which is why per-host certs land before
+  apply.
 - **Rollback.** `replicant rollback <path>` on home restores the pre-push
   state from that push's `--backup-dir` plus its journaled itemized change
   list: new files removed, changed and deleted files restored. Baselines
@@ -358,17 +482,19 @@ role of thistledown survives replicant.
 
 ## Journal
 
-Home's daemon keeps an append-only journal, one line per event:
+Home's daemon keeps an append-only journal, one line per event. Timestamps
+are UTC: std has no time zone database, and the journal is read from
+several zones.
 
 ```
-2026-10-31T12:04:11-07  sync      birchbook  push  work/tundra   3 repos 41 files 0 del  ok
-2026-10-31T12:06:02-07  sync      twinoaks   pull  work/tundra   3 repos 41 files 0 del  ok
-2026-10-31T12:30:40-07  hold      thistledown agent:beatrix work/tundra/tundra-beacon  acquired
-2026-10-31T13:02:15-07  sync      birchbook  push  work/sequoia  interrupted (rsync exit 20)
-2026-10-31T13:05:33-07  sync      birchbook  push  work/sequoia  resumed → ok
-2026-10-31T13:10:00-07  conflict  birchbook  work/scratch/notes.md  chose:birchbook
-2026-10-31T13:10:00-07  conflict  birchbook  work/rust/sysdirs      skipped
-2026-10-31T14:00:00-07  approve   spruce     allow:(none)
+2026-10-31T19:04:11Z  sync      birchbook  push  work/tundra   3 repos 41 files 0 del  ok
+2026-10-31T19:06:02Z  sync      twinoaks   pull  work/tundra   3 repos 41 files 0 del  ok
+2026-10-31T19:30:40Z  hold      thistledown agent:beatrix work/tundra/tundra-beacon  acquired
+2026-10-31T20:02:15Z  sync      birchbook  push  work/sequoia  interrupted (rsync exit 20)
+2026-10-31T20:05:33Z  sync      birchbook  push  work/sequoia  resumed → ok
+2026-10-31T20:10:00Z  conflict  birchbook  work/scratch/notes.md  chose:birchbook
+2026-10-31T20:10:00Z  conflict  birchbook  work/rust/sysdirs      skipped
+2026-10-31T21:00:00Z  approve   spruce     allow:(none)
 ```
 
 `replicant log [--host H] [--path P] [--since T]` reads it. Leaves keep a
@@ -465,13 +591,19 @@ Syncs queued behind a hold wait (or `--no-wait` fails) and `status` names the
 agent holding it. The daemon on home decides which hook script applies by
 knowing it is home; the leaf hooks are the sync ones above.
 
+A hold outlives the CLI process that took it, so something must keep it
+alive. That something is the **agents daemon's view of the agent** (its pid
+or agent status), not replicant: if replicant's own daemon heartbeated
+holds, a killed agent would orphan its hold forever (review Q5).
+
 ### Per-path baselines make lending a repo cheap
 
-Baselines and the direction table are per repo and per non-git directory,
-not tree-wide. While twinoaks holds `tundra/tundra-beacon`, birchbook can
-keep working on anything else; the next `sync` is push for some paths and
-pull for others in one run. Touching the lent-out repo on both machines
-puts that repo — and only that repo — into conflict resolution.
+Baselines and the direction table are per unit — per repo, and one loose
+unit per subscription — not tree-wide. While twinoaks holds
+`tundra/tundra-beacon`, birchbook can keep working on anything else; the
+next `sync` is push for some paths and pull for others in one run. Touching
+the lent-out repo on both machines puts that repo — and only that repo —
+into conflict resolution.
 
 ### `--to <host>`
 
@@ -482,19 +614,34 @@ subscription.
 
 ## Exclusions
 
-Regenerable or per-machine; never synced, rebuilt locally:
+Regenerable or per-machine; never synced, rebuilt locally. Built in, every
+root:
 
 ```
-target/  .build/  node_modules/  bin/  .DS_Store
 .git/index.lock  .git/*.lock
 .git/worktrees/
 ```
 
-**`.git/index` is synced** (decided 2026-10-31). Failure 1 above came from
-syncing it while both machines were live. With a quiescent source and a
-full-tree copy the stat cache is merely stale, not wrong, and the first
-`git status` on the receiver refreshes it. Not syncing it would lose the
-staged/unstaged distinction, which is real state.
+Everything else comes from each root's `exclude` in fleet.toml (`target/`,
+`.build/`, `node_modules/`, `.DS_Store` in the example). Anchored (`/x`)
+patterns are refused. The exclude engine moves to `globset` with the sovran
+filesystem matching rules, plus a differential test against rsync so the
+walkers and rsync agree on every pattern (decided 2026-11-01; in flight on
+`bsneed/v0.2-prep`).
+
+**`.git/index` is synced** (decided 2026-10-31, still true after v0.1).
+Failure 1 above came from syncing it while both machines were live. With a
+quiescent source and a full-tree copy the stat cache is merely stale, not
+wrong, and the first `git status` on the receiver refreshes it. Not syncing
+it would lose the staged/unstaged distinction, which is real state.
+
+The cost of a stale stat cache is that `git status` rehashes every file
+until something refreshes it. Replicant's git calls are read-only (no
+optional locks, `core.fsmonitor=false`), so they never refresh it. **Home may
+run a one-time `git update-index --refresh` on its own repos** (decided
+2026-11-01): thistledown is nobody's working machine, and that write
+changes only the cache, never staged state. Leaves get no such pass;
+replicant does not write a leaf's `.git`.
 
 **Worktrees are not synced** (decided 2026-10-31). They are short-lived and
 only matter to the agent using them. Replicant detects them rather than
@@ -511,6 +658,8 @@ Rust crate, single binary: CLI plus daemon mode (`replicant daemon`),
 same binary on home and leaves. Home is whichever daemon has `fleet.toml`.
 Daemon-to-daemon transport reuses the sovran.la/agents remote pattern
 (mTLS over plain TCP on the tailnet, `std::thread` + channels, no Tokio).
+The pattern was copied, not depended on: no shared sovran.la mTLS crate
+exists.
 
 ```
 src/
@@ -525,14 +674,19 @@ src/
   paths.rs         the one path normalizer (leaf and home)
   baseline.rs      per-leaf, per-path baseline read/write; last-N history on home
   marker.rs        in-progress markers; home-side quarantine; resume / rollback / accept
-  state.rs         state hash: per-repo (HEAD, dirty hash) + manifest of non-repo files
+  state.rs         state hash: per-repo (refs, dirty metadata, ignored manifest) + loose manifest
   repos.rs         discover .git dirs and worktrees under a root; git status/lock/case checks
-  decide.rs        the direction table, per path, including no-baseline and resume rows
+  decide.rs        the direction table, per unit, including no-baseline and resume rows
   conflict.rs      conflict detection, prompting, collect-then-apply, skip tracking, non-interactive mode
   guard.rs         the five refusals, with human-readable reports
   rsync.rs         build and run the rsync command, parse itemized output
   ssh.rs           the data-plane ssh invocation only; control goes through the daemon
 ```
+
+v0.1 as built diverges from this sketch in layout (`units.rs`, `plan/`,
+`exclude.rs`, `cli/`, `ssh.rs` folded into `rsync.rs`, the daemon split by
+role); `docs/v0.1-notes.md` has the table. The sketch stays as the map of
+responsibilities.
 
 Tests: every guardrail and every row of the decision table gets a
 fixture-repo test (dirty target, stale baseline, source lock, case
@@ -542,22 +696,38 @@ resume-from-marker, queue ordering, lease expiry, quarantine refusal, rollback, 
 invocations tested against a temp dir pair; daemon-to-daemon tested over
 loopback; no tailnet in unit tests.
 
-Performance note: state hashing runs `git status` across every repo on
-both sides per sync. Might be fine, might be twenty seconds on `~/work`.
-v0.1's `--dry-run` is where we measure; caching by mtime is the fallback.
+Performance: the plan's open question was whether state hashing across every
+repo on both sides costs twenty seconds on `~/work`. Measured: the first real
+`sync --dry-run` of `~/work → ~/work2` took **14.5 s**; after the 2026-11-01
+perf work (dirty files by metadata, the loose-unit filter) it is **~1.1 s**.
+Home logs per-snapshot timing — discover and unit phases, worker count, and
+its five slowest units — so the next regression names itself (decided
+2026-11-01). Discovery is going parallel (in flight).
+
+## Known data quality issues on home
+
+thistledown's `~/work` is not clean: it carries Syncthing debris
+(`.sync-conflict-*` files, including inside `.git/`), 22 GB of HuggingFace
+blobs under `memoryco/gguf_models` (excluded for now), and large dirty
+binaries (SegmentShop zips, xcframeworks). A cleanup pass before the first
+real pull is a cutover prerequisite, and like cutover it is still deferred.
 
 ## Phases
 
 1. **Mitigation now.** Add `.git/index`, `.git/*.lock`, `.git/worktrees` to
    the Syncthing `.stignore`. Kills the most frequent symptom while replicant
    is built. (Does not fix ordering or concurrency.)
-2. **v0.1.0 — daemon skeleton, `subscribe`, `approve`, `status` (+ `--fleet`),
-   `sync --dry-run`.** Config, enrollment, discovery, state hash, decision
-   table, rsync diff, guardrails 1/3/4/5. Read-only; proves the plan
-   against the real tree and measures the state-hash cost.
-3. **v0.2.0 — apply.** Real pull and push into `~/work2` on a leaf (the
-   `--as` dogfood), baselines + history, the queue + leases, markers/resume/rollback, journal,
-   guardrail 2, backup-dir on home.
+2. **v0.1.0 — done.** Daemon skeleton, `subscribe`, `approve`, `status` (+
+   `--fleet`), `sync --dry-run`: config, enrollment, discovery, state hash,
+   decision table, rsync diff, guardrails 1/3/4/5. Read-only by construction.
+   Merged 2026-10-31 after review (F1–F3, F10, F13, F14 and the nits fixed
+   pre-merge), tagged `0.1.0`, 239 tests. Deployed: home on thistledown as a
+   systemd user unit, leaf on birchbook via launchd, subscribed
+   `~/work → ~/work2`. First real dry run 14.5 s, ~1.1 s after perf work.
+3. **v0.2.0 — apply.** Gated on the entry criteria below. Real pull and push
+   into `~/work2` on a leaf (the `--as` dogfood), baselines + history, the
+   queue + leases, markers/resume/rollback, journal, guardrail 2,
+   backup-dir on home.
 4. **v0.3.0 — conflicts.** Repo and file conflict prompts, collect-then-
    apply, skip tracking, `--adopt`, merge via peer-to-peer git.
 5. **v0.4.0 — agents.** Leaf hooks (sync), home hooks (hold/release),
@@ -566,10 +736,37 @@ v0.1's `--dry-run` is where we measure; caching by mtime is the fallback.
 7. **Later, if wanted.** The daemon notices a machine switch and runs
    `--dry-run` + notifies. It never applies on its own.
 
+## v0.2 entry criteria
+
+Latent in a read-only v0.1, fatal once anything applies. Each is designed
+before it is built (F-numbers from `docs/v0.1-review.md`):
+
+- **F4** — a missing subscription base is an error, and a unit that vanished
+  since baseline is "deleted on X" with explicit confirmation, never a plain
+  whole-unit delete.
+- **F5** — `Remove` only for explicit unsubscribes and only when
+  `leaf == baseline.leaf`; otherwise conflict.
+- **F6** — ignored-but-not-excluded files enter the repo hash as a metadata
+  manifest, and guardrail 1 treats them as at-risk on the target.
+- **F7** — guardrail 4 also checks collisions across units and NFC/NFD pairs.
+- **F8** — a waiter's lease refresh checks that its connection is alive.
+- **F9** — push deletions from openrsync to rsync 3 must come back with names;
+  needs a real Mac→Linux push test with a deletion.
+- **F11** — hand edits to fleet.toml are reloaded (also fixes `approve`
+  previewing a stale cached fleet).
+- **F12** — per-host client certs, fingerprint-pinned in fleet.toml, host
+  derived from the peer cert, server cert separated.
+- **F3 (v0.2 half)** — a lost lease kills the running rsync child.
+- **Q3** — drop `refs/remotes/*` from the state hash; IDE autofetch otherwise
+  makes every repo a conflict.
+- **Q5** — holds are kept alive by the agents daemon's view of the agent, not
+  by replicant.
+
 ## Deferred on purpose
 
 - **Cutover from Syncthing.** Dogfood in `~/work2` first; design the
-  checklist when there is something to cut over to.
+  checklist when there is something to cut over to. The home cleanup pass
+  (see *Known data quality issues on home*) is a prerequisite.
 - **Secrets.** `.env`, `*.pem`, keys under `~/work` sync today over the
   tailnet and keep doing so. Nothing special until there is a reason.
 
