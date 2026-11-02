@@ -34,6 +34,13 @@ pub struct SubSpec {
     pub except: Vec<String>,
 }
 
+impl SubSpec {
+    /// Whether `rel` is inside this subscription and not carved out of it.
+    pub fn covers(&self, rel: &str) -> bool {
+        paths::is_within(rel, &self.rel) && !excepted(rel, &self.except)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnitKind {

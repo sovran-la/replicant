@@ -69,6 +69,7 @@ pub(super) fn run(
     worktrees.extend(snap.worktrees.iter().cloned());
     let sub_rels: Vec<String> = snap.specs.iter().map(|s| s.rel.clone()).collect();
     let excepts: Vec<String> = snap.specs.iter().flat_map(|s| s.except.clone()).collect();
+    let unserved: Vec<SubSpec> = snap.unserved.iter().map(|u| u.spec.clone()).collect();
     let jobs: Vec<usize> = (0..planned.len())
         .filter(|i| diff_direction(ctx.me, &planned[*i].decision).is_some())
         .collect();
@@ -95,7 +96,9 @@ pub(super) fn run(
                 .units
                 .iter()
                 .find(|u| u.rel == p.rel && u.kind == p.kind);
-            let spec = spec_for(&snap.specs, &p.rel);
+            // A unit home no longer serves keeps the excludes home reports
+            // for it, so removing a loose unit spares the repos inside it.
+            let spec = spec_for(&snap.specs, &p.rel).or_else(|| spec_for(&unserved, &p.rel));
             let excludes = match spec {
                 Some(s) => units::excludes(s, &p.rel, p.kind, union, &worktrees)?,
                 None => crate::exclude::Excludes::for_root(&[])?,

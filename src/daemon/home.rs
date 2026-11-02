@@ -165,10 +165,12 @@ impl Home {
             HomeRequest::State {
                 leaf_repos,
                 case_check,
+                baselines,
             } => Ok(HomeReply::State(self.snapshot(
                 &host,
                 &leaf_repos,
                 case_check,
+                &baselines,
             )?)),
             HomeRequest::Report {
                 event,

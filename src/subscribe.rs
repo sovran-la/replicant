@@ -88,18 +88,20 @@ pub fn subscribe(
     let mut all = current.paths.clone();
     all.extend(requested.iter().cloned());
     let (paths, absorbed) = paths::collapse(&all);
-    // Re-subscribing a carved-out path (or a parent of one) restores it.
-    let except: Vec<String> = current
-        .except
-        .into_iter()
-        .filter(|e| !requested.iter().any(|r| paths::is_within(e, r)))
-        .collect();
+    // Re-subscribing a carved-out or unsubscribed path (or a parent of one)
+    // restores it.
+    let restored = |list: Vec<String>| -> Vec<String> {
+        list.into_iter()
+            .filter(|e| !requested.iter().any(|r| paths::is_within(e, r)))
+            .collect()
+    };
     edit::set_subscription(
         file,
         host,
         &Subscription {
             paths: paths.clone(),
-            except,
+            except: restored(current.except),
+            unsubscribed: restored(current.unsubscribed),
         },
     )?;
     Ok(SubscribeOutcome {
@@ -203,12 +205,18 @@ pub fn unsubscribe(
         )));
     }
     except.sort();
+    // Remembered so home can tell the leaf these were given up on purpose
+    // (review F5); a carve-out says so already, by being in `except`.
+    let mut unsubscribed = sub.unsubscribed.clone();
+    unsubscribed.extend(removed.iter().cloned());
+    let (unsubscribed, _) = paths::collapse(&unsubscribed);
     edit::set_subscription(
         file,
         host,
         &Subscription {
             paths: paths_left.clone(),
             except: except.clone(),
+            unsubscribed,
         },
     )?;
     Ok(UnsubscribeOutcome {
@@ -264,7 +272,7 @@ pub fn approve(fleet: &Fleet, file: &Path, host: &str, raw_allow: &[String]) -> 
         },
         &Subscription {
             paths: preview.keep.clone(),
-            except: vec![],
+            ..Default::default()
         },
     )?;
     Ok(Approved {

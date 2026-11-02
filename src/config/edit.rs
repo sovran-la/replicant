@@ -53,10 +53,12 @@ fn array(list: &[String]) -> Item {
 fn put_subscription(doc: &mut DocumentMut, host: &str, sub: &Subscription) -> Result<()> {
     let t = child(doc, "subscriptions", host)?;
     t.insert("paths", array(&sub.paths));
-    if sub.except.is_empty() {
-        t.remove("except");
-    } else {
-        t.insert("except", array(&sub.except));
+    for (key, list) in [("except", &sub.except), ("unsubscribed", &sub.unsubscribed)] {
+        if list.is_empty() {
+            t.remove(key);
+        } else {
+            t.insert(key, array(list));
+        }
     }
     Ok(())
 }
@@ -147,6 +149,7 @@ mod tests {
         let sub = Subscription {
             paths: vec!["work/a".into()],
             except: vec!["work/a/x".into()],
+            unsubscribed: vec!["work/b".into()],
         };
         set_subscription(&p, "leaf", &sub).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
@@ -163,12 +166,16 @@ mod tests {
             "leaf",
             &Subscription {
                 paths: vec!["work".into()],
-                except: vec![],
+                ..Default::default()
             },
         )
         .unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(!text.contains("except"), "empty except is removed: {text}");
+        assert!(
+            !text.contains("unsubscribed"),
+            "empty unsubscribed is removed: {text}"
+        );
     }
 
     #[test]

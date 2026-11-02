@@ -7,7 +7,7 @@
 
 use super::fleet::{FleetState, PendingView};
 use super::journal::{Filter, Line};
-use crate::decide::Decision;
+use crate::decide::{Decision, UnservedReason};
 use crate::guard::Refusal;
 use crate::marker::Marker;
 use crate::plan::{LeafStatus, Plan};
@@ -53,6 +53,11 @@ pub enum HomeRequest {
     State {
         leaf_repos: Vec<String>,
         case_check: bool,
+        /// Every path the leaf holds a baseline for, so home can say why it
+        /// no longer serves any of them (review F5). Absent from an older
+        /// leaf: none.
+        #[serde(default)]
+        baselines: Vec<String>,
     },
     /// What the leaf decided, for the fleet view and the journal.
     Report {
@@ -144,6 +149,21 @@ pub struct HomeSnapshot {
     /// sync or an error (review F4). Absent from an older home: none.
     #[serde(default)]
     pub absent: Vec<String>,
+    /// The leaf's baselines home no longer serves, and why. A baseline out
+    /// of bounds and missing here is [`UnservedReason::NotServed`]. Absent
+    /// from an older home: none.
+    #[serde(default)]
+    pub unserved: Vec<Unserved>,
+}
+
+/// A path a leaf has a baseline for and home no longer serves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unserved {
+    /// The baseline's path, with the excludes and carve-outs home would
+    /// apply to it if it still served it (none when no root covers it), so
+    /// the leaf hashes its copy the way the baseline was hashed.
+    pub spec: SubSpec,
+    pub reason: UnservedReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

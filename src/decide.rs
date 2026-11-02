@@ -23,6 +23,14 @@
 //! often a renamed directory or an unmounted volume than a real delete, and
 //! as an ordinary change it would send a whole-unit `rsync --delete`.
 //!
+//! And, for a baseline home no longer serves (review F5, [`decide_unserved`]):
+//!
+//! ```text
+//! unsubscribed baseline → remove from the leaf, only if the host explicitly
+//!                         unsubscribed it AND leaf == baseline.leaf (and no
+//!                         marker covers it); otherwise conflict
+//! ```
+//!
 //! Plus three rows the plan implies but does not tabulate:
 //!
 //! - **both empty, no baseline** → nothing (there is nothing to move);
@@ -59,8 +67,9 @@ pub enum Decision {
         by: String,
         since: u64,
     },
-    /// No longer subscribed and a baseline says this leaf has it: the next
-    /// sync deletes the leaf's copy (through guardrail 1).
+    /// Explicitly unsubscribed, and a baseline says this leaf has it,
+    /// unchanged: the next sync deletes the leaf's copy (through guardrail 1).
+    /// See [`decide_unserved`] for when it is not.
     Remove,
     /// Present at baseline, now empty on `host`, and unchanged on the other
     /// side. Never a plain pull or push: carrying it out removes the whole
@@ -180,6 +189,83 @@ pub fn decide(i: Inputs<'_>) -> Decision {
     }
 }
 
+/// Why home no longer serves a path a leaf holds a baseline for. Home says;
+/// a leaf that is not told assumes [`UnservedReason::NotServed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnservedReason {
+    /// The host ran `unsubscribe` on it: a removed subscription or a
+    /// carve-out. The only reason that can become [`Decision::Remove`].
+    Unsubscribed,
+    /// Its subscription is outside the host's cap, narrowed since.
+    CapNarrowed,
+    /// Its subscription is under no root fleet.toml configures: a root
+    /// removed, renamed or mistyped.
+    RootMissing,
+    /// None of the above: never subscribed as far as home knows, or dropped
+    /// from `paths` by a hand edit.
+    NotServed,
+}
+
+impl std::fmt::Display for UnservedReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            UnservedReason::Unsubscribed => "unsubscribed",
+            UnservedReason::CapNarrowed => "cap narrowed",
+            UnservedReason::RootMissing => "no root serves it",
+            UnservedReason::NotServed => "not subscribed",
+        })
+    }
+}
+
+/// What a baseline home no longer serves is decided on.
+#[derive(Debug, Clone, Copy)]
+pub struct UnservedInputs<'a> {
+    pub rel: &'a str,
+    pub reason: UnservedReason,
+    /// The leaf's state of the unit now.
+    pub leaf: &'a UnitState,
+    pub baseline: &'a Baseline,
+    /// Files the leaf holds in the unit now.
+    pub files: u64,
+    /// A marker on either side covering the unit.
+    pub marker: Option<&'a Marker>,
+}
+
+/// PLAN's last row (review F5): `Remove` only when the host explicitly
+/// unsubscribed the path, the leaf is unchanged since baseline, and no
+/// interrupted sync is marked over it. Anything else is a blocking conflict,
+/// never a delete: a cap narrowed or a root mistyped is not an unsubscribe,
+/// and deleting unpushed loose work is exactly what guardrail 1 cannot see.
+pub fn decide_unserved(i: UnservedInputs<'_>) -> Decision {
+    let changed = *i.leaf != i.baseline.leaf;
+    if i.reason == UnservedReason::Unsubscribed && !changed && i.marker.is_none() {
+        return Decision::Remove;
+    }
+    let files = if i.files == 1 { "file" } else { "files" };
+    let since = if changed { "changed" } else { "unchanged" };
+    let marked = i
+        .marker
+        .map(|m| {
+            format!(
+                "; an interrupted {} by {} is marked here",
+                m.direction, m.host
+            )
+        })
+        .unwrap_or_default();
+    Decision::Conflict {
+        why: format!(
+            "home no longer serves {} ({}); {} {files} here, {since} since baseline{marked}; \
+             re-subscribe, or unsubscribe to remove",
+            i.rel, i.reason, i.files
+        ),
+    }
+}
+
 #[cfg(test)]
 #[path = "decide_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "decide_unserved_tests.rs"]
+mod unserved_tests;

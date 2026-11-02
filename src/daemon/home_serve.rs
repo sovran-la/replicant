@@ -4,9 +4,11 @@
 
 use super::Home;
 use crate::config::Fleet;
-use crate::daemon::wire::{Enrollment, HomeSnapshot, SubscriptionsView};
+use crate::daemon::wire::{Enrollment, HomeSnapshot, SubscriptionsView, Unserved};
+use crate::decide::UnservedReason;
 use crate::guard::{self, Refusal};
 use crate::marker::{self, Marker};
+use crate::subscribe::outside_cap;
 use crate::units::{self, Discovered, SubSpec};
 use crate::{Error, Result, paths};
 
@@ -89,10 +91,12 @@ impl Home {
         host: &str,
         leaf_repos: &[String],
         case_check: bool,
+        baselines: &[String],
     ) -> Result<HomeSnapshot> {
-        let (specs, home_dir) = {
+        let (specs, home_dir, unserved) = {
             let f = self.fleet()?;
             let specs = self.served(&f, host)?.0;
+            let unserved = unserved(&f, host, &specs, baselines);
             // A missing root is home's own misconfiguration or an unmounted
             // volume, never "empty" (review F4); `served` kept only specs
             // under a root.
@@ -114,7 +118,7 @@ impl Home {
             if !missing.is_empty() {
                 return Err(Error::Missing(missing.join("; ")));
             }
-            (specs, f.home_dir.clone())
+            (specs, f.home_dir.clone(), unserved)
         };
         let hd = home_dir.clone();
         let t0 = std::time::Instant::now();
@@ -124,10 +128,7 @@ impl Home {
         // Guardrail 5 on home: a leaf's repo list cannot steer home outside
         // the host's bounds. Anything malformed or out of bounds is ignored.
         for r in leaf_repos {
-            let ok = paths::check_rel(r).is_ok()
-                && specs.iter().any(|s| {
-                    paths::is_within(r, &s.rel) && !s.except.iter().any(|e| paths::is_within(r, e))
-                });
+            let ok = paths::check_rel(r).is_ok() && specs.iter().any(|s| s.covers(r));
             if ok && !union.contains(r) {
                 union.push(r.clone());
             }
@@ -150,7 +151,10 @@ impl Home {
         let markers: Vec<Marker> = marker::store(&self.dirs.state())
             .all::<Marker>()?
             .into_iter()
-            .filter(|m| specs.iter().any(|s| m.covers(&s.rel)))
+            .filter(|m| {
+                specs.iter().any(|s| m.covers(&s.rel))
+                    || unserved.iter().any(|u| m.covers(&u.spec.rel))
+            })
             .collect();
         let absent = found.absent().into_iter().map(|(rel, _)| rel).collect();
         Ok(HomeSnapshot {
@@ -161,6 +165,44 @@ impl Home {
             repos: found.repos(),
             worktrees: found.worktrees(),
             markers,
+            unserved,
         })
     }
+}
+
+/// Why home no longer serves each of the leaf's `baselines` that `specs` do
+/// not cover (review F5). The reasons that are not an explicit unsubscribe
+/// are checked first: a cap narrowed over a carve-out is still a cap
+/// narrowed, and must not become a delete.
+fn unserved(f: &Fleet, host: &str, specs: &[SubSpec], baselines: &[String]) -> Vec<Unserved> {
+    let sub = f.subscription(host);
+    let cap = f.hosts.get(host).and_then(|e| e.allow.as_deref());
+    let within_any = |b: &str, list: &[String]| list.iter().any(|x| paths::is_within(b, x));
+    baselines
+        .iter()
+        .filter(|b| paths::check_rel(b).is_ok() && !specs.iter().any(|s| s.covers(b)))
+        .map(|b| {
+            let reason = match sub.paths.iter().find(|p| paths::is_within(b, p)) {
+                Some(p) if f.root_for(p).is_none() => UnservedReason::RootMissing,
+                Some(p) if !outside_cap(std::slice::from_ref(p), cap).is_empty() => {
+                    UnservedReason::CapNarrowed
+                }
+                Some(_) if within_any(b, &sub.except) => UnservedReason::Unsubscribed,
+                Some(_) => UnservedReason::NotServed,
+                None if within_any(b, &sub.unsubscribed) => UnservedReason::Unsubscribed,
+                None => UnservedReason::NotServed,
+            };
+            let spec = SubSpec {
+                rel: b.clone(),
+                exclude: f.root_for(b).map(|r| r.exclude.clone()).unwrap_or_default(),
+                except: sub
+                    .except
+                    .iter()
+                    .filter(|e| *e != b && paths::is_within(e, b))
+                    .cloned()
+                    .collect(),
+            };
+            Unserved { spec, reason }
+        })
+        .collect()
 }

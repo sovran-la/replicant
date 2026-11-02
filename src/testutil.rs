@@ -172,6 +172,23 @@ impl Bed {
     }
 }
 
+/// Rewrite fleet.toml in place (same inode, as `>` or an editor that does not
+/// rename would) and move its mtime a full second, so a running `Home` sees
+/// the edit whatever the filesystem's timestamp granularity.
+pub fn hand_edit(fleet: &Path, from: &str, to: &str) {
+    let text = std::fs::read_to_string(fleet).unwrap();
+    assert!(text.contains(from), "{from:?} not in fleet.toml:\n{text}");
+    let was = std::fs::metadata(fleet).unwrap().modified().unwrap();
+    let f = std::fs::File::options()
+        .write(true)
+        .truncate(true)
+        .open(fleet)
+        .unwrap();
+    std::io::Write::write_all(&mut &f, text.replace(from, to).as_bytes()).unwrap();
+    f.set_modified(was + std::time::Duration::from_secs(1))
+        .unwrap();
+}
+
 /// A [`crate::plan::HomeLink`] that calls a [`crate::daemon::home::Home`]
 /// directly, as `host`.
 pub struct InProcess<'a> {

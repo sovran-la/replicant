@@ -55,6 +55,7 @@ fn pending_host_flow_end_to_end() {
         HomeRequest::State {
             leaf_repos: vec![],
             case_check: false,
+            baselines: vec![],
         },
     );
     assert!(st.result.unwrap_err().contains("pending approval"));
@@ -114,6 +115,7 @@ fn unknown_host_is_unknown_and_refused_state() {
         HomeRequest::State {
             leaf_repos: vec![],
             case_check: false,
+            baselines: vec![],
         },
     );
     assert!(st.result.unwrap_err().contains("not enrolled"));
@@ -184,6 +186,7 @@ fn cap_narrowed_after_subscribing_bounds_what_is_served() {
         HomeRequest::State {
             leaf_repos: vec!["work/b/r".into(), "work/../etc".into(), "other/x".into()],
             case_check: false,
+            baselines: vec![],
         },
     )) else {
         panic!()
@@ -219,6 +222,7 @@ fn state_unions_leaf_repos_inside_bounds_and_reports_markers() {
         HomeRequest::State {
             leaf_repos: vec!["work/l".into()],
             case_check: true,
+            baselines: vec![],
         },
     )) else {
         panic!()

@@ -20,21 +20,8 @@ fn served(home: &Home, bed: &Bed) -> Vec<String> {
     }
 }
 
-/// Rewrite fleet.toml in place (same inode, as `>` or an editor that does not
-/// rename would) and move its mtime a full second, so the edit is visible
-/// whatever the filesystem's timestamp granularity.
 fn hand_edit(bed: &Bed, from: &str, to: &str) {
-    let path = bed.home_dirs.fleet();
-    let text = std::fs::read_to_string(&path).unwrap();
-    assert!(text.contains(from), "{from:?} not in fleet.toml");
-    let was = std::fs::metadata(&path).unwrap().modified().unwrap();
-    let f = std::fs::File::options()
-        .write(true)
-        .truncate(true)
-        .open(&path)
-        .unwrap();
-    std::io::Write::write_all(&mut &f, text.replace(from, to).as_bytes()).unwrap();
-    f.set_modified(was + Duration::from_secs(1)).unwrap();
+    testutil::hand_edit(&bed.home_dirs.fleet(), from, to);
 }
 
 fn two_subscriptions() -> Bed {
@@ -69,6 +56,7 @@ fn a_cap_narrowed_by_hand_is_enforced_on_the_next_request() {
         HomeRequest::State {
             leaf_repos: vec!["work/b/r".into()],
             case_check: false,
+            baselines: vec![],
         },
     );
     let Ok(HomeReply::State(s)) = st.result else {

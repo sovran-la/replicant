@@ -4,6 +4,7 @@
 use super::*;
 use crate::daemon::home::Home;
 use crate::daemon::queue::EntryKind;
+use crate::decide::Decision;
 use crate::guard::Guard;
 use crate::marker::Direction;
 use crate::record::{RECORD_VERSION, Store};
@@ -300,3 +301,6 @@ mod deleted;
 
 #[path = "tests_except.rs"]
 mod except;
+
+#[path = "tests_unserved.rs"]
+mod unserved;

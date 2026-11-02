@@ -56,6 +56,16 @@ fn interrupted_marker_rows_resume_or_quarantine() {
 #[test]
 fn unsubscribed_baseline_is_removed_through_guard1() {
     let bed = Bed::enrolled();
+    let old = testutil::repo(&bed.leaf_hd.join("work/old"));
+    testutil::write(&old.join("README"), "uncommitted\n");
+    // The baseline records the leaf as it is now (review F5: `Remove` needs
+    // leaf == baseline.leaf), dirty README included.
+    let now = unit(
+        &go(&bed, &bed.home(), &bed.leaf_cfg(), false).unwrap(),
+        "work/old",
+    )
+    .leaf
+    .clone();
     let text = std::fs::read_to_string(bed.home_dirs.fleet()).unwrap();
     std::fs::write(
         bed.home_dirs.fleet(),
@@ -65,20 +75,29 @@ fn unsubscribed_baseline_is_removed_through_guard1() {
         ),
     )
     .unwrap();
-    let old = testutil::repo(&bed.leaf_hd.join("work/old"));
-    testutil::write(&old.join("README"), "uncommitted\n");
-    put_baseline(
-        &bed,
-        "work/old",
-        UnitState::Present("x".into()),
-        UnitState::Present("y".into()),
-    );
+    put_baseline(&bed, "work/old", now, UnitState::Present("y".into()));
     let p = dry(&bed);
     let r = unit(&p, "work/old");
     assert_eq!(r.decision, Decision::Remove);
     assert!(r.diff.as_ref().unwrap().deleted > 0);
     assert_eq!(r.refusals[0].guard, Guard::DirtyTarget);
     assert!(old.join("README").exists());
+
+    // A leaf that moved since the baseline is a conflict, not a delete.
+    put_baseline(
+        &bed,
+        "work/old",
+        UnitState::Present("x".into()),
+        UnitState::Present("y".into()),
+    );
+    let r = dry(&bed);
+    let r = unit(&r, "work/old");
+    assert!(
+        matches!(&r.decision, Decision::Conflict { why } if why.contains("(unsubscribed)")),
+        "{:?}",
+        r.decision
+    );
+    assert!(r.diff.is_none());
 }
 
 #[test]
