@@ -152,25 +152,103 @@ fn any_other_marker_over_an_unserved_path_is_still_a_conflict() {
     ));
 }
 
-#[test]
-fn a_marker_above_or_below_the_unit_says_nothing_about_its_source() {
-    // A loose unit `work` holding the marked repo `work/x`: its own source
-    // being empty is not the marked sync's source vanishing.
-    let pull = marker("birchbook", Direction::Pull, p("home-then"));
-    let d = decide(Inputs {
-        rel: "work",
+fn at(
+    rel: &str,
+    leaf: &UnitState,
+    home: &UnitState,
+    b: Option<&Baseline>,
+    lm: Option<&Marker>,
+    hm: Option<&Marker>,
+) -> Decision {
+    decide(Inputs {
+        rel,
         me: "birchbook",
         home_name: "thistledown",
-        leaf: &p("loose"),
-        home: &UnitState::Empty,
-        baseline: None,
-        leaf_marker: Some(&pull),
-        home_marker: None,
-    });
+        leaf,
+        home,
+        baseline: b,
+        leaf_marker: lm,
+        home_marker: hm,
+    })
+}
+
+fn base(rel: &str, leaf: &str, home: &str) -> Baseline {
+    Baseline {
+        version: RECORD_VERSION,
+        rel: rel.into(),
+        kind: UnitKind::Loose,
+        leaf: p(leaf),
+        home: p(home),
+        at: 1,
+    }
+}
+
+#[test]
+fn an_own_marker_above_or_below_the_unit_does_not_resume_it() {
+    // Review A1. The marked sync is `work/x`; the unit decided is the loose
+    // `work` holding it (above), or a repo `work/x/y` inside it (below).
+    let pull = marker("birchbook", Direction::Pull, p("home-then"));
+    let push = marker("birchbook", Direction::Push, p("leaf-then"));
+    for rel in ["work", "work/x/y"] {
+        for (lm, hm) in [(Some(&pull), None), (None, Some(&push))] {
+            // The leaf-only state of a unit home never had: a push, never a
+            // resumed pull from an empty source (which deleted it).
+            assert_eq!(
+                at(rel, &p("leaf-only"), &UnitState::Empty, None, lm, hm),
+                Decision::Push,
+                "{rel} {lm:?} {hm:?}"
+            );
+            // A leaf-only change since baseline: a push.
+            let b = base(rel, "l0", "h0");
+            assert_eq!(
+                at(rel, &p("l1"), &p("h0"), Some(&b), lm, hm),
+                Decision::Push,
+                "{rel}"
+            );
+            // A home-only change: a pull, by the table, not by the marker.
+            assert_eq!(
+                at(rel, &p("l0"), &p("h1"), Some(&b), lm, hm),
+                Decision::Pull,
+                "{rel}"
+            );
+            // Nothing changed: nothing.
+            assert!(matches!(
+                at(rel, &p("l0"), &p("h0"), Some(&b), lm, hm),
+                Decision::Nothing { .. }
+            ));
+        }
+    }
+}
+
+#[test]
+fn an_own_marker_for_exactly_the_unit_still_resumes_whatever_the_table_says() {
+    let pull = marker("birchbook", Direction::Pull, p("home-then"));
+    let push = marker("birchbook", Direction::Push, p("leaf-then"));
+    let b = base("work/x", "l0", "h0");
     assert_eq!(
-        d,
+        at("work/x", &p("l1"), &p("h0"), Some(&b), Some(&pull), None),
         Decision::Resume {
             direction: Direction::Pull
         }
     );
+    assert_eq!(
+        at("work/x", &p("l0"), &p("h1"), Some(&b), None, Some(&push)),
+        Decision::Resume {
+            direction: Direction::Push
+        }
+    );
+}
+
+#[test]
+fn another_hosts_marker_above_or_below_still_quarantines() {
+    let theirs = marker("twinoaks", Direction::Push, p("theirs"));
+    for rel in ["work", "work/x", "work/x/y"] {
+        assert!(
+            matches!(
+                at(rel, &p("l"), &p("h"), None, None, Some(&theirs)),
+                Decision::Quarantined { ref by, .. } if by == "twinoaks"
+            ),
+            "{rel}"
+        );
+    }
 }

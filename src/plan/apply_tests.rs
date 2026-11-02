@@ -14,6 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 mod block;
 #[path = "apply_fail_tests.rs"]
 pub(crate) mod fail;
+#[path = "apply_marker_tests.rs"]
+pub(crate) mod marker_tests;
 #[path = "apply_more_tests.rs"]
 mod more;
 

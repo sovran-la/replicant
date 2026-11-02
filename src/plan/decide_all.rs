@@ -4,7 +4,7 @@ use super::{LeafCtx, PlannedUnit};
 use crate::baseline::Baseline;
 use crate::daemon::wire::HomeSnapshot;
 use crate::decide;
-use crate::marker::{self, Marker};
+use crate::marker::Marker;
 use crate::state::UnitState;
 use crate::units::SideUnit;
 
@@ -32,8 +32,15 @@ pub(super) fn decide_all(
             leaf: &l.state,
             home: home_state,
             baseline: b,
-            leaf_marker: marker::covering(leaf_markers, &l.rel),
-            home_marker: marker::covering(&snap.markers, &l.rel),
+            // Another host's marker anywhere over the unit quarantines it;
+            // this leaf's own resume only their own unit (`decide` holds
+            // that rule too).
+            leaf_marker: leaf_markers.iter().find(|m| m.rel == l.rel),
+            home_marker: snap
+                .markers
+                .iter()
+                .find(|m| m.host != ctx.me && m.covers(&l.rel))
+                .or_else(|| snap.markers.iter().find(|m| m.rel == l.rel)),
         });
         out.push(PlannedUnit {
             rel: l.rel.clone(),

@@ -7,7 +7,8 @@
 //! home changed, leaf same     → pull
 //! home same,    leaf changed  → push
 //! both changed                → conflict
-//! interrupted marker present  → resume that direction; never a conflict
+//! own marker for exactly this unit → resume that direction (review A1:
+//!                                    one above or below it is ignored)
 //! ```
 //!
 //! And, from PLAN rev 5 (review F4):
@@ -44,9 +45,9 @@
 //! - **home marker from another leaf** → quarantined (PLAN.md, "Interrupted
 //!   sync": pulls of that path by any other leaf are refused).
 //!
-//! Marker rows come first: an interrupted sync is never a conflict, unless
-//! its source vanished since (resuming would then delete the unit, which
-//! needs a confirmation the marker does not carry).
+//! Marker rows come first: an interrupted sync of exactly this unit is never
+//! a conflict, unless its source vanished since (resuming would then delete
+//! the unit, which needs a confirmation the marker does not carry).
 
 use crate::baseline::Baseline;
 use crate::marker::{Direction, Marker};
@@ -162,9 +163,11 @@ pub struct Inputs<'a> {
     pub leaf: &'a UnitState,
     pub home: &'a UnitState,
     pub baseline: Option<&'a Baseline>,
-    /// A marker on this leaf covering the unit (a dead pull).
+    /// A marker on this leaf (a dead pull). Only one for exactly `rel`
+    /// counts.
     pub leaf_marker: Option<&'a Marker>,
-    /// A marker on home covering the unit (a dead push).
+    /// A marker on home (a dead push): another host's covering the unit
+    /// quarantines it; this host's own counts only for exactly `rel`.
     pub home_marker: Option<&'a Marker>,
 }
 
@@ -175,14 +178,21 @@ pub fn decide(i: Inputs<'_>) -> Decision {
             since: m.started_at,
         };
     }
+    // This leaf's own marker (a dead pull here, or its dead push on home)
+    // resumes exactly its own unit (review A1). One above or below it (a
+    // loose unit holding a marked repo, or a repo inside a marked loose unit)
+    // says nothing about this unit's direction: resuming it would pull
+    // home's copy over work only the leaf has. Such a unit is decided by the
+    // table below; the loose transfer already leaves the repos inside it
+    // alone, so neither unit's resume needs the other's marker.
+    let leaf_own = i.leaf_marker.filter(|m| m.rel == i.rel);
+    let home_own = i.home_marker.filter(|m| m.rel == i.rel);
     // A marker is resumed, never read as a conflict, unless the source it
     // was copying from has since vanished: rerunning it now would be a
     // whole-unit delete nobody confirmed (review F4).
-    for (m, source) in [(i.leaf_marker, i.home), (i.home_marker, i.leaf)] {
+    for (m, source) in [(leaf_own, i.home), (home_own, i.leaf)] {
         let Some(m) = m else { continue };
-        // Only a marker for exactly this unit says what its source held; one
-        // above or below it (a loose unit holding a marked repo) does not.
-        if m.rel == i.rel && source.is_empty() && !m.source_state.is_empty() {
+        if source.is_empty() && !m.source_state.is_empty() {
             return Decision::Conflict {
                 why: format!(
                     "an interrupted {} by {} is marked here, and its source has vanished \
