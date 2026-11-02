@@ -115,3 +115,32 @@ fn a_path_ignored_on_either_side_is_left_alone() {
     assert!(names(&u, ".gitignore"), "{:?}", changes(&u));
     assert!(!names(&u, "notes"), "{:?}", changes(&u));
 }
+
+/// A tracked file is never ignored, whatever a rule says: home's edit to a
+/// force-added `.log` (and to one inside an ignored `gen/`) travels.
+#[test]
+fn tracked_files_matching_a_rule_still_sync() {
+    let bed = Bed::enrolled();
+    let h = testutil::repo(&bed.home_hd.join("work/r"));
+    testutil::write(&h.join(".gitignore"), &format!("{IGNORE}gen/\n"));
+    testutil::write(&h.join("forced.log"), "v1\n");
+    testutil::write(&h.join("gen/keep.txt"), "v1\n");
+    testutil::git(
+        &h,
+        &["add", "-f", ".gitignore", "forced.log", "gen/keep.txt"],
+    );
+    testutil::git(&h, &["commit", "-qm", "forced"]);
+    let l = bed.leaf_hd.join("work/r");
+    copy(&h, &l);
+    let u = after(&bed, || {
+        testutil::write(&l.join("gen/debug/app"), "leaf build");
+        testutil::write(&h.join("forced.log"), "v2, longer\n");
+        testutil::write(&h.join("gen/keep.txt"), "v2, longer\n");
+        testutil::git(&h, &["commit", "-qam", "home moved"]);
+    });
+    assert_eq!(u.decision, Decision::Pull, "{u:#?}");
+    assert!(names(&u, "forced.log"), "{:?}", changes(&u));
+    assert!(names(&u, "gen/keep.txt"), "{:?}", changes(&u));
+    assert!(!names(&u, "gen/debug"), "{:?}", changes(&u));
+    assert_eq!(u.diff.as_ref().unwrap().deleted, 0, "{:?}", changes(&u));
+}

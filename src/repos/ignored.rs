@@ -29,6 +29,15 @@
 //! `.git` below the top) is matched as a directory and not descended: git
 //! does not apply the parent's rules inside it. `repos/ignored_tests.rs` holds
 //! the list against git itself.
+//!
+//! **A tracked path is never ignored**, whatever a rule says (git's own rule;
+//! zed tracks `crates/project_panel/benches/linux_repo_snapshot.txt` under a
+//! pattern that matches it). A tracked file drops out of the list, and a
+//! rule-ignored directory holding tracked files is listed by its untracked
+//! contents instead, so the tracked ones sync. That part does depend on
+//! state: right after one side force-adds a file the other side ignores, the
+//! other side's list still excludes it for that one transfer (open; see
+//! `docs/v0.2-prep-notes.md`).
 
 use crate::Result;
 use ignore::Match;
@@ -38,14 +47,67 @@ use std::path::Path;
 
 /// The paths git ignores in the repo at `repo`, relative to it, sorted. A
 /// directory ignored by a rule is one entry ending in `/`; nothing inside it
-/// is listed. `.git` itself is never listed.
+/// is listed, unless it holds tracked files (module doc). `.git` itself is
+/// never listed. Asks git for the index only when something matched a rule.
 pub fn ignored(repo: &Path) -> Result<Vec<String>> {
     let icase = ignore_case(repo);
-    let mut out = Vec::new();
+    let mut matched = Vec::new();
     let mut stack = Vec::new();
-    walk(repo, "", icase, &mut stack, &mut out)?;
+    walk(repo, "", icase, &mut stack, &mut matched)?;
+    if matched.is_empty() {
+        return Ok(matched);
+    }
+    let tracked: Vec<String> = crate::git::tracked(repo)?
+        .into_iter()
+        .filter(|t| matched.iter().any(|m| covers(m, t)))
+        .collect();
+    let mut out = Vec::new();
+    for m in matched {
+        match m.strip_suffix('/') {
+            Some(dir) if tracked.iter().any(|t| covers(&m, t)) => {
+                untracked_in(repo, dir, &tracked, &mut out)?;
+            }
+            _ if tracked.contains(&m) => {}
+            _ => out.push(m),
+        }
+    }
     out.sort();
     Ok(out)
+}
+
+/// Whether the list entry `entry` (a directory if it ends in `/`) is or
+/// holds `path`.
+fn covers(entry: &str, path: &str) -> bool {
+    match entry.strip_suffix('/') {
+        Some(dir) => crate::paths::is_within(path, dir),
+        None => entry == path,
+    }
+}
+
+/// Everything in the ignored directory `dir` except the `tracked` paths: a
+/// subdirectory holding none of them as one `sub/` entry, the rest by name.
+fn untracked_in(repo: &Path, dir: &str, tracked: &[String], out: &mut Vec<String>) -> Result<()> {
+    for item in fs::read_dir(repo.join(dir))? {
+        let item = item?;
+        let Some(name) = item.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let child = format!("{dir}/{name}");
+        if tracked.contains(&child) {
+            // A tracked file, link, or submodule: it syncs.
+            continue;
+        }
+        if item.file_type()?.is_dir() {
+            if tracked.iter().any(|t| crate::paths::is_within(t, &child)) {
+                untracked_in(repo, &child, tracked, out)?;
+            } else {
+                out.push(format!("{child}/"));
+            }
+        } else {
+            out.push(child);
+        }
+    }
+    Ok(())
 }
 
 fn walk(

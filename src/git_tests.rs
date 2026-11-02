@@ -190,3 +190,21 @@ fn index_entries_counts_tracked_files_from_the_header() {
     let err = index_entries(&r).unwrap_err().to_string();
     assert!(err.contains("not a git index"), "{err}");
 }
+
+#[test]
+fn tracked_lists_the_index_including_force_added_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("r"));
+    testutil::write(&r.join(".gitignore"), "*.log\n");
+    testutil::write(&r.join("b dir/x.log"), "x");
+    testutil::write(&r.join("untracked.txt"), "x");
+    testutil::git(&r, &["add", "-f", ".gitignore", "b dir/x.log"]);
+    assert_eq!(
+        tracked(&r).unwrap(),
+        vec![".gitignore", "README", "b dir/x.log"]
+    );
+    let empty = tmp.path().join("e");
+    std::fs::create_dir(&empty).unwrap();
+    testutil::git(&empty, &["init", "-q"]);
+    assert!(tracked(&empty).unwrap().is_empty());
+}

@@ -59,7 +59,15 @@ const FILES: &[&str] = &[
     "linked/x.tmp",
     "nested/n.log",
     "nested/n.tmp",
+    "forced.log",
+    "build/keep.txt",
+    "build/sub/deep.o",
+    "build/kept/also.txt",
+    "build/kept/junk.o",
 ];
+
+/// Tracked although a rule matches them: they sync.
+const FORCED: &[&str] = &["forced.log", "build/keep.txt", "build/kept/also.txt"];
 
 fn fixture(root: &Path) -> PathBuf {
     let r = testutil::repo(&root.join("r"));
@@ -84,6 +92,9 @@ fn fixture(root: &Path) -> PathBuf {
         &["config", "core.excludesFile", global.to_str().unwrap()],
     );
     git(&r, &["add", ".gitignore", "sub/.gitignore", "README"]);
+    let mut force = vec!["add", "-f"];
+    force.extend(FORCED);
+    git(&r, &force);
     git(&r, &["commit", "-qm", "ignores"]);
     r
 }
@@ -135,7 +146,9 @@ fn agrees_with_git_on_nested_negated_anchored_and_dir_only_rules() {
     let ours = agree(&r);
     let want: Vec<&str> = vec![
         ".env.local",
-        "build/",
+        "build/kept/junk.o",
+        "build/o",
+        "build/sub/",
         "cache/",
         "docs/a/b/gen/",
         "docs/gen/",
@@ -162,8 +175,11 @@ fn agrees_with_git_on_nested_negated_anchored_and_dir_only_rules() {
         "nested/n.log", // and the parent's rules stop at it
         "a.txt",
         ".gitignore",
-    ] {
-        assert!(!covered(&ours).contains(kept), "{kept} must sync");
+    ]
+    .iter()
+    .chain(FORCED)
+    {
+        assert!(!covered(&ours).contains(*kept), "{kept} must sync");
     }
 }
 
@@ -280,4 +296,7 @@ fn rsync_and_the_case_walk_skip_exactly_the_ignored_paths() {
         assert!(sent.contains(f), "{f} must sync: {sent:?}");
     }
     assert!(sent.contains(".gitignore") && sent.contains("sub/.gitignore"));
+    for f in FORCED {
+        assert!(sent.contains(*f), "tracked {f} must sync: {sent:?}");
+    }
 }

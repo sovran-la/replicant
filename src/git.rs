@@ -181,6 +181,19 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Result<Vec<StatusEntry>> {
     Ok(entries)
 }
 
+/// Every path the repo's index tracks, sorted as git sorts them. A tracked
+/// path is never ignored, whatever a `.gitignore` says (`repos::ignored`).
+/// A name that is not UTF-8 is left out: no path in this crate can hold it,
+/// and the ignored list, which skips such names too, can never name it.
+pub fn tracked(repo: &Path) -> Result<Vec<String>> {
+    let out = run(repo, &["ls-files", "-z", "--cached"])?;
+    Ok(out
+        .split(|b| *b == 0)
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| std::str::from_utf8(t).ok().map(str::to_string))
+        .collect())
+}
+
 /// How many entries the repo's index holds: its tracked files. Read from the
 /// index header (`DIRC`, version, count), so it costs no git process. A repo
 /// with no index yet has none. Under `core.splitIndex` this counts only the
