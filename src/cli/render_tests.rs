@@ -275,3 +275,29 @@ fn a_deleted_unit_says_what_it_would_remove_and_that_it_needs_confirmation() {
     );
     assert!(p.blocked());
 }
+
+#[test]
+fn revoked_says_what_went_and_how_to_come_back() {
+    use crate::daemon::wire::Revoked;
+    let out = revoked(&Revoked {
+        host: "birchbook".into(),
+        cert: Some("sha256:ab".into()),
+        uncollected: true,
+    });
+    assert!(
+        out.starts_with("Revoked birchbook's certificate (sha256:ab).\n"),
+        "{out}"
+    );
+    assert!(out.contains("uncollected"), "{out}");
+    assert!(out.contains("`replicant approve birchbook`"), "{out}");
+    let out = revoked(&Revoked {
+        host: "birchbook".into(),
+        cert: None,
+        uncollected: false,
+    });
+    assert!(
+        out.starts_with("birchbook had no certificate pinned.\n"),
+        "{out}"
+    );
+    assert!(!out.contains("uncollected"), "{out}");
+}

@@ -238,6 +238,7 @@ fn home_local(h: &home::Home, req: LocalRequest) -> Result<LocalReply> {
             Ok(LocalReply::Approved(h.approve(&host, &allow)?))
         }
         LocalRequest::Reissue { host } => Ok(LocalReply::Reissued(h.reissue(&host)?)),
+        LocalRequest::Revoke { host } => Ok(LocalReply::Revoked(h.revoke(&host)?)),
         LocalRequest::Subscribe { .. }
         | LocalRequest::Unsubscribe { .. }
         | LocalRequest::DryRun { .. } => Err(Error::Refused(

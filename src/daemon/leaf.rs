@@ -111,7 +111,8 @@ impl Leaf {
             LocalRequest::Pending
             | LocalRequest::PreviewAllow { .. }
             | LocalRequest::Approve { .. }
-            | LocalRequest::Reissue { .. } => Err(Error::Refused(
+            | LocalRequest::Reissue { .. }
+            | LocalRequest::Revoke { .. } => Err(Error::Refused(
                 "approve runs on home, and this machine is a leaf".into(),
             )),
         }

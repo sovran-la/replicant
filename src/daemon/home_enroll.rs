@@ -10,7 +10,7 @@ use super::Home;
 use crate::config::{edit, short_hostname};
 use crate::daemon::certs;
 use crate::daemon::journal::Line;
-use crate::daemon::wire::{Approved, Collected, Reissued};
+use crate::daemon::wire::{Approved, Collected, Reissued, Revoked};
 use crate::{Error, Result, subscribe};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -59,6 +59,40 @@ impl Home {
             host: host.into(),
             cert: issued.fingerprint,
             replaced,
+        })
+    }
+
+    /// Remove `host`'s pin, and any certificate waiting for it: its
+    /// certificate is then unknown and every request over it is refused.
+    /// Its enrollment and subscriptions stay; `approve <host>` re-admits it.
+    pub fn revoke(&self, host: &str) -> Result<Revoked> {
+        let mut f = self.fleet()?;
+        let Some(entry) = f.hosts.get(host) else {
+            return Err(Error::Refused(format!(
+                "{host} is not enrolled on {}; nothing to revoke",
+                f.name
+            )));
+        };
+        let cert = entry.cert.clone();
+        if cert.is_some() {
+            edit::set_cert(&self.dirs.fleet(), host, None)?;
+            self.reload(&mut f)?;
+        }
+        let path = self.issued_path(host)?;
+        let uncollected = match std::fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.into()),
+        };
+        let detail = format!(
+            "cert:{} uncollected:{uncollected}",
+            cert.as_deref().unwrap_or("(none)")
+        );
+        self.journal(&mut Vec::new(), Line::new("revoke", host, "", detail));
+        Ok(Revoked {
+            host: host.into(),
+            cert,
+            uncollected,
         })
     }
 

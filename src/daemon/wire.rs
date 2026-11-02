@@ -248,6 +248,9 @@ pub enum LocalRequest {
     Reissue {
         host: String,
     },
+    Revoke {
+        host: String,
+    },
 }
 
 pub type LocalAnswer = Result<LocalReply, String>;
@@ -266,6 +269,7 @@ pub enum LocalReply {
     AllowPreview(AllowPreview),
     Approved(Approved),
     Reissued(Reissued),
+    Revoked(Revoked),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,6 +291,17 @@ pub struct Approved {
     pub dropped: Vec<String>,
     /// The pinned fingerprint of the certificate minted for the host.
     pub cert: String,
+}
+
+/// `host revoke <host>`: the host's pin removed, so its certificate is
+/// unknown to home and refused; enrollment and subscriptions are kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Revoked {
+    pub host: String,
+    /// The pin removed, if there was one.
+    pub cert: Option<String>,
+    /// An issued certificate was waiting uncollected, and is gone.
+    pub uncollected: bool,
 }
 
 /// `approve <host>` for an enrolled host: a new certificate, pinned in place

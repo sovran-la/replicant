@@ -204,3 +204,97 @@ fn a_broken_fleet_toml_keeps_granted_leases_for_their_holders() {
     a.call(HomeRequest::Release { lease }).unwrap();
     home.stop();
 }
+
+#[test]
+fn revoke_refuses_the_next_request_and_approve_readmits() {
+    let bed = Bed::enrolled();
+    let (home, leaf) = super::test_certs::pair(&bed);
+    let status = || local::call(&bed.leaf_dirs, LocalRequest::Status);
+    assert!(status().is_ok());
+    let pin = Fleet::load(&bed.home_dirs.fleet()).unwrap().hosts["leaf"]
+        .cert
+        .clone()
+        .unwrap();
+    let LocalReply::Revoked(r) = local::call(
+        &bed.home_dirs,
+        LocalRequest::Revoke {
+            host: "leaf".into(),
+        },
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(r.cert.as_deref(), Some(pin.as_str()));
+    assert!(!r.uncollected);
+    let f = Fleet::load(&bed.home_dirs.fleet()).unwrap();
+    assert_eq!(f.hosts["leaf"].cert, None, "the pin is gone");
+    assert_eq!(
+        f.subscription("leaf").paths,
+        vec!["work"],
+        "enrollment kept"
+    );
+
+    let err = status().unwrap_err().to_string();
+    assert!(err.contains(super::home::UNKNOWN_CERT), "{err}");
+    assert!(
+        err.contains("replicant approve leaf"),
+        "says how back: {err}"
+    );
+    let line = journal(&bed)
+        .into_iter()
+        .find(|l| l.event == "revoke")
+        .unwrap();
+    assert_eq!(line.detail, format!("cert:{pin} uncollected:false"));
+
+    // A reissue that is revoked before it is collected is gone too.
+    local::call(
+        &bed.home_dirs,
+        LocalRequest::Reissue {
+            host: "leaf".into(),
+        },
+    )
+    .unwrap();
+    let LocalReply::Revoked(r) = local::call(
+        &bed.home_dirs,
+        LocalRequest::Revoke {
+            host: "leaf".into(),
+        },
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert!(r.uncollected);
+    assert!(!bed.home_dirs.issued().join("leaf.pem").exists());
+    assert!(status().is_err(), "nothing to collect, still refused");
+
+    // approve <host> re-admits: the next command collects and works.
+    local::call(
+        &bed.home_dirs,
+        LocalRequest::Reissue {
+            host: "leaf".into(),
+        },
+    )
+    .unwrap();
+    assert!(status().is_ok(), "re-admitted");
+
+    let err = local::call(
+        &bed.home_dirs,
+        LocalRequest::Revoke {
+            host: "ghost".into(),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("ghost is not enrolled"), "{err}");
+    let err = local::call(
+        &bed.leaf_dirs,
+        LocalRequest::Revoke {
+            host: "leaf".into(),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("runs on home"), "{err}");
+    leaf.stop();
+    home.stop();
+}

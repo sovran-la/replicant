@@ -1,5 +1,6 @@
 //! The command line as clap sees it. PLAN.md, "Implementation sketch":
-//! subscribe | unsubscribe | approve | sync | status | log | daemon | config.
+//! subscribe | unsubscribe | approve | sync | status | log | daemon | config
+//! | host.
 //! (`hold`, `release`, `rollback` arrive with the phases that need them.)
 
 use clap::{Parser, Subcommand};
@@ -80,6 +81,18 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
+    /// On home: manage an enrolled host.
+    Host {
+        #[command(subcommand)]
+        cmd: HostCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HostCmd {
+    /// Remove the host's certificate pin: its requests are refused until
+    /// `replicant approve <host>` issues a new one.
+    Revoke { host: String },
 }
 
 #[derive(Debug, Subcommand)]
