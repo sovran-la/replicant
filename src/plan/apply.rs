@@ -137,7 +137,8 @@ pub fn sync(link: &dyn HomeLink, ctx: LeafCtx<'_>, opts: &SyncOpts) -> Result<Sy
     };
     let applied = st.applied;
     let summary = summary(&outcome, &applied);
-    super::report(link, "sync", &plan, summary);
+    let ok = outcome == Outcome::Done;
+    super::report(link, ctx, "sync", &plan, summary, Some(ok));
     Ok(SyncReport {
         plan,
         outcome,

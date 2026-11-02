@@ -74,6 +74,32 @@ fn sync_applies_over_mtls_and_both_journals_keep_the_lines() {
     .unwrap_err()
     .to_string();
     assert!(err.contains("this machine is home"), "{err}");
+
+    // The fleet view keeps the last sync past a later status, and shows the
+    // leaf's open marker as of its last report.
+    crate::marker::store(&bed.leaf_dirs.state())
+        .put(&Marker {
+            version: RECORD_VERSION,
+            rel: "work/r".into(),
+            direction: Direction::Pull,
+            host: "leaf".into(),
+            source_state: UnitState::Present("h".into()),
+            started_at: crate::now_secs(),
+            push: None,
+        })
+        .unwrap();
+    status(&bed);
+    let LocalReply::Fleet(f) = local(&bed.home_dirs, LocalRequest::Fleet) else {
+        panic!()
+    };
+    let row = f.hosts.iter().find(|h| h.name == "leaf").unwrap();
+    let last = row.last_sync.as_ref().expect("the sync is remembered");
+    assert!(last.ok && last.summary.ends_with("; ok"), "{last:?}");
+    assert_eq!(row.report.as_ref().unwrap().event, "status");
+    assert_eq!(row.markers.len(), 1);
+    assert_eq!(row.markers[0].rel, "work/r");
+    let text = crate::cli::render::fleet(&f, crate::cli::render::Style { color: false });
+    assert!(text.contains("open marker: pull work/r on leaf"), "{text}");
     leaf.stop();
     home.stop();
 }

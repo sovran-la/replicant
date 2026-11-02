@@ -214,15 +214,24 @@ impl Home {
                 event,
                 units,
                 summary,
+                markers,
+                sync_ok,
             } => {
                 let paths: Vec<String> =
                     self.view(&host)?.specs.into_iter().map(|s| s.rel).collect();
+                let at = crate::now_secs();
                 let report = LastReport {
-                    at: crate::now_secs(),
+                    at,
                     event: event.clone(),
                     units,
                 };
-                fleet::touch(&self.contacts, &host, Some(report))?;
+                let sync = sync_ok.map(|ok| fleet::LastSync {
+                    at,
+                    ok,
+                    summary: summary.clone(),
+                });
+                let markers = markers.into_iter().filter(|m| m.host == host).collect();
+                fleet::reported(&self.contacts, &host, report, markers, sync)?;
                 self.journal(j, Line::new(&event, &host, &paths.join(" "), summary));
                 Ok(HomeReply::Done)
             }

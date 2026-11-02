@@ -99,19 +99,7 @@ impl Leaf {
                 let (me, report) = self.planning(|link, ctx| {
                     Ok((ctx.me.to_string(), plan::apply::sync(link, ctx, &opts)?))
                 })?;
-                // Home did not hear of it: the leaf's own copy must.
-                if let Outcome::Interrupted {
-                    rel,
-                    why,
-                    journaled: false,
-                } = &report.outcome
-                {
-                    let detail =
-                        format!("interrupted ({why}); marker kept; home did not hear of it");
-                    if let Err(e) = self.journal.append(&Line::new("sync", &me, rel, detail)) {
-                        eprintln!("replicant: could not journal an interrupted sync: {e}");
-                    }
-                }
+                journal_unheard(&self.journal, &me, &report.outcome);
                 Ok(LocalReply::Synced(Box::new(report)))
             }
             LocalRequest::Log { filter } => Ok(LocalReply::Log {
@@ -283,3 +271,23 @@ impl Leaf {
         })
     }
 }
+
+/// An interruption home did not journal (it was unreachable): the leaf's
+/// own journal keeps it, so the history survives home being away.
+fn journal_unheard(journal: &Journal, me: &str, outcome: &Outcome) {
+    if let Outcome::Interrupted {
+        rel,
+        why,
+        journaled: false,
+    } = outcome
+    {
+        let detail = format!("interrupted ({why}); marker kept; home did not hear of it");
+        if let Err(e) = journal.append(&Line::new("sync", me, rel, detail)) {
+            eprintln!("replicant: could not journal an interrupted sync: {e}");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "leaf_tests.rs"]
+mod tests;

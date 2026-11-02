@@ -83,10 +83,15 @@ fn a_pinned_certificate_is_its_host_and_only_its_host() {
             event: "dry-run".into(),
             units: vec![],
             summary: String::new(),
+            markers: vec![],
+            sync_ok: None,
         },
         HomeRequest::FleetState,
         HomeRequest::CollectCert,
-    ] {
+    ]
+    .into_iter()
+    .chain(super::test_certs::apply_requests())
+    {
         let err = a_as_b.refused(request);
         assert!(err.contains("this certificate is leaf's"), "{err}");
     }
@@ -99,7 +104,7 @@ fn a_pinned_certificate_is_its_host_and_only_its_host() {
         .into_iter()
         .filter(|l| l.event == "refused")
         .collect();
-    assert_eq!(refused.len(), 8, "every mismatch journaled: {refused:?}");
+    assert_eq!(refused.len(), 14, "every mismatch journaled: {refused:?}");
     assert!(
         refused
             .iter()

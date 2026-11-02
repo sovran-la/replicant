@@ -75,6 +75,12 @@ pub enum HomeRequest {
         event: String,
         units: Vec<ReportedUnit>,
         summary: String,
+        /// The leaf's own open markers, for the fleet view.
+        #[serde(default)]
+        markers: Vec<Marker>,
+        /// For a real `sync`: whether it finished. Absent otherwise.
+        #[serde(default)]
+        sync_ok: Option<bool>,
     },
     FleetState,
     /// Apply, before a push's real rsync: home is the target, so home writes

@@ -23,6 +23,22 @@ pub struct Contact {
     pub rel: String,
     pub last_contact: u64,
     pub report: Option<LastReport>,
+    /// The host's last real `sync`, whatever it reported since.
+    #[serde(default)]
+    pub last_sync: Option<LastSync>,
+    /// The host's own open markers (interrupted pulls) as of its last
+    /// report.
+    #[serde(default)]
+    pub markers: Vec<Marker>,
+}
+
+/// How a host's last `sync` ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastSync {
+    pub at: u64,
+    /// Every unit applied, or nothing to apply.
+    pub ok: bool,
+    pub summary: String,
 }
 
 impl Record for Contact {
@@ -48,11 +64,38 @@ pub fn contacts(state_dir: &Path) -> Store {
 /// Record that `host` was heard from now, keeping its last report.
 pub fn touch(store: &Store, host: &str, report: Option<LastReport>) -> Result<()> {
     let prior: Option<Contact> = store.get(host)?;
+    let (last_sync, markers) = prior
+        .as_ref()
+        .map(|p| (p.last_sync.clone(), p.markers.clone()))
+        .unwrap_or_default();
     let c = Contact {
         version: RECORD_VERSION,
         rel: host.into(),
         last_contact: crate::now_secs(),
         report: report.or(prior.and_then(|p| p.report)),
+        last_sync,
+        markers,
+    };
+    store.put(&c)
+}
+
+/// What a host's report says: its decisions, its open markers, and, for
+/// a real `sync`, how that ended.
+pub fn reported(
+    store: &Store,
+    host: &str,
+    report: LastReport,
+    markers: Vec<Marker>,
+    sync: Option<LastSync>,
+) -> Result<()> {
+    let prior: Option<Contact> = store.get(host)?;
+    let c = Contact {
+        version: RECORD_VERSION,
+        rel: host.into(),
+        last_contact: crate::now_secs(),
+        report: Some(report),
+        last_sync: sync.or(prior.and_then(|p| p.last_sync)),
+        markers,
     };
     store.put(&c)
 }
@@ -77,6 +120,11 @@ pub struct HostRow {
     pub report: Option<LastReport>,
     /// 0 is the head.
     pub queue_position: Option<usize>,
+    #[serde(default)]
+    pub last_sync: Option<LastSync>,
+    /// The host's own open markers as of its last report.
+    #[serde(default)]
+    pub markers: Vec<Marker>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,8 +174,10 @@ pub fn build(
             except: sub.except,
             last_contact: last,
             stale: last.is_none_or(|t| now.saturating_sub(t) > stale_after),
-            report: c.and_then(|c| c.report),
             queue_position: queue.iter().position(|q| q.host == *name),
+            last_sync: c.as_ref().and_then(|c| c.last_sync.clone()),
+            markers: c.as_ref().map(|c| c.markers.clone()).unwrap_or_default(),
+            report: c.and_then(|c| c.report),
         });
     }
     Ok(FleetState {
@@ -142,84 +192,5 @@ pub fn build(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::daemon::queue::EntryKind;
-    use crate::decide::Decision;
-
-    const FLEET: &str = "[daemon]\nname=\"tc\"\nhome_dir=\"/h\"\nstale_after_hours=1\n\
-        [roots.work]\npath=\"/h/work\"\n\
-        [hosts.fresh]\nhome_dir=\"/u\"\n[hosts.stale]\nhome_dir=\"/u\"\nallow=[\"work/x\"]\n\
-        [hosts.never]\nhome_dir=\"/u\"\n\
-        [subscriptions.stale]\npaths=[\"work/x\"]\n\
-        [pending.newbie]\nhome_dir=\"/u\"\npaths=[\"work\"]\nrequested_at=5\n";
-
-    #[test]
-    fn one_row_per_host_with_staleness_reports_and_queue() {
-        let tmp = tempfile::tempdir().unwrap();
-        let fleet = Fleet::parse(FLEET, Path::new("fleet.toml")).unwrap();
-        let store = contacts(tmp.path());
-        let now = crate::now_secs();
-        store
-            .put(&Contact {
-                version: RECORD_VERSION,
-                rel: "fresh".into(),
-                last_contact: now - 60,
-                report: None,
-            })
-            .unwrap();
-        let report = LastReport {
-            at: now - 9 * 86_400,
-            event: "dry-run".into(),
-            units: vec![ReportedUnit {
-                rel: "work/x".into(),
-                decision: Decision::Push,
-            }],
-        };
-        store
-            .put(&Contact {
-                version: RECORD_VERSION,
-                rel: "stale".into(),
-                last_contact: now - 9 * 86_400,
-                report: Some(report.clone()),
-            })
-            .unwrap();
-        let q = vec![QueueView {
-            id: 1,
-            host: "stale".into(),
-            kind: EntryKind::DryRun,
-            paths: vec![],
-            enqueued_at: now,
-            started_at: Some(now),
-        }];
-        let s = build(&fleet, &store, q, vec![], now).unwrap();
-        assert_eq!(s.home, "tc");
-        let names: Vec<_> = s.hosts.iter().map(|h| h.name.as_str()).collect();
-        assert_eq!(names, ["fresh", "never", "stale"]);
-        let row = |n: &str| s.hosts.iter().find(|h| h.name == n).unwrap();
-        assert!(!row("fresh").stale);
-        assert!(row("stale").stale, "nine days without contact");
-        assert!(row("never").stale && row("never").last_contact.is_none());
-        assert_eq!(row("stale").report, Some(report));
-        assert_eq!(row("stale").queue_position, Some(0));
-        assert_eq!(row("stale").cap, Some(vec!["work/x".to_string()]));
-        assert_eq!(s.pending.len(), 1);
-        assert_eq!(s.pending[0].host, "newbie");
-    }
-
-    #[test]
-    fn touch_keeps_the_last_report() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = contacts(tmp.path());
-        let r = LastReport {
-            at: 1,
-            event: "status".into(),
-            units: vec![],
-        };
-        touch(&store, "h", Some(r.clone())).unwrap();
-        touch(&store, "h", None).unwrap();
-        let c: Contact = store.get("h").unwrap().unwrap();
-        assert_eq!(c.report, Some(r));
-        assert!(c.last_contact > 0);
-    }
-}
+#[path = "fleet_tests.rs"]
+mod tests;

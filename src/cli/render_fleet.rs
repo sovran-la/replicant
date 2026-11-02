@@ -84,6 +84,32 @@ pub fn fleet(f: &FleetState, st: Style) -> String {
             "",
             st.dim(&format!("subscribed: {}", h.paths.join(", ")))
         );
+        let last = match &h.last_sync {
+            None => st.dim("last sync: never"),
+            Some(l) => {
+                let line = format!(
+                    "last sync: {} ago, {}",
+                    ago(f.now.saturating_sub(l.at)),
+                    l.summary
+                );
+                if l.ok { line } else { st.red(&line) }
+            }
+        };
+        let _ = writeln!(s, "  {:<12} {last}", "");
+        for m in &h.markers {
+            let _ = writeln!(
+                s,
+                "  {:<12} {}",
+                "",
+                st.red(&format!(
+                    "open marker: {} {} on {}, started {} ago",
+                    m.direction,
+                    m.rel,
+                    h.name,
+                    ago(f.now.saturating_sub(m.started_at))
+                ))
+            );
+        }
     }
     if !f.pending.is_empty() {
         s.push_str("pending (run `replicant approve`):\n");
@@ -102,11 +128,16 @@ pub fn fleet(f: &FleetState, st: Style) -> String {
             s,
             "{}",
             st.red(&format!(
-                "  quarantined: {} (dead {} by {}, since {})",
+                "  quarantined: {} (dead {} by {}, since {}, {} ago{})",
                 m.rel,
                 m.direction,
                 m.host,
-                iso(m.started_at)
+                iso(m.started_at),
+                ago(f.now.saturating_sub(m.started_at)),
+                m.push
+                    .as_ref()
+                    .map(|p| format!("; `replicant rollback {p}` undoes it"))
+                    .unwrap_or_default()
             ))
         );
     }
@@ -146,3 +177,7 @@ pub fn log(lines: &[Line]) -> String {
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "render_fleet_tests.rs"]
+mod tests;

@@ -100,13 +100,29 @@ pub(crate) struct Planned<'a> {
 pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool) -> Result<Plan> {
     let mode = if dry_run { Mode::DryRun } else { Mode::Status };
     let (plan, ()) = run(link, ctx, mode, no_wait, |_, _| Ok(()))?;
-    report(link, mode.event(), &plan, plan.summary().join("; "));
+    report(
+        link,
+        ctx,
+        mode.event(),
+        &plan,
+        plan.summary().join("; "),
+        None,
+    );
     Ok(plan)
 }
 
-/// Tell home what was decided, for the fleet view and the journal. The work
+/// Tell home what was decided (and, for a sync, whether it finished), with
+/// this leaf's open markers, for the fleet view and the journal. The work
 /// is done either way; only home's line is missing if this fails.
-pub(crate) fn report(link: &dyn HomeLink, event: &str, plan: &Plan, summary: String) {
+pub(crate) fn report(
+    link: &dyn HomeLink,
+    ctx: LeafCtx<'_>,
+    event: &str,
+    plan: &Plan,
+    summary: String,
+    sync_ok: Option<bool>,
+) {
+    let markers = marker::store(ctx.state_dir).all().unwrap_or_default();
     let reported = plan
         .units
         .iter()
@@ -119,6 +135,8 @@ pub(crate) fn report(link: &dyn HomeLink, event: &str, plan: &Plan, summary: Str
         event: event.into(),
         units: reported,
         summary,
+        markers,
+        sync_ok,
     }) {
         eprintln!("replicant: the {event} finished, but home did not journal it: {e}");
     }

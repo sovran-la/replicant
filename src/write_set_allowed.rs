@@ -61,7 +61,7 @@ pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
         2,
         "home's baselines and push markers: state dir",
     ),
-    ("daemon/fleet.rs", ".put(", 1, "contacts: state dir"),
+    ("daemon/fleet.rs", ".put(", 2, "contacts: state dir"),
     // Config dir files.
     (
         "config/mod.rs",
