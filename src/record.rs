@@ -61,12 +61,22 @@ impl Store {
         Ok(out)
     }
 
-    /// Write a record. v0.1 never calls this outside tests and daemon state
-    /// (contacts); baselines and markers are written from v0.2 on.
+    /// Write a record: contacts, and from v0.2 on (`sync`'s apply)
+    /// baselines and markers.
     pub fn put<R: Record>(&self, r: &R) -> Result<()> {
         let text = serde_json::to_string_pretty(r)
             .map_err(|e| Error::Config(format!("could not serialize a record: {e}")))?;
         crate::config::write_atomic(&self.file(r.rel()), &text)
+    }
+}
+
+impl Store {
+    /// Remove `rel`'s record, if there is one.
+    pub fn delete(&self, rel: &str) -> Result<()> {
+        match std::fs::remove_file(self.file(rel)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
     }
 }
 

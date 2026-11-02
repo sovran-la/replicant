@@ -1,0 +1,237 @@
+//! The write set's list: each spawn and write outside the tests, by file,
+//! with the part of the write set it is.
+
+/// (file, pattern, count, why).
+pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
+    // Processes.
+    (
+        "rsync/child.rs",
+        "Command::new(",
+        1,
+        "rsync: the only writer of synced paths",
+    ),
+    (
+        "rsync/client.rs",
+        "Command::new(",
+        1,
+        "rsync --version: reads nothing",
+    ),
+    (
+        "git.rs",
+        "Command::new(",
+        1,
+        "git, read-only (no optional locks)",
+    ),
+    // Records under state/: baselines, markers, contacts.
+    ("record.rs", "write_atomic(", 1, "Store::put: state dir"),
+    ("record.rs", "remove_file(", 1, "Store::delete: state dir"),
+    (
+        "plan/apply_unit.rs",
+        ".put(",
+        2,
+        "leaf marker and baselines: state dir",
+    ),
+    (
+        "plan/apply_after.rs",
+        ".put(",
+        1,
+        "an adopted baseline: state dir",
+    ),
+    (
+        "plan/apply_after.rs",
+        ".delete(",
+        1,
+        "a baseline of a unit gone on both sides: state dir",
+    ),
+    (
+        "plan/apply_unit.rs",
+        ".delete(",
+        2,
+        "leaf baseline and marker: state dir",
+    ),
+    (
+        "daemon/home_apply.rs",
+        ".put(",
+        2,
+        "home's baselines and push markers: state dir",
+    ),
+    (
+        "daemon/home_apply.rs",
+        ".delete(",
+        2,
+        "home's baselines and push markers: state dir",
+    ),
+    ("daemon/fleet.rs", ".put(", 1, "contacts: state dir"),
+    // Config dir files.
+    (
+        "config/mod.rs",
+        "write_atomic(",
+        1,
+        "the atomic writer itself",
+    ),
+    (
+        "config/mod.rs",
+        "create_dir_all(",
+        1,
+        "write_atomic's parent: config dir",
+    ),
+    (
+        "config/mod.rs",
+        "fs::write(",
+        1,
+        "write_atomic's temporary: config dir",
+    ),
+    (
+        "config/mod.rs",
+        "fs::rename(",
+        1,
+        "write_atomic's rename: config dir",
+    ),
+    ("config/edit.rs", "write_atomic(", 1, "fleet.toml"),
+    ("config/leaf.rs", "write_atomic(", 1, "leaf.toml"),
+    (
+        "daemon/certs.rs",
+        "create_dir_all(",
+        1,
+        "home's identity files: config dir",
+    ),
+    (
+        "daemon/certs.rs",
+        "OpenOptions::new(",
+        1,
+        "home's identity files: config dir",
+    ),
+    (
+        "daemon/certs.rs",
+        "set_permissions(",
+        1,
+        "home's identity files: config dir",
+    ),
+    (
+        "daemon/certs.rs",
+        "fs::rename(",
+        1,
+        "home's identity files: config dir",
+    ),
+    (
+        "daemon/home_enroll.rs",
+        "remove_file(",
+        2,
+        "issued certificates: state dir",
+    ),
+    (
+        "daemon/home_enroll.rs",
+        "create_dir_all(",
+        1,
+        "issued certificates: state dir",
+    ),
+    (
+        "daemon/home_enroll.rs",
+        "set_permissions(",
+        1,
+        "issued certificates: state dir",
+    ),
+    (
+        "daemon/mod.rs",
+        "create_dir_all(",
+        1,
+        "the config dir itself",
+    ),
+    (
+        "daemon/mod.rs",
+        "set_permissions(",
+        2,
+        "the config dir and its socket",
+    ),
+    (
+        "daemon/mod.rs",
+        "File::options(",
+        1,
+        "the daemon lock file: config dir",
+    ),
+    (
+        "daemon/mod.rs",
+        "remove_file(",
+        2,
+        "the daemon socket: config dir",
+    ),
+    (
+        "daemon/journal.rs",
+        "create_dir_all(",
+        1,
+        "the journal: config dir",
+    ),
+    (
+        "daemon/journal.rs",
+        "OpenOptions::new(",
+        1,
+        "the journal: config dir",
+    ),
+    (
+        "daemon/journal.rs",
+        "append_raw(",
+        2,
+        "the journal: config dir",
+    ),
+    (
+        "daemon/leaf_link.rs",
+        "append_raw(",
+        1,
+        "the leaf's copy of home's journal lines",
+    ),
+    // Private scratch under the config dir.
+    (
+        "rsync/scratch.rs",
+        "DirBuilder::new(",
+        1,
+        "the scratch dir: config dir",
+    ),
+    (
+        "rsync/scratch.rs",
+        "libc::mkdtemp(",
+        1,
+        "an empty source: scratch",
+    ),
+    (
+        "rsync/scratch.rs",
+        "libc::mkstemp(",
+        1,
+        "a list file: scratch",
+    ),
+    (
+        "rsync/scratch.rs",
+        "remove_file(",
+        1,
+        "a list file: scratch",
+    ),
+    (
+        "rsync/scratch.rs",
+        "remove_dir(",
+        1,
+        "an empty source: scratch",
+    ),
+    (
+        "rsync/spill.rs",
+        "libc::mkstemp(",
+        1,
+        "an exclude file: scratch",
+    ),
+    (
+        "rsync/spill.rs",
+        "remove_file(",
+        1,
+        "an exclude file: scratch",
+    ),
+    (
+        "rsync/apply.rs",
+        "create_dir_all(",
+        1,
+        "a delete skeleton: scratch",
+    ),
+    (
+        "rsync/apply.rs",
+        "remove_dir(",
+        1,
+        "a delete skeleton: scratch",
+    ),
+];

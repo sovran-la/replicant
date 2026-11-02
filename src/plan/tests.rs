@@ -8,6 +8,7 @@ use crate::decide::Decision;
 use crate::guard::Guard;
 use crate::marker::Direction;
 use crate::record::{RECORD_VERSION, Store};
+use crate::state::UnitState;
 use crate::testutil::{self, Bed, InProcess};
 use crate::units::UnitKind;
 use std::path::PathBuf;

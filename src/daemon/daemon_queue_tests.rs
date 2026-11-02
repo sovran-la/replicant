@@ -69,7 +69,10 @@ fn a_leaf_that_hangs_up_while_waiting_is_expired_and_never_reaches_the_head() {
     });
 
     let Ok(HomeReply::Lease { lease: head, .. }) = leaf.call(
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
         Duration::from_secs(5),
     ) else {
         panic!()
@@ -92,7 +95,10 @@ fn a_leaf_that_hangs_up_while_waiting_is_expired_and_never_reaches_the_head() {
     let l = leaf.clone();
     let waiter = std::thread::spawn(move || {
         l.call(
-            HomeRequest::Acquire { no_wait: false },
+            HomeRequest::Acquire {
+                no_wait: false,
+                apply: false,
+            },
             Duration::from_millis(2500),
         )
     });

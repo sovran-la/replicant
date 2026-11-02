@@ -31,6 +31,56 @@ pub fn snapshot_timed(
     union_repos: &[String],
     case_check: bool,
 ) -> Result<(Vec<SideUnit>, Vec<UnitTiming>)> {
+    snapshot_some(found, union_repos, case_check, None)
+}
+
+/// One unit of this side, hashed exactly as [`snapshot`] hashes it: after
+/// apply wrote it, for the baseline. `spec` is its subscription, found at
+/// `sub_abs` on this side; `union_repos` the plan's repos (a loose unit
+/// leaves them out). A unit that is not there is [`UnitState::Empty`].
+pub fn rehash(
+    spec: &SubSpec,
+    sub_abs: &Path,
+    rel: &str,
+    kind: UnitKind,
+    union_repos: &[String],
+) -> Result<SideUnit> {
+    // A repo unit is hashed from its own directory; only a loose unit needs
+    // the subscription's walk.
+    let d = match kind {
+        UnitKind::Repo => repos::Discovery::default(),
+        UnitKind::Loose => repos::discover_base(sub_abs, &spec.excludes_at(&spec.rel)?)?,
+    };
+    let found = Discovered {
+        subs: vec![(spec.clone(), sub_abs.to_path_buf(), d)],
+    };
+    let mut union: Vec<String> = union_repos.to_vec();
+    if kind == UnitKind::Repo && !union.iter().any(|r| r == rel) {
+        union.push(rel.to_string());
+        union.sort();
+    }
+    let (units, _) = snapshot_some(&found, &union, false, Some((rel, kind)))?;
+    Ok(units.into_iter().next().unwrap_or(SideUnit {
+        rel: rel.into(),
+        sub: spec.rel.clone(),
+        kind,
+        state: UnitState::Empty,
+        head: None,
+        dirty: vec![],
+        locks: vec![],
+        collisions: vec![],
+        is_file: false,
+        files: 0,
+        ignored: vec![],
+    }))
+}
+
+fn snapshot_some(
+    found: &Discovered,
+    union_repos: &[String],
+    case_check: bool,
+    only: Option<(&str, UnitKind)>,
+) -> Result<(Vec<SideUnit>, Vec<UnitTiming>)> {
     struct Job<'a> {
         spec: &'a SubSpec,
         abs: PathBuf,
@@ -106,6 +156,9 @@ pub fn snapshot_timed(
         });
     }
 
+    if let Some((rel, kind)) = only {
+        jobs.retain(|j| j.rel == rel && j.kind == kind);
+    }
     let results = state::parallel_map(&jobs, state::workers(), |j| -> Result<(SideUnit, u128)> {
         let t = std::time::Instant::now();
         let mut u = SideUnit {

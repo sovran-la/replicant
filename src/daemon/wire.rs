@@ -6,16 +6,20 @@
 //! half-understood subscription request is worse than a refused one.
 
 use super::fleet::FleetState;
+use crate::baseline::Baseline;
 use crate::decide::{Decision, UnservedReason};
 use crate::guard::Refusal;
-use crate::marker::Marker;
+use crate::marker::{Direction, Marker};
+use crate::state::UnitState;
+use crate::units::UnitKind;
 use crate::units::{SideUnit, SubSpec};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// 2: per-host certificates. Home derives the caller from its certificate,
 /// and a leaf collects its own with [`HomeRequest::CollectCert`].
-pub const WIRE_VERSION: u32 = 2;
+/// 3: apply ([`HomeRequest::BeginPush`] and the rest of `sync`'s writes).
+pub const WIRE_VERSION: u32 = 3;
 
 // ---------------------------------------------------------------- leaf → home
 
@@ -45,6 +49,10 @@ pub enum HomeRequest {
     Subscriptions,
     Acquire {
         no_wait: bool,
+        /// A real `sync` rather than a dry run (shown in the queue). Absent
+        /// from an older leaf: a dry run.
+        #[serde(default)]
+        apply: bool,
     },
     Heartbeat {
         lease: u64,
@@ -69,6 +77,52 @@ pub enum HomeRequest {
         summary: String,
     },
     FleetState,
+    /// Apply, before a push's real rsync: home is the target, so home writes
+    /// the in-progress marker (or keeps this host's own, resuming).
+    /// Requires the caller to hold the head of the queue.
+    BeginPush {
+        lease: u64,
+        rel: String,
+        source_state: UnitState,
+    },
+    /// Apply, after a push's rsync exited 0: home's state of the unit now,
+    /// hashed as the plan hashed it. `union` is the plan's repos within the
+    /// unit.
+    Rehash {
+        lease: u64,
+        rel: String,
+        kind: UnitKind,
+        union: Vec<String>,
+    },
+    /// Apply: both sides agree on `rel`. Home records `baseline` as its copy
+    /// for this host, or drops its copy when `None` (the unit was deleted).
+    Agree {
+        lease: u64,
+        rel: String,
+        baseline: Option<Baseline>,
+    },
+    /// Apply: the unit is done. Home clears its marker (a push) and
+    /// journals `sync <host> <rel> <detail>`.
+    Settle {
+        lease: u64,
+        rel: String,
+        direction: Option<Direction>,
+        detail: String,
+    },
+    /// Apply: a unit's rsync failed or was stopped. Journaled; every marker
+    /// stays. No lease needed: it is evidence, also after the lease is lost.
+    Interrupted {
+        rel: String,
+        direction: Direction,
+        why: String,
+    },
+    /// Apply: a journal line about this host that is not an rsync:
+    /// [`NOTE_EVENTS`] only.
+    Note {
+        event: String,
+        rel: String,
+        detail: String,
+    },
     /// Over the bootstrap bundle: the certificate `approve` issued this
     /// host, if one is waiting. One-shot: home deletes its copy as it
     /// answers.
@@ -90,12 +144,23 @@ pub enum HomeReply {
     Subscribed(SubscribeOutcome),
     Unsubscribed(UnsubscribeOutcome),
     Subscriptions(SubscriptionsView),
-    Lease { lease: u64, lease_secs: u64 },
+    Lease {
+        lease: u64,
+        lease_secs: u64,
+    },
     Done,
     State(HomeSnapshot),
     Fleet(FleetState),
     Collected(Collected),
+    /// [`HomeRequest::Rehash`]'s answer.
+    Rehashed {
+        state: UnitState,
+    },
 }
+
+/// The events a leaf may journal with [`HomeRequest::Note`]: a deletion it
+/// was told to carry out, and a shared state adopted as the first baseline.
+pub const NOTE_EVENTS: &[&str] = &["confirm-delete", "adopt"];
 
 /// What [`HomeRequest::CollectCert`] found for the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

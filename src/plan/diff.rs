@@ -14,14 +14,14 @@ use crate::{Result, paths, state};
 /// plenty and does not look like an attack to sshd.
 const RSYNC_WORKERS: usize = 4;
 
-fn spec_for<'s>(specs: &'s [SubSpec], rel: &str) -> Option<&'s SubSpec> {
+pub(super) fn spec_for<'s>(specs: &'s [SubSpec], rel: &str) -> Option<&'s SubSpec> {
     specs
         .iter()
         .filter(|s| paths::is_within(rel, &s.rel))
         .max_by_key(|s| s.rel.len())
 }
 
-fn summarize(it: &Itemized) -> DiffSummary {
+pub(super) fn summarize(it: &Itemized) -> DiffSummary {
     let changes = it
         .changes
         .iter()
@@ -47,7 +47,7 @@ fn summarize(it: &Itemized) -> DiffSummary {
 /// diffed the way its deletion would travel, toward the side that still has
 /// it, so the human confirming it sees what would go; it still has no
 /// [`Decision::direction`], so nothing can carry it out unconfirmed.
-fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
+pub(super) fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
     match d {
         Decision::Remove => Some(Direction::Pull),
         Decision::DeletedOn { host } if host == me => Some(Direction::Push),
@@ -56,7 +56,9 @@ fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
     }
 }
 
-/// Fill `diff` and `refusals` on every unit that would move.
+/// Fill `diff` and `refusals` on every unit that would move, and return the
+/// transfer each one's dry run used (index-aligned; `None` for the rest):
+/// apply runs exactly those, without `--dry-run`.
 pub(super) fn run(
     ctx: LeafCtx<'_>,
     snap: &HomeSnapshot,
@@ -65,7 +67,7 @@ pub(super) fn run(
     leaf_units: &[SideUnit],
     planned: &mut [PlannedUnit],
     abort: &Abort,
-) -> Result<()> {
+) -> Result<Vec<Option<Transfer>>> {
     let mut worktrees = found.worktrees();
     worktrees.extend(snap.worktrees.iter().cloned());
     let sub_rels: Vec<String> = snap.specs.iter().map(|s| s.rel.clone()).collect();
@@ -75,8 +77,9 @@ pub(super) fn run(
         .filter(|i| diff_direction(ctx.me, &planned[*i].decision).is_some())
         .collect();
 
+    let mut transfers = vec![None; planned.len()];
     if jobs.is_empty() {
-        return Ok(());
+        return Ok(transfers);
     }
     let runner = Runner {
         program: ctx.rsync.into(),
@@ -90,7 +93,7 @@ pub(super) fn run(
     let results = state::parallel_map(
         &jobs,
         RSYNC_WORKERS,
-        |&i| -> Result<(DiffSummary, Vec<Refusal>)> {
+        |&i| -> Result<(DiffSummary, Vec<Refusal>, Transfer)> {
             let p = &planned[i];
             let remove = p.decision == Decision::Remove;
             let direction = diff_direction(ctx.me, &p.decision).expect("filtered above");
@@ -153,16 +156,17 @@ pub(super) fn run(
                     .as_ref()
                     .and_then(|t| guard::dirty_target(t, &it)),
             );
-            Ok((summarize(&it), refusals))
+            Ok((summarize(&it), refusals, transfer))
         },
     );
 
     for (i, r) in jobs.into_iter().zip(results) {
-        let (d, refusals) = r?;
+        let (d, refusals, transfer) = r?;
         planned[i].diff = Some(d);
         planned[i].refusals = refusals;
+        transfers[i] = Some(transfer);
     }
-    Ok(())
+    Ok(transfers)
 }
 
 /// The leaf's repo facts for a unit being removed, so guardrail 1 can say

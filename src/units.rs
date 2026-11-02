@@ -24,7 +24,7 @@ use std::path::PathBuf;
 mod snapshot;
 
 pub(crate) use snapshot::repo_facts;
-pub use snapshot::{UnitTiming, snapshot, snapshot_timed};
+pub use snapshot::{UnitTiming, rehash, snapshot, snapshot_timed};
 
 /// A subscription as both sides see it: its path, its root's excludes, and
 /// the host's carve-outs under it.

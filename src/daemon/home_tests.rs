@@ -1,4 +1,5 @@
 use super::*;
+use crate::daemon::journal::Filter;
 use crate::testutil::{self, Bed};
 
 fn call(home: &Home, host: &str, hd: &std::path::Path, request: HomeRequest) -> HomeAnswer {
@@ -63,7 +64,10 @@ fn pending_host_flow_end_to_end() {
         &home,
         "newbox",
         &bed.leaf_hd,
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
     );
     assert!(
         acq.result.is_err(),
@@ -243,3 +247,6 @@ fn state_unions_leaf_repos_inside_bounds_and_reports_markers() {
 
 #[path = "home_queue_tests.rs"]
 mod more;
+
+#[path = "home_apply_tests.rs"]
+mod apply;

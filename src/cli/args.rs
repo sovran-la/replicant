@@ -54,10 +54,27 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Decide the direction and show it. v0.1 supports --dry-run only.
+    /// Decide the direction per unit, show it, and (after `y`, or with
+    /// --yes) carry it out: pull, push, remove. Nothing is written while
+    /// anything needs a human (exit 2); an rsync that does not finish
+    /// stops the sync and the next one resumes it (exit 1).
     Sync {
+        /// Show the decision and the itemized rsync diff; write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Apply without asking. Does not confirm deletions.
+        #[arg(long)]
+        yes: bool,
+        /// Never prompt (as without a terminal): with --yes it applies,
+        /// without it it only shows the plan. Reports go to stderr.
+        #[arg(long)]
+        non_interactive: bool,
+        /// Carry out the deletion of a unit that vanished on one side since
+        /// it was last synced: its path here (starting with /, ~ or .) or
+        /// its home-relative path as `status` prints it (work/r).
+        /// Repeatable. Required even with --yes.
+        #[arg(long = "confirm-delete", value_name = "PATH")]
+        confirm_delete: Vec<String>,
         /// Fail instead of waiting behind another sync.
         #[arg(long)]
         no_wait: bool,

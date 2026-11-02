@@ -95,6 +95,7 @@ pub(super) fn plan(
                 files,
                 marker: marker::covering(leaf_markers, &b.rel)
                     .or_else(|| marker::covering(&snap.markers, &b.rel)),
+                me: ctx.me,
             });
             PlannedUnit {
                 rel: b.rel.clone(),

@@ -6,15 +6,14 @@
 //! edits. Every look also reloads after a hand edit ([`cache`]), so every
 //! reader sees what the file says.
 
-use super::fleet::{self, FleetState, LastReport, PendingView};
-use super::journal::{Filter, Journal, Line};
+use super::fleet::{self, LastReport};
+use super::journal::{Journal, Line};
 use super::queue::{EntryKind, Queue};
 use super::wire::*;
 use crate::config::{Dirs, short_hostname};
-use crate::marker::{self, Marker};
 use crate::record::Store;
 use crate::{Error, Result, subscribe};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long a dry run may wait in the queue before giving up.
 pub const MAX_QUEUE_WAIT: Duration = Duration::from_secs(600);
@@ -163,16 +162,18 @@ impl Home {
                 Ok(HomeReply::Unsubscribed(out))
             }
             HomeRequest::Subscriptions => Ok(HomeReply::Subscriptions(self.view(&host)?)),
-            HomeRequest::Acquire { no_wait } => {
+            HomeRequest::Acquire { no_wait, apply } => {
                 let (specs, lease) = {
                     let f = self.fleet()?;
                     (self.served(&f, &host)?.0, f.lease)
                 };
                 let paths: Vec<String> = specs.iter().map(|s| s.rel.clone()).collect();
                 let what = paths.join(" ");
-                let id = self
-                    .queue
-                    .enqueue(&host, EntryKind::DryRun, paths, lease, no_wait)?;
+                let kind = match apply {
+                    true => EntryKind::Sync,
+                    false => EntryKind::DryRun,
+                };
+                let id = self.queue.enqueue(&host, kind, paths, lease, no_wait)?;
                 if let Err(e) = self.queue.wait(id, lease, MAX_QUEUE_WAIT, connected) {
                     // Withdrawn at the head: as loud as a sweep's expiry.
                     if e.to_string().contains(super::queue::WAITER_GONE) {
@@ -226,6 +227,12 @@ impl Home {
                 Ok(HomeReply::Done)
             }
             HomeRequest::FleetState => Ok(HomeReply::Fleet(self.fleet_state()?)),
+            r @ (HomeRequest::BeginPush { .. }
+            | HomeRequest::Rehash { .. }
+            | HomeRequest::Agree { .. }
+            | HomeRequest::Settle { .. }
+            | HomeRequest::Interrupted { .. }
+            | HomeRequest::Note { .. }) => self.apply_request(&host, r, j),
             HomeRequest::CollectCert if bootstrap => {
                 Ok(HomeReply::Collected(self.collect(&host, j)?))
             }
@@ -235,46 +242,10 @@ impl Home {
             ))),
         }
     }
-
-    pub fn fleet_state(&self) -> Result<FleetState> {
-        let markers = marker::store(&self.dirs.state()).all::<Marker>()?;
-        let f = self.fleet()?;
-        fleet::build(
-            &f,
-            &self.contacts,
-            self.queue.view(),
-            markers,
-            crate::now_secs(),
-        )
-    }
-
-    pub fn pending(&self) -> Result<Vec<PendingView>> {
-        Ok(fleet::pending_views(&*self.fleet()?))
-    }
-
-    pub fn preview_allow(&self, host: &str, raw: &[String]) -> Result<AllowPreview> {
-        subscribe::preview_allow(&*self.fleet()?, host, raw)
-    }
-
-    pub fn log(&self, filter: &Filter) -> Result<Vec<Line>> {
-        self.journal.read(filter)
-    }
-
-    /// Expire dead queue entries, journaling each one loudly.
-    pub fn reap(&self) {
-        for e in self.queue.expire(Instant::now()) {
-            let mut ignore = Vec::new();
-            let detail = format!(
-                "lease expired: {} (queue released; markers untouched)",
-                super::queue::describe(&e)
-            );
-            self.journal(
-                &mut ignore,
-                Line::new("expired", &e.host, &e.paths.join(" "), detail),
-            );
-        }
-    }
 }
+
+#[path = "home_views.rs"]
+mod views;
 
 #[path = "home_fleet.rs"]
 mod cache;
@@ -289,6 +260,10 @@ pub use trust::{BOOTSTRAP_ONLY, Caller, UNKNOWN_CERT};
 
 #[path = "home_serve.rs"]
 mod serve;
+
+#[path = "home_apply.rs"]
+mod apply;
+pub use apply::leaf_baselines;
 
 #[cfg(test)]
 #[path = "home_tests.rs"]

@@ -138,16 +138,23 @@ pub(super) fn run(
         std::thread::sleep(POLL);
     };
     // rsync has exited, but something it left in its group (a persisted ssh
-    // master) may still hold a pipe open. The bound covers that wait too.
-    let by = match stopped {
-        Some(_) => Instant::now() + DRAIN,
-        None => deadline,
+    // master) may still hold a pipe open. The bound covers that wait too;
+    // for an rsync that was stopped or died of a signal, whatever is left
+    // gets only a short drain before the group goes.
+    let by = match (stopped, status.code()) {
+        (None, Some(_)) => deadline,
+        _ => (Instant::now() + DRAIN).min(deadline.max(Instant::now())),
     };
     let mut collect = |rx: mpsc::Receiver<Vec<u8>>| {
         rx.recv_timeout(by.saturating_duration_since(Instant::now()))
             .unwrap_or_else(|_| {
                 signal_group(pgid, libc::SIGKILL);
-                stopped.get_or_insert(Stopped::TimedOut);
+                // An rsync that exited on its own, held open past the bound:
+                // the bound's failure. One that died of a signal already
+                // failed, and says so.
+                if status.code().is_some() {
+                    stopped.get_or_insert(Stopped::TimedOut);
+                }
                 Vec::new()
             })
     };

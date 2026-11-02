@@ -44,7 +44,9 @@
 //! - **home marker from another leaf** → quarantined (PLAN.md, "Interrupted
 //!   sync": pulls of that path by any other leaf are refused).
 //!
-//! Marker rows come first: an interrupted sync is never a conflict.
+//! Marker rows come first: an interrupted sync is never a conflict, unless
+//! its source vanished since (resuming would then delete the unit, which
+//! needs a confirmation the marker does not carry).
 
 use crate::baseline::Baseline;
 use crate::marker::{Direction, Marker};
@@ -171,12 +173,19 @@ pub fn decide(i: Inputs<'_>) -> Decision {
             since: m.started_at,
         };
     }
-    if let Some(m) = i.leaf_marker {
-        return Decision::Resume {
-            direction: m.direction,
-        };
-    }
-    if let Some(m) = i.home_marker {
+    // A marker is resumed, never read as a conflict, unless the source it
+    // was copying from has since vanished: rerunning it now would be a
+    // whole-unit delete nobody confirmed (review F4).
+    for (m, source) in [(i.leaf_marker, i.home), (i.home_marker, i.leaf)] {
+        let Some(m) = m else { continue };
+        if source.is_empty() && !m.source_state.is_empty() {
+            return Decision::Conflict {
+                why: format!(
+                    "an interrupted {} by {} is marked here, and its source has vanished                      since; restore it, or roll the sync back",
+                    m.direction, m.host
+                ),
+            };
+        }
         return Decision::Resume {
             direction: m.direction,
         };
@@ -230,3 +239,7 @@ mod tests;
 #[cfg(test)]
 #[path = "decide_unserved_tests.rs"]
 mod unserved_tests;
+
+#[cfg(test)]
+#[path = "decide_resume_tests.rs"]
+mod resume_tests;

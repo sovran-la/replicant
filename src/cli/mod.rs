@@ -5,6 +5,7 @@
 pub mod approve;
 mod args;
 pub mod render;
+pub mod sync;
 
 pub use args::{Cli, Cmd, ConfigCmd, HostCmd};
 
@@ -22,6 +23,16 @@ pub fn absolutize(raw: &str, cwd: &Path) -> String {
         raw.to_string()
     } else {
         cwd.join(raw).display().to_string()
+    }
+}
+
+/// `--confirm-delete`: a local path (starting with `/`, `~` or `.`),
+/// absolutized, or else a unit's home-relative path as `status` prints it.
+pub fn confirm_path(raw: &str, cwd: &Path) -> String {
+    if raw.starts_with(['/', '~', '.']) {
+        absolutize(raw, cwd)
+    } else {
+        raw.to_string()
     }
 }
 
@@ -124,25 +135,36 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
         }
         Cmd::Sync {
             dry_run,
+            yes,
+            non_interactive,
+            confirm_delete,
             no_wait,
-            json: as_json,
+            json,
             verbose,
         } => {
-            if !dry_run {
-                return Err(Error::Refused(
-                    "replicant 0.1 is read-only: only `sync --dry-run` exists; apply lands in 0.2"
-                        .into(),
-                ));
-            }
-            let LocalReply::Plan(p) = call(LocalRequest::DryRun { no_wait })? else {
-                return unexpected();
+            let a = sync::Args {
+                dry_run,
+                yes,
+                interactive: !non_interactive && std::io::stdin().is_terminal(),
+                confirm_delete: confirm_delete
+                    .iter()
+                    .map(|p| confirm_path(p, &cwd))
+                    .collect(),
+                no_wait,
+                json,
+                verbose,
+                home_dir: crate::config::user_home()?,
             };
-            if as_json {
-                json(&*p)?;
-            } else {
-                print!("{}", render::plan(&p, verbose, style));
-            }
-            Ok(if p.blocked() { 2 } else { 0 })
+            let (stdin, mut stdout, mut stderr) =
+                (std::io::stdin(), std::io::stdout(), std::io::stderr());
+            let mut input = stdin.lock();
+            let mut t = sync::Term {
+                input: &mut input,
+                out: &mut stdout,
+                err: &mut stderr,
+                style,
+            };
+            sync::run(&a, &mut t, &call)
         }
         Cmd::Log { host, path, since } => {
             let since = match since {
@@ -206,9 +228,11 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
 }
 
 fn unexpected() -> Result<i32> {
-    Err(Error::Daemon(
-        "the daemon sent an unexpected reply; is it the same version as this CLI?".into(),
-    ))
+    Err(unexpected_reply())
+}
+
+pub(crate) fn unexpected_reply() -> Error {
+    Error::Daemon("the daemon sent an unexpected reply; is it the same version as this CLI?".into())
 }
 
 /// Pretty JSON for `--json`, over any serializable reply.
@@ -224,69 +248,5 @@ mod erased {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::{CommandFactory, Parser};
-
-    #[test]
-    fn cli_definition_is_valid() {
-        Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn parses_the_plan_examples() {
-        let c = Cli::try_parse_from([
-            "replicant",
-            "subscribe",
-            "thistledown",
-            "/Users/b/work/tundra",
-            "--as",
-            "/Users/b/work2/tundra",
-        ])
-        .unwrap();
-        assert!(matches!(c.cmd, Cmd::Subscribe { ref as_local, .. } if as_local.is_some()));
-        assert!(
-            Cli::try_parse_from(["replicant", "subscribe", "thistledown"]).is_err(),
-            "paths required"
-        );
-        let c = Cli::try_parse_from(["replicant", "sync", "--dry-run", "--no-wait"]).unwrap();
-        assert!(matches!(
-            c.cmd,
-            Cmd::Sync {
-                dry_run: true,
-                no_wait: true,
-                ..
-            }
-        ));
-        let c = Cli::try_parse_from(["replicant", "host", "revoke", "birchbook"]).unwrap();
-        assert!(matches!(
-            c.cmd,
-            Cmd::Host { cmd: HostCmd::Revoke { ref host } } if host == "birchbook"
-        ));
-        assert!(Cli::try_parse_from(["replicant", "host", "revoke"]).is_err());
-        let c = Cli::try_parse_from(["replicant", "status", "--fleet"]).unwrap();
-        assert!(matches!(c.cmd, Cmd::Status { fleet: true, .. }));
-        assert!(Cli::try_parse_from(["replicant", "log", "--since", "2h", "--host", "x"]).is_ok());
-    }
-
-    #[test]
-    fn sync_without_dry_run_is_refused_before_touching_anything() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dirs = Dirs::at(tmp.path().to_path_buf());
-        let c = Cli::try_parse_from(["replicant", "sync"]).unwrap();
-        let err = run(c, &dirs).unwrap_err().to_string();
-        assert!(err.contains("read-only"), "{err}");
-    }
-
-    #[test]
-    fn absolutize_and_journal_path() {
-        let cwd = Path::new("/Users/b/work");
-        assert_eq!(absolutize("tundra", cwd), "/Users/b/work/tundra");
-        assert_eq!(absolutize("~/work", cwd), "~/work");
-        assert_eq!(absolutize("/abs", cwd), "/abs");
-        let home = Path::new("/Users/b");
-        assert_eq!(journal_path("~/work/x/", home), "work/x");
-        assert_eq!(journal_path("/Users/b/work/x", home), "work/x");
-        assert_eq!(journal_path("work/x", home), "work/x");
-    }
-}
+#[path = "cli_tests.rs"]
+mod tests;

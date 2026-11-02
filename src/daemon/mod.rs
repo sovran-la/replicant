@@ -241,7 +241,8 @@ fn home_local(h: &home::Home, req: LocalRequest) -> Result<LocalReply> {
         LocalRequest::Revoke { host } => Ok(LocalReply::Revoked(h.revoke(&host)?)),
         LocalRequest::Subscribe { .. }
         | LocalRequest::Unsubscribe { .. }
-        | LocalRequest::DryRun { .. } => Err(Error::Refused(
+        | LocalRequest::DryRun { .. }
+        | LocalRequest::Sync { .. } => Err(Error::Refused(
             "this machine is home; subscribe and sync run on a leaf".into(),
         )),
     }

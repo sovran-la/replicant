@@ -4,6 +4,7 @@
 use super::{SubscribeOutcome, UnsubscribeOutcome};
 use crate::daemon::fleet::{FleetState, PendingView};
 use crate::daemon::journal::{Filter, Line};
+use crate::plan::apply::{SyncOpts, SyncReport};
 use crate::plan::{LeafStatus, Plan};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -33,6 +34,10 @@ pub enum LocalRequest {
     Fleet,
     DryRun {
         no_wait: bool,
+    },
+    /// `sync` without `--dry-run`: plan, and apply what may be applied.
+    Sync {
+        opts: SyncOpts,
     },
     Log {
         filter: Filter,
@@ -65,6 +70,7 @@ pub enum LocalReply {
     LeafStatus(Box<LeafStatus>),
     Fleet(FleetState),
     Plan(Box<Plan>),
+    Synced(Box<SyncReport>),
     Log { lines: Vec<Line> },
     Pending { hosts: Vec<PendingView> },
     AllowPreview(AllowPreview),

@@ -38,6 +38,11 @@ impl Watch {
         self.abort.raise();
     }
 
+    /// The queue entry: what apply's requests to home name.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
     /// Raised when the lease is lost: give it to every rsync the plan runs,
     /// and the running one is stopped.
     pub fn abort(&self) -> &Abort {

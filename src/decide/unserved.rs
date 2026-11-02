@@ -60,6 +60,9 @@ pub struct UnservedInputs<'a> {
     pub files: u64,
     /// A marker on either side covering the unit.
     pub marker: Option<&'a Marker>,
+    /// This leaf's name: a marker it wrote for a removal of exactly this
+    /// path (a pull from nothing) is resumed, not a conflict.
+    pub me: &'a str,
 }
 
 /// "3 files here".
@@ -73,6 +76,17 @@ pub fn files_here(n: u64) -> String {
 /// many files changed is not; messages say how many files the leaf holds.
 pub fn decide_unserved(i: UnservedInputs<'_>) -> Decision {
     let changed = *i.leaf != i.baseline.leaf;
+    // This leaf's own interrupted removal of this path: half of it is gone,
+    // so it reads as changed, and finishing it is the only way forward.
+    if let Some(m) = i.marker
+        && m.rel == i.rel
+        && m.host == i.me
+        && m.direction == crate::marker::Direction::Pull
+        && m.source_state.is_empty()
+        && i.reason == UnservedReason::Unsubscribed
+    {
+        return Decision::Remove;
+    }
     if let Some(m) = i.marker {
         let since = if changed { "changed" } else { "unchanged" };
         return Decision::Conflict {

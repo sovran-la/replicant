@@ -12,7 +12,10 @@ fn every_other_request() -> Vec<HomeRequest> {
             paths: vec!["~/work".into()],
         },
         HomeRequest::Subscriptions,
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
         HomeRequest::Heartbeat { lease: 1 },
         HomeRequest::Release { lease: 1 },
         HomeRequest::State {

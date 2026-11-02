@@ -16,7 +16,10 @@ fn queue_through_the_handler_and_expiry_is_journaled() {
         &home,
         "leaf",
         &bed.leaf_hd,
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
     )) else {
         panic!()
     };
@@ -25,7 +28,10 @@ fn queue_through_the_handler_and_expiry_is_journaled() {
         &home,
         "leaf",
         &bed.leaf_hd,
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
     );
     assert!(busy.result.unwrap_err().contains("queue busy"));
     ok(call(

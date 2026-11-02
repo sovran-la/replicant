@@ -1,9 +1,10 @@
 //! A leaf's daemon: the CLI's requests, relayed to home over mTLS where they
 //! need home, and the leaf's own copy of its journal lines.
 
-use super::journal::Journal;
+use super::journal::{Journal, Line};
 use super::wire::*;
 use crate::config::{Dirs, HomeEntry, LeafConfig, leaf::check_local, short_hostname, with_port};
+use crate::plan::apply::Outcome;
 use crate::plan::{self, HomeLink, LeafCtx, LeafStatus};
 use crate::{Error, Result, paths};
 use link::Link;
@@ -89,22 +90,29 @@ impl Leaf {
                     other => Err(Error::Remote(format!("unexpected reply: {other:?}"))),
                 }
             }
-            LocalRequest::DryRun { no_wait } => {
-                let cfg = self.cfg()?;
-                let link = self.link(&cfg)?.host()?;
-                let (me, hd, state) = (cfg.name()?, cfg.home_dir()?, self.dirs.state());
-                let scratch = self.dirs.scratch();
-                let ctx = LeafCtx {
-                    me: &me,
-                    home_dir: &hd,
-                    cfg: &cfg,
-                    state_dir: &state,
-                    scratch_dir: &scratch,
-                    rsync: plan::RSYNC,
-                };
+            LocalRequest::DryRun { no_wait } => self.planning(|link, ctx| {
                 Ok(LocalReply::Plan(Box::new(plan::plan(
-                    &link, ctx, true, no_wait,
+                    link, ctx, true, no_wait,
                 )?)))
+            }),
+            LocalRequest::Sync { opts } => {
+                let (me, report) = self.planning(|link, ctx| {
+                    Ok((ctx.me.to_string(), plan::apply::sync(link, ctx, &opts)?))
+                })?;
+                // Home did not hear of it: the leaf's own copy must.
+                if let Outcome::Interrupted {
+                    rel,
+                    why,
+                    journaled: false,
+                } = &report.outcome
+                {
+                    let detail =
+                        format!("interrupted ({why}); marker kept; home did not hear of it");
+                    if let Err(e) = self.journal.append(&Line::new("sync", &me, rel, detail)) {
+                        eprintln!("replicant: could not journal an interrupted sync: {e}");
+                    }
+                }
+                Ok(LocalReply::Synced(Box::new(report)))
             }
             LocalRequest::Log { filter } => Ok(LocalReply::Log {
                 lines: self.journal.read(&filter)?,
@@ -117,6 +125,25 @@ impl Leaf {
                 "approve runs on home, and this machine is a leaf".into(),
             )),
         }
+    }
+
+    /// Run `f` with the link to home, as this host, and the plan context.
+    fn planning<T>(&self, f: impl FnOnce(&dyn HomeLink, LeafCtx<'_>) -> Result<T>) -> Result<T> {
+        let cfg = self.cfg()?;
+        let link = self.link(&cfg)?.host()?;
+        let (me, hd, state) = (cfg.name()?, cfg.home_dir()?, self.dirs.state());
+        let scratch = self.dirs.scratch();
+        f(
+            &link,
+            LeafCtx {
+                me: &me,
+                home_dir: &hd,
+                cfg: &cfg,
+                state_dir: &state,
+                scratch_dir: &scratch,
+                rsync: plan::RSYNC,
+            },
+        )
     }
 
     fn subscribe(
