@@ -130,7 +130,8 @@ exclude = ["projects", "todos", "statsig", "*.jsonl", ".credentials.json"]
 
 [roots.sovran]
 path    = "/home/morgan/.sovran"
-# daemon state, locks, sockets, logs
+# daemon state, locks, sockets, logs. A pattern with a "/" is relative to the
+# unit it is applied in; "**/" matches at any depth.
 exclude = ["agents/state", "**/*.sock", "**/*.lock", "**/*.log"]
 
 [hosts.birchbook]

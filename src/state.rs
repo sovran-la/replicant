@@ -1,9 +1,10 @@
 //! The state hash. PLAN.md: "a hash over per-repo `(HEAD, dirty-tree hash)`
 //! plus a manifest of non-repo files".
 //!
-//! - **Repo**: HEAD, every ref (branches, tags, `refs/stash` — the plan's
-//!   requirements list branches and stashes as state, so `HEAD` here means all
-//!   of them), and the dirty tree: each porcelain v2 entry, which names staged
+//! - **Repo**: HEAD, every ref except remote-tracking ones (branches, tags,
+//!   `refs/stash` — the plan's requirements list branches and stashes as
+//!   state, so `HEAD` here means all of them), and the dirty tree: each
+//!   porcelain v2 entry, which names staged
 //!   content by blob id, plus the working-tree *metadata* of anything the
 //!   index does not describe (modified, untracked, deleted): kind, size,
 //!   mtime to the nanosecond, mode, link target.
@@ -17,6 +18,13 @@
 //! 400 MB zip. The one thing metadata cannot see is a same-size rewrite that
 //! lands in the same nanosecond, which is the same blind spot the loose
 //! manifest has always had.
+//!
+//! **Decision: `refs/remotes/*` is not state** (v0.1 review, Q3). An IDE that
+//! autofetches moves remote-tracking refs on both machines independently, which
+//! made every such repo a "both changed" conflict for no reason. They are a
+//! cache of another server, refetchable, and rsync still carries them with
+//! `.git`. Everything else `for-each-ref` lists is hashed, including anything
+//! outside `refs/heads`, `refs/tags` and `refs/stash` (notes, replace refs).
 //!
 //! Status entries and manifest entries under an excluded path are dropped, so
 //! a tracked file under an excluded `bin/` does not read as "deleted" on the
@@ -65,7 +73,13 @@ pub struct RepoFacts {
     pub dirty: Vec<String>,
     /// Git lock files, relative to the repo (guardrail 3, on the source).
     pub locks: Vec<String>,
+    /// Tracked files plus untracked ones: what removing the working tree
+    /// would remove, for "deleted on X" (`.git` itself not counted).
+    pub files: u64,
 }
+
+/// Remote-tracking refs, left out of the repo hash (module doc).
+const REMOTE_REFS: &str = "refs/remotes/";
 
 fn hex(d: Sha256) -> String {
     d.finalize().iter().map(|b| format!("{b:02x}")).collect()
@@ -78,15 +92,20 @@ pub fn repo(abs: &Path, ex: &Excludes) -> Result<RepoFacts> {
     h.update(b"repo\0head\0");
     h.update(st.head.as_bytes());
     h.update(b"\0refs\0");
-    h.update(st.refs.as_bytes());
+    for line in st.refs.lines().filter(|l| !l.starts_with(REMOTE_REFS)) {
+        h.update(line.as_bytes());
+        h.update(b"\n");
+    }
     h.update(b"\0dirty\0");
     let mut dirty = Vec::new();
+    let mut untracked = 0;
     for e in &st.entries {
         if ex.path_excluded(&e.path, e.path.ends_with('/')) {
             continue;
         }
         h.update(e.raw.as_bytes());
         h.update(b"\0");
+        untracked += u64::from(e.raw.starts_with('?'));
         if e.worktree_changed {
             content(&mut h, &abs.join(&e.path), e.worktree_deleted)?;
         }
@@ -100,6 +119,7 @@ pub fn repo(abs: &Path, ex: &Excludes) -> Result<RepoFacts> {
         head: st.head,
         dirty,
         locks: git::locks(abs)?,
+        files: git::index_entries(abs)? + untracked,
     })
 }
 
@@ -133,6 +153,11 @@ fn content(h: &mut Sha256, path: &Path, deleted: bool) -> Result<()> {
     }
     h.update(b"\0");
     Ok(())
+}
+
+/// How many non-directory entries a loose manifest holds.
+pub fn loose_files(entries: &[Entry]) -> u64 {
+    entries.iter().filter(|e| e.kind != Kind::Dir).count() as u64
 }
 
 /// Hash a loose manifest. An empty one is [`UnitState::Empty`].

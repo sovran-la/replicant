@@ -1,5 +1,6 @@
 use super::*;
 use crate::testutil;
+use std::path::Path;
 
 fn spec(rel: &str) -> SubSpec {
     SubSpec {
@@ -183,4 +184,32 @@ fn case_check_reports_collisions_relative_to_unit() {
 fn join_handles_empty_rel() {
     assert_eq!(join("work", ""), "work");
     assert_eq!(join("work", "a/b"), "work/a/b");
+}
+
+/// F4: what "would remove N files" counts on each side.
+#[test]
+fn units_count_their_files_outside_git() {
+    let tmp = tempfile::tempdir().unwrap();
+    testutil::tree(&tmp.path().join("work"));
+    let found = side(tmp.path(), &[spec("work")]);
+    let units = snapshot(&found, &found.repos(), false).unwrap();
+    let files = |rel, kind| find(&units, rel, kind).files;
+    assert_eq!(files("work/alpha", UnitKind::Repo), 1, "README");
+    assert_eq!(
+        files("work/beta", UnitKind::Repo),
+        2,
+        "README tracked, new.txt untracked"
+    );
+    assert_eq!(
+        files("work", UnitKind::Loose),
+        2,
+        "notes.txt and data/blob.bin; target/ excluded, data/ is a dir"
+    );
+    // A plain directory where the other side has a repo counts as loose.
+    let other = tmp.path().join("other");
+    testutil::write(&other.join("work/alpha/x.txt"), "x");
+    testutil::write(&other.join("work/alpha/y/z.txt"), "z");
+    let plain = side(&other, &[spec("work")]);
+    let units = snapshot(&plain, &["work/alpha".into()], false).unwrap();
+    assert_eq!(find(&units, "work/alpha", UnitKind::Repo).files, 2);
 }

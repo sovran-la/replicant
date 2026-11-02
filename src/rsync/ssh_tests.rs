@@ -12,7 +12,7 @@ fn over_ssh(leaf: &Path, home: &Path) -> Transfer {
         home_path: home.into(),
         home_host: Some("thistledown".into()),
         is_file: false,
-        excludes: Excludes::for_root(&[]),
+        excludes: Excludes::for_root(&[]).unwrap(),
         source_absent: false,
     }
 }

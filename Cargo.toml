@@ -51,6 +51,14 @@ rustls-pemfile = "2.2"
 rustls-pki-types = "1.12"
 rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 
+# Exclude matching, the same engine (and version, 0.4.20 in Cargo.lock) as
+# sovran.la/filesystem, so the sovran family agrees on what a pattern means.
+globset = "0.4"
+
+# Parallel discovery walk, as sovran.la/filesystem uses it (0.4.33), with every
+# ignore source turned off: replicant must see what rsync moves.
+ignore = "0.4"
+
 [dev-dependencies]
 # Every fixture tree, config directory and daemon in the tests lives in one.
 tempfile = "3"

@@ -176,6 +176,8 @@ impl Fleet {
                          supported; write it unanchored (e.g. \"agents/state\")"
                     )));
                 }
+                crate::exclude::check(pat)
+                    .map_err(|why| bad(format!("[roots.{rname}] exclude {pat:?}: {why}")))?;
             }
             roots.push(Root {
                 name: rname,

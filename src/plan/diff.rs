@@ -43,6 +43,19 @@ fn summarize(it: &Itemized) -> DiffSummary {
     }
 }
 
+/// Which way a unit's dry run goes, if it gets one. A "deleted on X" unit is
+/// diffed the way its deletion would travel, toward the side that still has
+/// it, so the human confirming it sees what would go; it still has no
+/// [`Decision::direction`], so nothing can carry it out unconfirmed.
+fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
+    match d {
+        Decision::Remove => Some(Direction::Pull),
+        Decision::DeletedOn { host } if host == me => Some(Direction::Push),
+        Decision::DeletedOn { .. } => Some(Direction::Pull),
+        d => d.direction(),
+    }
+}
+
 /// Fill `diff` and `refusals` on every unit that would move.
 pub(super) fn run(
     ctx: LeafCtx<'_>,
@@ -57,9 +70,7 @@ pub(super) fn run(
     let sub_rels: Vec<String> = snap.specs.iter().map(|s| s.rel.clone()).collect();
     let excepts: Vec<String> = snap.specs.iter().flat_map(|s| s.except.clone()).collect();
     let jobs: Vec<usize> = (0..planned.len())
-        .filter(|i| {
-            planned[*i].decision.direction().is_some() || planned[*i].decision == Decision::Remove
-        })
+        .filter(|i| diff_direction(ctx.me, &planned[*i].decision).is_some())
         .collect();
 
     if jobs.is_empty() {
@@ -76,7 +87,7 @@ pub(super) fn run(
         |&i| -> Result<(DiffSummary, Vec<Refusal>)> {
             let p = &planned[i];
             let remove = p.decision == Decision::Remove;
-            let direction = p.decision.direction().unwrap_or(Direction::Pull);
+            let direction = diff_direction(ctx.me, &p.decision).expect("filtered above");
             let l = leaf_units
                 .iter()
                 .find(|u| u.rel == p.rel && u.kind == p.kind);
@@ -86,8 +97,8 @@ pub(super) fn run(
                 .find(|u| u.rel == p.rel && u.kind == p.kind);
             let spec = spec_for(&snap.specs, &p.rel);
             let excludes = match spec {
-                Some(s) => units::excludes(s, &p.rel, p.kind, union, &worktrees),
-                None => crate::exclude::Excludes::for_root(&[]),
+                Some(s) => units::excludes(s, &p.rel, p.kind, union, &worktrees)?,
+                None => crate::exclude::Excludes::for_root(&[])?,
             };
             let (source, target) = match direction {
                 Direction::Pull => (h, l),
@@ -142,7 +153,7 @@ fn remove_target(p: &PlannedUnit) -> Result<Option<SideUnit>> {
     if crate::repos::git_marker(&p.leaf_path) != crate::repos::GitMarker::Repo {
         return Ok(None);
     }
-    let f = state::repo(&p.leaf_path, &crate::exclude::Excludes::for_root(&[]))?;
+    let f = state::repo(&p.leaf_path, &crate::exclude::Excludes::for_root(&[])?)?;
     Ok(Some(SideUnit {
         rel: p.rel.clone(),
         sub: p.rel.clone(),
@@ -153,5 +164,6 @@ fn remove_target(p: &PlannedUnit) -> Result<Option<SideUnit>> {
         locks: f.locks,
         collisions: vec![],
         is_file: false,
+        files: f.files,
     }))
 }

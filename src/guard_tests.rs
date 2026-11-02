@@ -17,6 +17,7 @@ fn unit(rel: &str) -> SideUnit {
         locks: vec![],
         collisions: vec![],
         is_file: false,
+        files: 0,
     }
 }
 
@@ -64,7 +65,7 @@ fn g1_dirty_target_file_that_rsync_would_overwrite_is_refused() {
         home_path: home.clone(),
         home_host: None,
         is_file: false,
-        excludes: Excludes::for_root(&[]),
+        excludes: Excludes::for_root(&[]).unwrap(),
         source_absent: false,
     }
     .dry_run(&testutil::runner())

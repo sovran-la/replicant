@@ -85,7 +85,7 @@ fn t(direction: Direction, leaf: &Path, home: &Path) -> Transfer {
         home_path: home.into(),
         home_host: None,
         is_file: false,
-        excludes: Excludes::for_root(&["target".into()]),
+        excludes: Excludes::for_root(&["target".into()]).unwrap(),
         source_absent: false,
     }
 }

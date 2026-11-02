@@ -51,7 +51,7 @@ fn nasty_pull(tmp: &Path) -> Transfer {
         home_path: NASTY.into(),
         home_host: Some("thistledown".into()),
         is_file: false,
-        excludes: Excludes::for_root(&[]),
+        excludes: Excludes::for_root(&[]).unwrap(),
         source_absent: false,
     }
 }
@@ -127,7 +127,7 @@ fn local_paths_are_never_quoted() {
         home_path: "/h/w".into(),
         home_host: None,
         is_file: false,
-        excludes: Excludes::for_root(&[]),
+        excludes: Excludes::for_root(&[]).unwrap(),
         source_absent: false,
     };
     let r = Runner::new(

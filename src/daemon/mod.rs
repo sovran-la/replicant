@@ -176,7 +176,7 @@ fn spawn_tcp(
                     Err(e) => return eprintln!("replicant: refused a connection: {e}"),
                 };
                 let answer = match remote::recv::<_, wire::HomeCall>(&mut s) {
-                    Ok(call) => home.handle(call),
+                    Ok(call) => home.handle_from(call, &|| remote::connected(&s.sock)),
                     Err(e) => wire::HomeAnswer {
                         result: Err(e.to_string()),
                         journal: vec![],
@@ -210,13 +210,15 @@ fn home_local(h: &home::Home, req: LocalRequest) -> Result<LocalReply> {
     match req {
         LocalRequest::Ping => Ok(LocalReply::Pong {
             role: "home".into(),
-            name: h.name(),
+            name: h.name()?,
         }),
         LocalRequest::Status | LocalRequest::Fleet => Ok(LocalReply::Fleet(h.fleet_state()?)),
         LocalRequest::Log { filter } => Ok(LocalReply::Log {
             lines: h.log(&filter)?,
         }),
-        LocalRequest::Pending => Ok(LocalReply::Pending { hosts: h.pending() }),
+        LocalRequest::Pending => Ok(LocalReply::Pending {
+            hosts: h.pending()?,
+        }),
         LocalRequest::PreviewAllow { host, raw } => {
             Ok(LocalReply::AllowPreview(h.preview_allow(&host, &raw)?))
         }
@@ -234,3 +236,7 @@ fn home_local(h: &home::Home, req: LocalRequest) -> Result<LocalReply> {
 #[cfg(test)]
 #[path = "daemon_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "daemon_queue_tests.rs"]
+mod queue_wire_tests;

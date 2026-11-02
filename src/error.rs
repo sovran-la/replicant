@@ -26,6 +26,9 @@ pub enum Error {
     Daemon(String),
     /// Home refused the request on policy: a cap, a bound, the queue.
     Refused(String),
+    /// A root or subscription base that should exist does not (review F4):
+    /// never read as "empty", which would plan a whole-unit delete.
+    Missing(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -42,6 +45,7 @@ impl fmt::Display for Error {
             Error::Remote(m) => write!(f, "remote: {m}"),
             Error::Daemon(m) => write!(f, "daemon: {m}"),
             Error::Refused(m) => write!(f, "refused: {m}"),
+            Error::Missing(m) => write!(f, "missing: {m}"),
         }
     }
 }

@@ -159,3 +159,40 @@ fn recv_rejects_empty_truncated_and_garbage() {
     .unwrap();
     assert_eq!(recv::<_, Ping>(&buf[..]).unwrap().n, 3);
 }
+
+/// F8: the probe home's queue wait uses, on real sockets.
+#[test]
+fn connected_sees_a_peer_leave_and_leaves_the_socket_blocking() {
+    use std::os::fd::AsRawFd;
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+    let (server, _) = l.accept().unwrap();
+    assert!(connected(&server), "an idle peer is connected");
+    let flags = unsafe { libc::fcntl(server.as_raw_fd(), libc::F_GETFL) };
+    assert_eq!(
+        flags & libc::O_NONBLOCK,
+        0,
+        "the probe restores blocking mode"
+    );
+
+    client.write_all(b"x").unwrap();
+    let mut b = [0u8; 1];
+    server.peek(&mut b).unwrap();
+    assert!(connected(&server), "bytes waiting: still connected");
+    assert_eq!(
+        (&server).read(&mut b).unwrap(),
+        1,
+        "the probe consumed nothing"
+    );
+
+    drop(client);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while connected(&server) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a closed peer still reads as connected"
+        );
+        std::thread::yield_now();
+    }
+    assert!(!connected(&server), "and stays gone");
+}

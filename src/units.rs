@@ -17,10 +17,13 @@ use crate::Result;
 use crate::exclude::Excludes;
 use crate::paths;
 use crate::repos::{self, Discovery};
-use crate::state::{self, UnitState};
+use crate::state::UnitState;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+mod snapshot;
+
+pub use snapshot::{UnitTiming, snapshot, snapshot_timed};
 
 /// A subscription as both sides see it: its path, its root's excludes, and
 /// the host's carve-outs under it.
@@ -57,6 +60,11 @@ pub struct SideUnit {
     pub collisions: Vec<(String, String)>,
     /// Whether this side's path is a single file rather than a directory.
     pub is_file: bool,
+    /// Files this side holds in the unit, outside `.git`: tracked plus
+    /// untracked for a repo, non-directory entries for loose content. What
+    /// "deleted on X — would remove N files on Y" counts.
+    #[serde(default)]
+    pub files: u64,
 }
 
 /// One side's discovery of every subscription.
@@ -71,7 +79,7 @@ impl Discovered {
         let mut out = Vec::new();
         for s in subs {
             let abs = map(&s.rel);
-            let d = repos::discover(&abs, &Excludes::for_root(&s.exclude))?;
+            let d = repos::discover(&abs, &Excludes::for_root(&s.exclude)?)?;
             out.push((s.clone(), abs, d));
         }
         Ok(Self { subs: out })
@@ -80,6 +88,17 @@ impl Discovered {
     /// Home-relative repo paths this side found, minus carve-outs.
     pub fn repos(&self) -> Vec<String> {
         self.collect(|d| &d.repos)
+    }
+
+    /// Subscriptions whose base does not exist on this side, with the path
+    /// looked at. [`repos::discover`] reports absence; the caller decides
+    /// what it means (see `plan::bases`).
+    pub fn absent(&self) -> Vec<(String, PathBuf)> {
+        self.subs
+            .iter()
+            .filter(|(_, _, d)| !d.exists)
+            .map(|(s, abs, _)| (s.rel.clone(), abs.clone()))
+            .collect()
     }
 
     /// Home-relative worktree checkouts this side found.
@@ -116,14 +135,15 @@ fn excepted(rel: &str, except: &[String]) -> bool {
 }
 
 /// Everything before the first `/`, or the whole thing.
-fn first_component(rel: &str) -> &str {
+pub(crate) fn first_component(rel: &str) -> &str {
     rel.split('/').next().unwrap_or(rel)
 }
 
 /// The exclude list for one unit, relative to the unit's directory: the
 /// root's excludes and the built-ins, plus every carve-out and worktree
 /// checkout inside it, plus (for a loose unit) every repo inside it, which is
-/// a unit of its own.
+/// a unit of its own. A carve-out matches a file or a directory; repos and
+/// worktrees, directories only.
 ///
 /// rsync gets this list too, with *both* sides' worktrees: the source's so a
 /// checkout is never sent, the target's so `--delete` never removes one.
@@ -133,179 +153,24 @@ pub fn excludes(
     kind: UnitKind,
     union_repos: &[String],
     worktrees: &[String],
-) -> Excludes {
-    let mut ex = Excludes::for_root(&spec.exclude);
+) -> Result<Excludes> {
+    let mut ex = Excludes::for_root(&spec.exclude)?;
     let repos: &[String] = if kind == UnitKind::Loose {
         union_repos
     } else {
         &[]
     };
-    for b in spec.except.iter().chain(worktrees).chain(repos) {
+    // A carve-out may name a file or a directory, and the loose manifest drops
+    // either (`units/snapshot.rs`), so rsync must too: an anchored `/x`
+    // matches both. Repos and worktrees are always directories.
+    let carve_outs = spec.except.iter().map(|b| (b, false));
+    let units = worktrees.iter().chain(repos).map(|b| (b, true));
+    for (b, is_dir) in carve_outs.chain(units) {
         if let Some(x) = paths::relative_to(b, rel).filter(|x| !x.is_empty()) {
-            ex.push_exact(x, true);
+            ex.push_exact(x, is_dir);
         }
     }
-    ex
-}
-
-/// This side's units, against the union of both sides' repos.
-pub fn snapshot(
-    found: &Discovered,
-    union_repos: &[String],
-    case_check: bool,
-) -> Result<Vec<SideUnit>> {
-    snapshot_timed(found, union_repos, case_check).map(|(u, _)| u)
-}
-
-/// How many of the slowest units `snapshot_timed` names.
-const SLOWEST: usize = 5;
-
-/// A unit's home-relative path and how long its hash took, in ms.
-pub type UnitTiming = (String, u128);
-
-/// [`snapshot`], plus the slowest units and their wall time in ms.
-pub fn snapshot_timed(
-    found: &Discovered,
-    union_repos: &[String],
-    case_check: bool,
-) -> Result<(Vec<SideUnit>, Vec<UnitTiming>)> {
-    struct Job<'a> {
-        spec: &'a SubSpec,
-        abs: PathBuf,
-        rel: String,
-        kind: UnitKind,
-        loose: Vec<repos::Entry>,
-        is_file: bool,
-        excludes: Excludes,
-    }
-    let mut jobs = Vec::new();
-    for (spec, sub_abs, d) in &found.subs {
-        let repos_here: Vec<&String> = union_repos
-            .iter()
-            .filter(|r| paths::is_within(r, &spec.rel))
-            .collect();
-        for r in &repos_here {
-            let inner = paths::relative_to(r, &spec.rel).unwrap_or("");
-            let ex = excludes(spec, r, UnitKind::Repo, union_repos, &[]);
-            jobs.push(Job {
-                spec,
-                abs: if inner.is_empty() {
-                    sub_abs.clone()
-                } else {
-                    sub_abs.join(inner)
-                },
-                rel: (*r).clone(),
-                kind: UnitKind::Repo,
-                loose: Vec::new(),
-                is_file: false,
-                excludes: ex,
-            });
-        }
-        if repos_here.iter().any(|r| **r == spec.rel) {
-            continue;
-        }
-        // Blocked paths, made relative to the subscription so each loose entry
-        // is tested as-is, and bucketed by first component so an entry is
-        // compared only with the few that could contain it. The plain scan
-        // was 70k entries × 154 repos on thistledown: two seconds, serial.
-        let mut blocked: HashMap<&str, Vec<&str>> = HashMap::new();
-        for b in repos_here
-            .iter()
-            .map(|r| r.as_str())
-            .chain(spec.except.iter().map(String::as_str))
-        {
-            if let Some(inner) = paths::relative_to(b, &spec.rel).filter(|x| !x.is_empty()) {
-                blocked
-                    .entry(first_component(inner))
-                    .or_default()
-                    .push(inner);
-            }
-        }
-        let loose = d
-            .loose
-            .iter()
-            .filter(|e| {
-                blocked
-                    .get(first_component(&e.rel))
-                    .is_none_or(|bs| !bs.iter().any(|b| paths::is_within(&e.rel, b)))
-            })
-            .cloned()
-            .collect();
-        let is_file = d.loose.len() == 1 && d.loose[0].rel.is_empty();
-        let ex = excludes(spec, &spec.rel, UnitKind::Loose, union_repos, &[]);
-        jobs.push(Job {
-            spec,
-            abs: sub_abs.clone(),
-            rel: spec.rel.clone(),
-            kind: UnitKind::Loose,
-            loose,
-            is_file,
-            excludes: ex,
-        });
-    }
-
-    let results = state::parallel_map(&jobs, state::workers(), |j| -> Result<(SideUnit, u128)> {
-        let t = std::time::Instant::now();
-        let mut u = SideUnit {
-            rel: j.rel.clone(),
-            sub: j.spec.rel.clone(),
-            kind: j.kind,
-            state: UnitState::Empty,
-            head: None,
-            dirty: Vec::new(),
-            locks: Vec::new(),
-            collisions: Vec::new(),
-            is_file: j.is_file,
-        };
-        match j.kind {
-            UnitKind::Repo => repo_side(&j.abs, &j.excludes, &mut u)?,
-            UnitKind::Loose => u.state = state::loose(&j.loose),
-        }
-        let hash_ms = t.elapsed().as_millis();
-        if case_check && !j.is_file {
-            let names = repos::all_names(&j.abs, &j.excludes)?;
-            u.collisions = repos::case_collisions(names.iter().map(String::as_str));
-        }
-        let total = t.elapsed().as_millis();
-        if total >= 100 {
-            eprintln!(
-                "  unit {}: hash {hash_ms}ms, case walk {}ms",
-                j.rel,
-                total - hash_ms
-            );
-        }
-        Ok((u, total))
-    });
-    let timed: Vec<(SideUnit, u128)> = results.into_iter().collect::<Result<_>>()?;
-    let mut slowest: Vec<(String, u128)> =
-        timed.iter().map(|(u, ms)| (u.rel.clone(), *ms)).collect();
-    slowest.sort_by(|a, b| b.1.cmp(&a.1));
-    slowest.truncate(SLOWEST);
-    Ok((timed.into_iter().map(|(u, _)| u).collect(), slowest))
-}
-
-/// Fill a repo unit: a real repo here, a plain directory where the other side
-/// has a repo, or nothing.
-fn repo_side(abs: &Path, ex: &Excludes, u: &mut SideUnit) -> Result<()> {
-    match repos::git_marker(abs) {
-        repos::GitMarker::Repo => {
-            let f = state::repo(abs, ex)?;
-            u.state = f.state;
-            u.head = Some(f.head);
-            u.dirty = f.dirty;
-            u.locks = f.locks;
-        }
-        _ => {
-            let d = repos::discover(abs, ex)?;
-            // Not a repo on this side: hash what is there as loose content, so
-            // it can never equal a repo's hash.
-            u.state = match state::loose(&d.loose) {
-                UnitState::Present(h) => UnitState::Present(format!("notrepo-{h}")),
-                UnitState::Empty => UnitState::Empty,
-            };
-        }
-    }
-    Ok(())
+    Ok(ex)
 }
 
 #[cfg(test)]

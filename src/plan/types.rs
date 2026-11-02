@@ -33,6 +33,30 @@ pub struct PlannedUnit {
     pub home_path: PathBuf,
     pub diff: Option<DiffSummary>,
     pub refusals: Vec<Refusal>,
+    /// [`crate::units::SideUnit::files`] on each side.
+    #[serde(default)]
+    pub leaf_files: u64,
+    #[serde(default)]
+    pub home_files: u64,
+}
+
+impl PlannedUnit {
+    /// For a "deleted on X" unit, what carrying it out would cost, as
+    /// `status` and `sync --dry-run` print it. `me` is the leaf, `home` home.
+    pub fn deletion_note(&self, me: &str, home: &str) -> Option<String> {
+        let Decision::DeletedOn { host } = &self.decision else {
+            return None;
+        };
+        let (other, n) = if host == me {
+            (home, self.home_files)
+        } else {
+            (me, self.leaf_files)
+        };
+        let files = if n == 1 { "file" } else { "files" };
+        Some(format!(
+            "deleted on {host} — would remove {n} {files} on {other}; requires explicit confirmation"
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +133,7 @@ fn key_of(d: &Decision) -> &'static str {
         } => "pull ←",
         Decision::Push | Decision::Resume { .. } => "push →",
         Decision::Remove => "remove",
+        Decision::DeletedOn { .. } => "deleted, needs confirmation",
         Decision::Conflict { .. } => "conflict",
         Decision::Quarantined { .. } => "quarantined",
         Decision::Nothing { .. } => "nothing",

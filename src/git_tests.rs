@@ -138,3 +138,55 @@ fn status_never_runs_a_repo_s_fsmonitor() {
         "git status started the repo's fsmonitor hook"
     );
 }
+
+#[test]
+fn ref_list_decodes_strictly() {
+    assert_eq!(
+        decode_refs(b"refs/heads/main 1234\nrefs/tags/v1 5678\n").unwrap(),
+        "refs/heads/main 1234\nrefs/tags/v1 5678\n"
+    );
+    let err = decode_refs(b"refs/heads/main 1234\nrefs/heads/caf\xe9 5678\n")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("not UTF-8"), "{err}");
+    assert!(err.contains("refs/heads/caf"), "names the ref: {err}");
+}
+
+/// APFS refuses a non-UTF-8 file name, so `git update-ref` cannot make a
+/// loose one here (EILSEQ); a `packed-refs` line can, and real git prints it.
+#[test]
+fn a_non_utf8_ref_name_is_an_error_naming_the_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("r"));
+    let oid = testutil::git(&r, &["rev-parse", "HEAD"]);
+    let mut packed = b"# pack-refs with: peeled fully-peeled sorted \n".to_vec();
+    packed.extend_from_slice(format!("{} refs/heads/caf", oid.trim()).as_bytes());
+    packed.extend_from_slice(b"\xe9\n");
+    std::fs::write(r.join(".git/packed-refs"), packed).unwrap();
+    let err = status(&r).unwrap_err().to_string();
+    assert!(err.contains("not UTF-8"), "{err}");
+    assert!(
+        err.contains(&r.display().to_string()),
+        "names the repo: {err}"
+    );
+}
+
+#[test]
+fn index_entries_counts_tracked_files_from_the_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("r"));
+    assert_eq!(index_entries(&r).unwrap(), 1);
+    testutil::write(&r.join("a/b.txt"), "b\n");
+    testutil::write(&r.join("c.txt"), "c\n");
+    testutil::git(&r, &["add", "-A"]);
+    assert_eq!(index_entries(&r).unwrap(), 3);
+
+    let fresh = tmp.path().join("fresh");
+    std::fs::create_dir_all(&fresh).unwrap();
+    testutil::git(&fresh, &["init", "-q"]);
+    assert_eq!(index_entries(&fresh).unwrap(), 0, "no index yet");
+
+    std::fs::write(r.join(".git/index"), b"nope").unwrap();
+    let err = index_entries(&r).unwrap_err().to_string();
+    assert!(err.contains("not a git index"), "{err}");
+}

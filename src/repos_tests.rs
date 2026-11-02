@@ -2,7 +2,7 @@ use super::*;
 use crate::testutil;
 
 fn work_excludes() -> Excludes {
-    Excludes::for_root(&["target".into(), "node_modules".into()])
+    Excludes::for_root(&["target".into(), "node_modules".into()]).unwrap()
 }
 
 #[test]

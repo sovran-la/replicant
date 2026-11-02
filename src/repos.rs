@@ -13,13 +13,25 @@
 //! Everything else is **loose**: a file, symlink or directory that belongs to
 //! no repo, recorded with enough metadata for the manifest in [`crate::state`].
 //!
-//! Symlinks are never followed.
+//! Symlinks are never followed. The walk is parallel ([`walk`]); every list
+//! in a [`Discovery`] is sorted, so the result is the same run to run.
+//!
+//! **A missing base is not an empty one** (review F4). [`discover`] reports a
+//! base that does not exist as `exists: false`, and its callers must not
+//! read that as "nothing here": on its own side a missing subscription base
+//! is an error naming the path and the host, unless no baseline lies under
+//! it (never synced: the first pull or push, the one legitimate empty case).
+//! The leaf holds the baselines and applies the rule to both sides
+//! (`plan::bases`); home reports its missing bases in the snapshot, and a
+//! missing *root* on home is always an error from home.
 
 use crate::Result;
 use crate::exclude::Excludes;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
+
+mod walk;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
@@ -55,6 +67,8 @@ pub struct Discovery {
 }
 
 /// Discover under `base`, skipping anything `ex` excludes (relative to base).
+/// A `base` that does not exist is `exists: false`, never an error here: see
+/// the module doc for what callers must make of it.
 pub fn discover(base: &Path, ex: &Excludes) -> Result<Discovery> {
     let mut d = Discovery::default();
     let meta = match fs::symlink_metadata(base) {
@@ -67,7 +81,11 @@ pub fn discover(base: &Path, ex: &Excludes) -> Result<Discovery> {
         d.loose.push(entry(base, "", &meta)?);
         return Ok(d);
     }
-    walk(base, "", ex, &mut d)?;
+    match git_marker(base) {
+        GitMarker::Repo => d.repos.push(String::new()),
+        GitMarker::Worktree => d.worktrees.push(String::new()),
+        GitMarker::None | GitMarker::OtherFile => walk::walk(base, ex, &mut d)?,
+    }
     d.repos.sort();
     d.worktrees.sort();
     d.loose.sort();
@@ -114,53 +132,6 @@ fn points_into_worktrees(text: &str, dir: &Path) -> bool {
     comps
         .windows(3)
         .any(|w| w[0] == ".git" && w[1] == "worktrees" && !w[2].is_empty())
-}
-
-fn walk(abs: &Path, rel: &str, ex: &Excludes, d: &mut Discovery) -> Result<()> {
-    match git_marker(abs) {
-        GitMarker::Repo => {
-            d.repos.push(rel.to_string());
-            return Ok(());
-        }
-        GitMarker::Worktree => {
-            d.worktrees.push(rel.to_string());
-            return Ok(());
-        }
-        GitMarker::None | GitMarker::OtherFile => {}
-    }
-    let mut names: Vec<_> = fs::read_dir(abs)?.collect::<std::io::Result<Vec<_>>>()?;
-    names.sort_by_key(|e| e.file_name());
-    for item in names {
-        let name = item.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        let child_rel = if rel.is_empty() {
-            name.to_string()
-        } else {
-            format!("{rel}/{name}")
-        };
-        let child_abs = item.path();
-        let meta = fs::symlink_metadata(&child_abs)?;
-        if ex.matches(&child_rel, meta.is_dir()) {
-            continue;
-        }
-        if meta.is_dir() {
-            // A repo or worktree directory is its own unit (or machine-local),
-            // not a loose entry; an ordinary directory is.
-            let ordinary = matches!(
-                git_marker(&child_abs),
-                GitMarker::None | GitMarker::OtherFile
-            );
-            walk(&child_abs, &child_rel, ex, d)?;
-            if ordinary {
-                d.loose.push(entry(&child_abs, &child_rel, &meta)?);
-            }
-        } else {
-            d.loose.push(entry(&child_abs, &child_rel, &meta)?);
-        }
-    }
-    Ok(())
 }
 
 fn entry(abs: &Path, rel: &str, meta: &fs::Metadata) -> Result<Entry> {

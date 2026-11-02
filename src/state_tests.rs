@@ -107,7 +107,7 @@ fn identical_copies_hash_identically() {
 fn excluded_paths_do_not_count() {
     let tmp = tempfile::tempdir().unwrap();
     let r = testutil::repo(&tmp.path().join("r"));
-    let ex = Excludes::new(&["node_modules"]);
+    let ex = Excludes::new(&["node_modules"]).unwrap();
     let before = repo(&r, &ex).unwrap();
     testutil::write(&r.join("node_modules/pkg/index.js"), "x");
     let after = repo(&r, &ex).unwrap();
@@ -185,4 +185,37 @@ fn short_of_a_non_ascii_value_from_the_wire_does_not_panic() {
     let s = UnitState::Present("ééééééé".into());
     assert_eq!(s.short(), "éééééé", "boundary at 12: cut there");
     assert_eq!(UnitState::Present("abc".into()).short(), "abc");
+}
+
+/// Q3: an IDE autofetch moves `refs/remotes/*` on both machines; that must
+/// not read as a change. A local branch moving still must.
+#[test]
+fn remote_tracking_refs_are_not_state_but_local_refs_are() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("r"));
+    let first = testutil::git(&r, &["rev-parse", "HEAD"]).trim().to_string();
+    testutil::git(&r, &["commit", "-q", "--allow-empty", "-m", "second"]);
+    let second = testutil::git(&r, &["rev-parse", "HEAD"]).trim().to_string();
+
+    let before = h(&r);
+    testutil::git(&r, &["update-ref", "refs/remotes/origin/main", &first]);
+    assert_eq!(h(&r), before, "a new remote-tracking ref");
+    testutil::git(&r, &["update-ref", "refs/remotes/origin/main", &second]);
+    assert_eq!(h(&r), before, "a remote-tracking ref moving");
+    testutil::git(&r, &["update-ref", "refs/remotes/upstream/x", &first]);
+    testutil::git(&r, &["pack-refs", "--all"]);
+    assert_eq!(h(&r), before, "packed remote-tracking refs");
+
+    testutil::git(&r, &["update-ref", "refs/heads/side", &first]);
+    let with_side = h(&r);
+    assert_ne!(with_side, before, "a new local branch");
+    testutil::git(&r, &["update-ref", "refs/heads/side", &second]);
+    assert_ne!(h(&r), with_side, "a local branch moving");
+    let moved = h(&r);
+    testutil::git(&r, &["tag", "v1", &first]);
+    assert_ne!(h(&r), moved, "a tag");
+    // A local branch whose name merely contains "remotes" is still local.
+    let tagged = h(&r);
+    testutil::git(&r, &["update-ref", "refs/heads/refs/remotes/x", &first]);
+    assert_ne!(h(&r), tagged, "refs/heads/refs/remotes/x is a local branch");
 }

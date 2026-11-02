@@ -112,7 +112,7 @@ mod tests {
     fn local(home: &Home) -> impl Fn(LocalRequest) -> Result<LocalReply> + '_ {
         move |req| match req {
             LocalRequest::Pending => Ok(LocalReply::Pending {
-                hosts: home.pending(),
+                hosts: home.pending()?,
             }),
             LocalRequest::PreviewAllow { host, raw } => {
                 Ok(LocalReply::AllowPreview(home.preview_allow(&host, &raw)?))

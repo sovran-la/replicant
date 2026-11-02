@@ -1,98 +1,185 @@
-//! Exclude patterns, matched the way rsync matches them.
+//! Exclude patterns: globset matching, translated faithfully to rsync.
 //!
-//! The same list is handed to rsync as `--exclude=` and used by replicant's own
-//! walkers (discovery, the manifest, porcelain filtering), so both must agree on
-//! what a pattern means. The subset implemented is rsync's:
+//! The same list is handed to rsync and used by replicant's own walkers
+//! (discovery, the manifest, porcelain filtering). Guardrail 1 compares rsync's
+//! itemized output with replicant's dirty lists, so the two must agree on what
+//! is excluded, exactly.
 //!
-//! - no `/` (other than a trailing one): matches the final path component
-//! - an inner `/`: matches the end of the path at a component boundary
-//! - a leading `/`: anchored to the transfer root (only generated internally;
+//! Patterns are globset globs with `*` kept inside one component
+//! (`literal_separator`), matched the way the sibling `filesystem` crate's
+//! `WalkOptions::is_excluded` matches them: against the path relative to the
+//! unit root, or against the bare file name. So:
+//!
+//! - `target`, `*.jsonl`: a name, at any depth
+//! - `agents/state`, `src/*.rs`: a path from the unit root (it has a `/`)
+//! - `**/x/y`, `a/**/b`: `**` is any number of directories, including none
+//! - `/x`: anchored, the unit-relative path only (only generated internally;
 //!   fleet.toml refuses anchored patterns, see [`crate::config::fleet`])
 //! - a trailing `/`: directories only
-//! - `*` any run of non-`/`, `**` any run at all, `?` one non-`/`, `[...]` a class
+//! - `[a-z0-9]`: a positive ASCII class
+//!
+//! The filesystem crate also tries the absolute path. Replicant does not: one
+//! unit lives at `/Users/...` on a Mac and `/home/...` on Linux, and rsync only
+//! ever sees paths below the transfer root, so an absolute match would make
+//! the two sides, and rsync, disagree.
+//!
+//! [`Excludes::rsync_args`] emits rules with the same meaning; `pattern.rs`
+//! documents the translation and refuses at config load what has none: `?` and
+//! negated classes (globset matches characters, rsync bytes), `{a,b}`, `**`
+//! inside a component, `***`, unterminated classes and rsync's rule prefixes.
+//! `rsync_diff_tests.rs` checks the agreement against the system rsync.
 //!
 //! rsync does not descend into an excluded directory, so a path is excluded if
 //! it or any ancestor matches; [`Excludes::path_excluded`] checks that.
+
+mod pattern;
+
+use crate::{Error, Result};
+use globset::{Candidate, GlobBuilder, GlobSet, GlobSetBuilder};
+use std::sync::OnceLock;
 
 /// What is never synced, whatever the root says. PLAN.md, "Exclusions".
 ///
 /// `target/`, `node_modules/` and friends are per-root (fleet.toml's `exclude`)
 /// rather than built in, because `bin/` and `.build/` are real source in some
 /// trees and the plan's example config lists them per root.
-pub const BUILTIN: &[&str] = &[".git/**.lock", ".git/worktrees/"];
+pub const BUILTIN: &[&str] = &["**/.git/**/*.lock", "**/.git/worktrees/"];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct Pattern {
-    raw: String,
-    glob: String,
+    /// The canonical form, for de-duplication and equality.
+    key: String,
+    glob: globset::Glob,
     anchored: bool,
     dir_only: bool,
-    has_slash: bool,
+    rsync: Vec<String>,
 }
 
-/// A list of patterns, applied relative to one transfer root.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The four sets one entry is tested against, built on first use.
+#[derive(Debug, Clone)]
+struct Compiled {
+    /// Unanchored: the relative path or the bare name.
+    free: GlobSet,
+    free_dir: GlobSet,
+    /// Anchored: the relative path only.
+    rooted: GlobSet,
+    rooted_dir: GlobSet,
+}
+
+/// A list of patterns, applied relative to one unit (transfer) root.
+#[derive(Debug, Clone, Default)]
 pub struct Excludes {
     patterns: Vec<Pattern>,
+    compiled: OnceLock<Compiled>,
+}
+
+impl PartialEq for Excludes {
+    fn eq(&self, other: &Self) -> bool {
+        self.patterns.len() == other.patterns.len()
+            && self
+                .patterns
+                .iter()
+                .zip(&other.patterns)
+                .all(|(a, b)| a.key == b.key)
+    }
+}
+impl Eq for Excludes {}
+
+/// Why a pattern from fleet.toml (or the wire) is refused, if it is.
+pub fn check(raw: &str) -> std::result::Result<(), String> {
+    pattern::parse(raw).map(|_| ())
 }
 
 impl Excludes {
-    pub fn new<S: AsRef<str>>(patterns: &[S]) -> Self {
+    pub fn new<S: AsRef<str>>(patterns: &[S]) -> Result<Self> {
         let mut e = Self::default();
         for p in patterns {
-            e.push(p.as_ref());
+            e.push(p.as_ref())?;
         }
-        e
+        Ok(e)
     }
 
     /// The built-ins plus a root's own excludes.
-    pub fn for_root(root_excludes: &[String]) -> Self {
-        let mut e = Self::new(BUILTIN);
+    pub fn for_root(root_excludes: &[String]) -> Result<Self> {
+        let mut e = Self::new(BUILTIN)?;
         for p in root_excludes {
-            e.push(p);
+            e.push(p)?;
         }
-        e
+        Ok(e)
     }
 
-    pub fn push(&mut self, raw: &str) {
-        if raw.is_empty() || self.patterns.iter().any(|p| p.raw == raw) {
+    /// Add one pattern, or say why it cannot be matched the same way by
+    /// replicant and rsync.
+    pub fn push(&mut self, raw: &str) -> Result<()> {
+        let p = pattern::parse(raw)
+            .map_err(|why| Error::Config(format!("exclude pattern {raw:?}: {why}")))?;
+        self.add(p);
+        Ok(())
+    }
+
+    /// Exclude one exact path relative to the unit root (a repo dir, a
+    /// worktree checkout, an `except`). Every character is literal.
+    pub fn push_exact(&mut self, rel: &str, is_dir: bool) {
+        let p = pattern::literal(rel, is_dir);
+        if !p.is_empty() {
+            self.add(p);
+        }
+    }
+
+    fn add(&mut self, p: pattern::Parsed) {
+        let glob = p.glob();
+        let key = format!(
+            "{}{glob}{}",
+            if p.anchored { "/" } else { "" },
+            if p.dir_only { "/" } else { "" }
+        );
+        if self.patterns.iter().any(|q| q.key == key) {
             return;
         }
-        let anchored = raw.starts_with('/');
-        let dir_only = raw.ends_with('/');
-        let glob = raw
-            .trim_start_matches('/')
-            .trim_end_matches('/')
-            .to_string();
-        let has_slash = glob.contains('/');
         self.patterns.push(Pattern {
-            raw: raw.to_string(),
-            glob,
-            anchored,
-            dir_only,
-            has_slash,
+            key,
+            rsync: p.rsync_rules(),
+            glob: compile(&glob),
+            anchored: p.anchored,
+            dir_only: p.dir_only,
         });
+        self.compiled = OnceLock::new();
     }
 
-    /// Exclude one exact path relative to the transfer root (a repo dir, a
-    /// worktree checkout, an `except`). Glob characters in it are escaped.
-    pub fn push_exact(&mut self, rel: &str, is_dir: bool) {
-        let mut s = String::from("/");
-        for c in rel.chars() {
-            if matches!(c, '*' | '?' | '[' | '\\') {
-                s.push('\\');
+    fn compiled(&self) -> &Compiled {
+        self.compiled.get_or_init(|| {
+            let mut sets: [GlobSetBuilder; 4] = std::array::from_fn(|_| GlobSetBuilder::new());
+            for p in &self.patterns {
+                let i = usize::from(p.anchored) * 2 + usize::from(p.dir_only);
+                sets[i].add(p.glob.clone());
             }
-            s.push(c);
-        }
-        if is_dir {
-            s.push('/');
-        }
-        self.push(&s);
+            let [free, free_dir, rooted, rooted_dir] = sets.map(|b| {
+                // Each glob compiled alone when it was rendered; a set of them
+                // fails only past regex size limits, which a few hundred
+                // literal paths and short globs do not approach.
+                b.build().expect("a set of valid globs builds")
+            });
+            Compiled {
+                free,
+                free_dir,
+                rooted,
+                rooted_dir,
+            }
+        })
     }
 
     /// Whether this one entry matches, ignoring its ancestors.
     pub fn matches(&self, rel: &str, is_dir: bool) -> bool {
-        self.patterns.iter().any(|p| p.matches(rel, is_dir))
+        if self.patterns.is_empty() {
+            return false;
+        }
+        let c = self.compiled();
+        let path = Candidate::new(rel);
+        let name = Candidate::new(rel.rsplit('/').next().unwrap_or(rel));
+        let free = |s: &GlobSet| s.is_match_candidate(&path) || s.is_match_candidate(&name);
+        free(&c.free)
+            || c.rooted.is_match_candidate(&path)
+            || (is_dir && (free(&c.free_dir) || c.rooted_dir.is_match_candidate(&path)))
     }
 
     /// Whether a path is excluded: it, or any directory above it, matches.
@@ -108,12 +195,16 @@ impl Excludes {
         self.matches(rel, is_dir)
     }
 
-    /// The patterns as rsync arguments.
+    /// The patterns as rsync arguments, one `--exclude=` per rule.
     pub fn rsync_args(&self) -> Vec<String> {
-        self.patterns
-            .iter()
-            .map(|p| format!("--exclude={}", p.raw))
-            .collect()
+        let mut out: Vec<String> = Vec::new();
+        for r in self.patterns.iter().flat_map(|p| &p.rsync) {
+            let a = format!("--exclude={r}");
+            if !out.contains(&a) {
+                out.push(a);
+            }
+        }
+        out
     }
 
     pub fn is_empty(&self) -> bool {
@@ -121,88 +212,21 @@ impl Excludes {
     }
 }
 
-impl Pattern {
-    fn matches(&self, rel: &str, is_dir: bool) -> bool {
-        if self.dir_only && !is_dir {
-            return false;
-        }
-        let g = self.glob.as_bytes();
-        if self.anchored {
-            return glob(g, rel.as_bytes());
-        }
-        if !self.has_slash {
-            let last = rel.rsplit('/').next().unwrap_or(rel);
-            return glob(g, last.as_bytes());
-        }
-        // Any suffix that starts at a component boundary.
-        let b = rel.as_bytes();
-        if glob(g, b) {
-            return true;
-        }
-        b.iter()
-            .enumerate()
-            .filter(|(_, c)| **c == b'/')
-            .any(|(i, _)| glob(g, &b[i + 1..]))
-    }
-}
-
-/// rsync-flavoured wildcard match of a whole string.
-fn glob(p: &[u8], s: &[u8]) -> bool {
-    match p.first() {
-        None => s.is_empty(),
-        Some(b'*') if p.get(1) == Some(&b'*') => {
-            let rest = &p[2..];
-            (0..=s.len()).any(|i| glob(rest, &s[i..]))
-        }
-        Some(b'*') => {
-            let rest = &p[1..];
-            for i in 0..=s.len() {
-                if glob(rest, &s[i..]) {
-                    return true;
-                }
-                if s.get(i) == Some(&b'/') {
-                    break;
-                }
-            }
-            false
-        }
-        Some(b'?') => matches!(s.first(), Some(c) if *c != b'/') && glob(&p[1..], &s[1..]),
-        Some(b'[') => match (class(&p[1..]), s.first()) {
-            (Some((set, negated, used)), Some(c)) if *c != b'/' => {
-                set.contains(c) != negated && glob(&p[1 + used..], &s[1..])
-            }
-            (None, Some(c)) => *c == b'[' && glob(&p[1..], &s[1..]),
-            _ => false,
-        },
-        Some(b'\\') if p.len() > 1 => s.first() == Some(&p[1]) && glob(&p[2..], &s[1..]),
-        Some(c) => s.first() == Some(c) && glob(&p[1..], &s[1..]),
-    }
-}
-
-/// Parse a `[...]` class body. Returns the set, whether it is negated, and how
-/// many pattern bytes it used including the closing `]`.
-fn class(p: &[u8]) -> Option<(Vec<u8>, bool, usize)> {
-    let (negated, mut i) = match p.first() {
-        Some(b'!') | Some(b'^') => (true, 1),
-        _ => (false, 0),
-    };
-    let mut set = Vec::new();
-    let start = i;
-    while i < p.len() {
-        if p[i] == b']' && i > start {
-            return Some((set, negated, i + 1));
-        }
-        if i + 2 < p.len() && p[i + 1] == b'-' && p[i + 2] != b']' {
-            set.extend(p[i]..=p[i + 2]);
-            i += 3;
-        } else {
-            set.push(p[i]);
-            i += 1;
-        }
-    }
-    None
+/// A rendered pattern as a globset glob. Rendering only produces text the
+/// parser has already validated (and escapes every literal), so this cannot
+/// fail; `exclude_tests.rs` renders every ASCII character to hold it to that.
+fn compile(text: &str) -> globset::Glob {
+    GlobBuilder::new(text)
+        .literal_separator(true)
+        .backslash_escape(true)
+        .build()
+        .expect("rendered globs are valid")
 }
 
 #[cfg(test)]
 #[path = "exclude_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "exclude/rsync_diff_tests.rs"]
+mod rsync_diff_tests;

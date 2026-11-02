@@ -73,13 +73,31 @@ pub fn status(repo: &Path) -> Result<RepoStatus> {
         repo,
         &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
     )?;
+    let in_repo = |e| match e {
+        Error::Git(m) => Error::Git(format!("{}: {m}", repo.display())),
+        other => other,
+    };
     Ok(RepoStatus {
         head,
-        refs: String::from_utf8_lossy(&refs).into_owned(),
-        entries: parse_porcelain_v2(&porcelain).map_err(|e| match e {
-            Error::Git(m) => Error::Git(format!("{}: {m}", repo.display())),
-            other => other,
-        })?,
+        refs: decode_refs(&refs).map_err(in_repo)?,
+        entries: parse_porcelain_v2(&porcelain).map_err(in_repo)?,
+    })
+}
+
+/// Decode `for-each-ref` output. A ref name that is not UTF-8 is refused by
+/// name, as [`parse_porcelain_v2`] refuses a path: decoding it lossily would
+/// hash a ref that does not exist, and two different names could hash alike.
+pub fn decode_refs(out: &[u8]) -> Result<String> {
+    String::from_utf8(out.to_vec()).map_err(|_| {
+        let bad = out
+            .split(|b| *b == b'\n')
+            .find(|l| std::str::from_utf8(l).is_err())
+            .unwrap_or(out);
+        Error::Git(format!(
+            "git for-each-ref reports a ref name that is not UTF-8, which replicant \
+             cannot hash: {:?}; rename it",
+            String::from_utf8_lossy(bad)
+        ))
     })
 }
 
@@ -152,6 +170,26 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Result<Vec<StatusEntry>> {
         }
     }
     Ok(entries)
+}
+
+/// How many entries the repo's index holds: its tracked files. Read from the
+/// index header (`DIRC`, version, count), so it costs no git process. A repo
+/// with no index yet has none. Under `core.splitIndex` this counts only the
+/// split part; nothing here enables that.
+pub fn index_entries(repo: &Path) -> Result<u64> {
+    use std::io::Read;
+    let path = repo.join(".git/index");
+    let mut f = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let mut head = [0u8; 12];
+    f.read_exact(&mut head)
+        .ok()
+        .filter(|_| &head[..4] == b"DIRC")
+        .ok_or_else(|| Error::Git(format!("{}: not a git index", path.display())))?;
+    Ok(u32::from_be_bytes([head[8], head[9], head[10], head[11]]).into())
 }
 
 /// Lock files inside a repo's `.git` (not its objects, not its worktrees'),

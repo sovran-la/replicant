@@ -89,6 +89,32 @@ fn anchored_exclude_is_refused() {
     assert!(err.to_string().contains("anchored"), "{err}");
 }
 
+/// A pattern rsync cannot read the same way is refused when fleet.toml loads,
+/// not discovered later as a sync that moves what replicant thought excluded.
+#[test]
+fn untranslatable_exclude_is_refused_at_load() {
+    for (pat, why) in [
+        ("file?", "one byte"),
+        ("{a,b}", "alternation"),
+        (".git/**.lock", "**"),
+    ] {
+        let err = parse(&format!(
+            "[daemon]\nname=\"h\"\nhome_dir=\"/h\"\n[roots.a]\npath=\"/h/w\"\nexclude=[{pat:?}]\n"
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("[roots.a] exclude") && err.contains(why),
+            "{pat}: {err}"
+        );
+    }
+    parse(
+        "[daemon]\nname=\"h\"\nhome_dir=\"/h\"\n[roots.a]\npath=\"/h/w\"\n\
+         exclude=[\"agents/state\", \"**/*.sock\", \"target\"]\n",
+    )
+    .expect("the plan's patterns load");
+}
+
 #[test]
 fn unknown_keys_are_refused() {
     assert!(parse("[daemon]\nname=\"h\"\nhome_dir=\"/h\"\nlisten_typo=\"x\"\n").is_err());
