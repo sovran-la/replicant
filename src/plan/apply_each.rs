@@ -1,7 +1,8 @@
 //! Apply's loop: every unit of the plan in order, each announced as it
 //! starts and as it ends ([`Progress`]), stopping at the first that does not
 //! finish. Once the abort is raised (the lease lost, the CLI gone), the
-//! running rsync is stopped and no later unit begins.
+//! running rsync is stopped and no later unit begins; a unit it is raised
+//! for before its marker (as it is announced) writes nothing at all.
 
 use super::super::{AppliedUnit, Outcome, Progress, ProgressEvent, Stash, UnitOutcome};
 use super::plan_step::{Step, step};
@@ -78,7 +79,11 @@ pub(in crate::plan) fn apply_all(
             total,
         });
         let started = Instant::now();
+        // The announcement blocks while the CLI does not read (suspended,
+        // its terminal paused) and raises the abort if the CLI is gone: an
+        // abort raised meanwhile stops this unit before any of it is written.
         let r = match s {
+            _ if watch.abort().raised() => Ok(Done::Stopped(stopped_before(u, watch))),
             Step::Adopt => adopt(link, ctx, watch, u, false).map(Done::Ran),
             Step::Forget => adopt(link, ctx, watch, u, true).map(Done::Ran),
             Step::Transfer {
@@ -154,9 +159,9 @@ fn unit_outcome(o: &Outcome) -> UnitOutcome {
     }
 }
 
-/// The abort was raised between units: `u` never began, so nothing of it
-/// (not even a marker) was written.
-fn stopped_before(u: &PlannedUnit, watch: &Watch) -> Outcome {
+/// The abort was raised between units, or as `u` was announced: `u` never
+/// began, so nothing of it (not even a marker) was written.
+pub(super) fn stopped_before(u: &PlannedUnit, watch: &Watch) -> Outcome {
     let why = match watch.check() {
         Err(e) => e.to_string(),
         Ok(()) => watch.abort().why().unwrap_or_else(|| "stopped".to_string()),
