@@ -6,9 +6,12 @@
 use super::*;
 use crate::baseline::Baseline;
 use crate::daemon::home::{Home, leaf_baselines};
+pub(crate) use crate::decide::Decision;
 use crate::marker::Marker;
+pub(crate) use crate::plan::PlannedUnit;
 use crate::testutil::{self, Bed, InProcess};
 use std::collections::{BTreeMap, BTreeSet};
+pub(crate) use std::path::Path;
 
 #[path = "apply_block_tests.rs"]
 mod block;
