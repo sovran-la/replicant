@@ -41,7 +41,12 @@ pub struct LeafCtx<'a> {
     pub state_dir: &'a Path,
     /// [`crate::config::Dirs::scratch`].
     pub scratch_dir: &'a Path,
+    /// The rsync program: [`RSYNC`] in production; tests stand a script in.
+    pub rsync: &'a str,
 }
+
+/// The rsync a leaf runs: whatever `rsync` is on `PATH`.
+pub const RSYNC: &str = "rsync";
 
 fn ms(since: Instant) -> u64 {
     since.elapsed().as_millis() as u64
@@ -137,7 +142,15 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
             union.extend(gone.repos);
             union.sort();
             union.dedup();
-            diff::run(ctx, &snap, &found, &union, &leaf_units, &mut planned)?;
+            diff::run(
+                ctx,
+                &snap,
+                &found,
+                &union,
+                &leaf_units,
+                &mut planned,
+                watch.abort(),
+            )?;
             t.rsync_ms = ms(started);
         }
         Ok((planned, snap))

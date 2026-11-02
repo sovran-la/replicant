@@ -18,6 +18,7 @@ mod parse;
 mod scratch;
 mod spill;
 
+pub use child::{Abort, Stopped};
 pub use client::Client;
 pub use parse::parse;
 
@@ -44,6 +45,10 @@ pub struct Runner {
     /// A private directory (the config dir's) for the empty stand-in and a
     /// long exclude list's file.
     pub scratch: PathBuf,
+    /// The rsync program: `rsync` on `PATH`. Tests stand a script in.
+    pub program: String,
+    /// Raised to stop whatever this runner is running (a lost lease).
+    pub abort: Abort,
 }
 
 impl Runner {
@@ -53,7 +58,33 @@ impl Runner {
             ssh: "ssh".into(),
             client,
             scratch,
+            program: "rsync".into(),
+            abort: Abort::default(),
         }
+    }
+
+    /// Run `args`, turning a stop into the error that explains it.
+    fn run(&self, args: &[String]) -> Result<child::Finished> {
+        let out = child::run(&self.program, args, self.timeout, &self.abort)?;
+        match out.stopped {
+            None => Ok(out),
+            Some(why) => Err(stopped_error(&self.program, args, self.timeout, why)),
+        }
+    }
+}
+
+/// What a stopped rsync is reported as.
+fn stopped_error(program: &str, args: &[String], timeout: Duration, why: Stopped) -> Error {
+    match why {
+        Stopped::TimedOut => Error::Rsync(format!(
+            "{program} {} did not finish within {}s; killed it",
+            args.join(" "),
+            timeout.as_secs()
+        )),
+        Stopped::Aborted => Error::Rsync(format!(
+            "{program} {} was stopped: this run's lease on home's queue was lost",
+            args.join(" ")
+        )),
     }
 }
 
@@ -198,7 +229,7 @@ impl Transfer {
         // A long ignored list rides in a file; it must outlive the child.
         let (args, excludes_file) = spill::spill(args, &runner.scratch, spill::LIMIT)?;
         debug_assert!(args.iter().any(|a| a == "--dry-run"));
-        let out = child::run("rsync", &args, runner.timeout)?;
+        let out = runner.run(&args)?;
         drop(empty);
         drop(excludes_file);
         let code = out.code.unwrap_or(-1);

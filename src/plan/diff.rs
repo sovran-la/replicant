@@ -6,7 +6,7 @@ use crate::daemon::wire::HomeSnapshot;
 use crate::decide::Decision;
 use crate::guard::{self, Refusal};
 use crate::marker::Direction;
-use crate::rsync::{ChangeKind, Client, Itemized, Runner, Transfer};
+use crate::rsync::{Abort, ChangeKind, Client, Itemized, Runner, Transfer};
 use crate::units::{self, Discovered, SideUnit, SubSpec};
 use crate::{Result, paths, state};
 
@@ -64,6 +64,7 @@ pub(super) fn run(
     union: &[String],
     leaf_units: &[SideUnit],
     planned: &mut [PlannedUnit],
+    abort: &Abort,
 ) -> Result<()> {
     let mut worktrees = found.worktrees();
     worktrees.extend(snap.worktrees.iter().cloned());
@@ -77,11 +78,15 @@ pub(super) fn run(
     if jobs.is_empty() {
         return Ok(());
     }
-    let runner = Runner::new(
-        ctx.cfg.rsync_timeout(),
-        Client::detect()?,
-        ctx.scratch_dir.to_path_buf(),
-    );
+    let runner = Runner {
+        program: ctx.rsync.into(),
+        abort: abort.clone(),
+        ..Runner::new(
+            ctx.cfg.rsync_timeout(),
+            Client::detect()?,
+            ctx.scratch_dir.to_path_buf(),
+        )
+    };
     let results = state::parallel_map(
         &jobs,
         RSYNC_WORKERS,

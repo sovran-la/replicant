@@ -150,6 +150,7 @@ fn dry_run_takes_and_releases_a_queue_entry_and_journals() {
         cfg: &cfg,
         state_dir: &state,
         scratch_dir: &scratch,
+        rsync: crate::plan::RSYNC,
     };
     let err = plan(&link, ctx, true, true).unwrap_err().to_string();
     assert!(
@@ -237,6 +238,7 @@ fn home_dropping_the_entry_mid_plan_fails_the_dry_run_loudly() {
         cfg: &cfg,
         state_dir: &state,
         scratch_dir: &scratch,
+        rsync: crate::plan::RSYNC,
     };
     let err = plan(&link, ctx, true, false).unwrap_err().to_string();
     assert!(err.contains("lease lost"), "{err}");
@@ -278,6 +280,7 @@ fn a_failed_final_report_does_not_fail_finished_work() {
         cfg: &cfg,
         state_dir: &state,
         scratch_dir: &scratch,
+        rsync: crate::plan::RSYNC,
     };
     let p = plan(&link, ctx, true, false).expect("the plan stands");
     assert!(p.units.iter().any(|u| u.rel == "work/r"));

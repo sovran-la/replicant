@@ -100,6 +100,7 @@ impl Leaf {
                     cfg: &cfg,
                     state_dir: &state,
                     scratch_dir: &scratch,
+                    rsync: plan::RSYNC,
                 };
                 Ok(LocalReply::Plan(Box::new(plan::plan(
                     &link, ctx, true, no_wait,
@@ -215,6 +216,7 @@ impl Leaf {
                     cfg: &cfg,
                     state_dir: &state,
                     scratch_dir: &scratch,
+                    rsync: plan::RSYNC,
                 },
                 false,
                 false,
