@@ -103,7 +103,9 @@ pub enum Cmd {
     /// Files the push replaced or deleted come back from its backup; files
     /// it created are removed; what it wrote is kept in the push's backup
     /// directory first. Its marker (a quarantine) is cleared; baselines are
-    /// not touched, so the pushing leaf's next sync pulls the result.
+    /// not touched. The pushing leaf's next sync holds the unit as a
+    /// conflict until it runs `sync --accept-rollback <path>`, which pulls
+    /// the result.
     Rollback {
         /// `<host>/<YYYYMMDDTHHMMSSZ>`, as `sync` and `log` print it
         /// (`backup:...`). Without it, every push home still has a backup of.

@@ -6,8 +6,9 @@
 //! that run's backup; a path it created is deleted. Both through rsync
 //! (`copy_listed`, `delete_listed`). What the push holds now of those paths
 //! is first copied to `<push>/rollback/`, so a rollback can be undone by
-//! hand. Baselines are untouched: the pushing leaf next sees home changed
-//! and pulls the restored state (with guardrail 1 guarding its own work).
+//! hand. Baselines are untouched: the pushing leaf next sees home changed,
+//! and holds the unit as a conflict until it accepts the rollback and
+//! pulls the restored state (review A2, `home_rolled_back.rs`).
 //!
 //! It refuses a push already rolled back, one whose backup was swept, one
 //! with a later push of the same unit that is not rolled back (undo the

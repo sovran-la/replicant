@@ -3,7 +3,8 @@
 *Draft 2026-10-31, rev 5 2026-11-01 (v0.1.0 shipped and deployed; review findings folded in; v0.2 entry criteria),
 rev 6 2026-11-01 (decided: F5 weighted out-of-bounds rows, root-relative slash excludes, symlinked bases, granted leases),
 rev 7 2026-11-01 late (decided: git-ignored files do not sync; approve mints per-host certs; backup/rollback/confirm shapes; v0.2 build list),
-rev 8 2026-11-01 night (apply built on `bsneed/v0.2-apply`, pending review: F3's kill, sync applies, markers, home-side push backup, rollback per push, fleet view's last sync).
+rev 8 2026-11-01 night (apply built on `bsneed/v0.2-apply`, pending review: F3's kill, sync applies, markers, home-side push backup, rollback per push, fleet view's last sync),
+rev 9 2026-11-02 (apply review fixed: a marker resumes only its own unit; a resume will not replace leaf work newer than its marker (guardrail 6); a rolled-back push holds its pusher until `--accept-rollback`).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -105,8 +106,12 @@ client-side.)
 replicant subscribe thistledown ~/work/tundra ~/work/sequoia   # enroll; what this machine wants
 replicant unsubscribe ~/work/rust                              # stop; next sync cleans it off
 replicant sync              # figure out the direction, show it, ask, do it
-replicant sync --yes        # don't ask (deletions still need --confirm-delete)
-replicant sync --confirm-delete work/r   # carry out a "deleted on X" unit (repeatable)
+replicant sync --yes        # don't ask (deletions still need --confirm-delete,
+                            # a rolled-back push --accept-rollback)
+replicant sync --confirm-delete work/r   # carry out a "deleted on X" unit, or let a resume
+                                         # replace what changed here since (repeatable)
+replicant sync --accept-rollback work/r  # take home's copy of a unit whose push from here
+                                         # home rolled back (repeatable)
 replicant sync --non-interactive         # never prompt; without --yes, only shows the plan
 replicant sync --dry-run    # decision + itemized rsync diff, no writes
 replicant sync --no-wait    # fail instead of queueing behind another sync
@@ -138,8 +143,17 @@ unit vanished on one side since baseline  → "deleted on X"; never a plain pull
                                             explicit confirmation required
 both changed, to the same state           → nothing to do
 both changed, differently                 → conflict resolution, see below
-interrupted marker present (own push)     → resume that direction; never a conflict
-home marker from another leaf             → quarantined; refused with the reason
+own marker for exactly this unit          → resume that direction: only on an exact-unit own
+  (a dead pull here, a dead push on home)   marker (one above or below it is ignored, and the
+                                            unit is decided by the rest of the table); a
+                                            conflict if its source has vanished since; leaf
+                                            paths newer than the marker that it would replace
+                                            or delete block (guardrail 6, `--confirm-delete`)
+home marker from another leaf             → quarantined (over the unit, above or below it);
+                                            refused with the reason
+home rolled back a push of mine, and the  → conflict "home rolled back your push <id>"; blocks
+  table would write the leaf (pull, resume  until `--accept-rollback <path>` (`--yes` never
+  pull, deleted on home)                    does), then decided by the table
 
 baseline home no longer serves (home says why, per path):
   marker over it                          → conflict naming the interrupted sync; blocks
@@ -468,8 +482,15 @@ Before any destructive apply, in order:
 5. **Subscription bounds.** A host's subscriptions (and its `allow` cap)
    bound everything; paths outside them are never transferred, never
    deleted, in either direction.
+6. **Changed since the interrupted sync** (rev 9, review A3). A resume
+   (pull, removal, confirmed deletion) carries a decision made before it
+   was interrupted, and its marker records only the source's state. Any
+   leaf file or link its dry run would replace or delete whose mtime is
+   after the marker's start → refuse, naming each path, until
+   `--confirm-delete <unit>`. Covers a repo's working tree and `.git`,
+   which guardrail 1 cannot see once the work is committed.
 
-`--dry-run` runs all five and prints the itemized rsync diff.
+`--dry-run` runs them all and prints the itemized rsync diff.
 
 ## The queue
 
@@ -528,7 +549,11 @@ mean refs pointing at objects that never arrived. So:
 - Baselines are written only after rsync exits 0, and the marker is
   cleared in the same step.
 - A marker on a **leaf** (dead pull) is private: home is untouched, nobody
-  else can see the mess, and the leaf's next `sync` resumes the pull.
+  else can see the mess, and the leaf's next `sync` resumes the pull of
+  exactly that unit. A marker on a loose unit says nothing about the repos
+  inside it, nor a repo's about its loose unit (rev 9, review A1): those
+  are decided by the table, or one exit-24 would pull home's copy over
+  every leaf-only repo under a root.
 - A marker on **home** (dead push) **quarantines that path**: pulls of it by
   any other leaf are refused with the reason, while syncs of other paths
   proceed. The queue keeps flowing; only the damaged path is fenced.
@@ -545,7 +570,11 @@ A home marker clears one of three ways:
   list: new files removed, changed and deleted files restored, through
   rsync, under a queue entry. Per push, not per path (decided rev 7).
   Baselines untouched. For when the leaf is not coming back soon and
-  someone needs the path.
+  someone needs the path. The pushing leaf's next sync then holds the unit
+  as a conflict rather than pull home's restored copy over the work it
+  pushed, until it passes `--accept-rollback` (rev 9, review A2); the
+  rollback settles once the two agree on the unit again, and its backup
+  is kept until then.
 - **Accept.** `--force` declares the half-state the new truth. Almost never
   right; exists so the other two are not the only exits.
 
@@ -553,7 +582,9 @@ A home marker clears one of three ways:
 marker_alert_mins` (default 60) is red ("interrupted"), a younger one may
 still be running. `--dry-run` shows what resuming would do. A resume whose
 source has vanished since the marker was written is a conflict, never a
-delete: the marker does not carry a deletion's confirmation.
+delete: the marker does not carry a deletion's confirmation. Nor does it
+cover what the leaf wrote after the interruption: guardrail 6 holds the
+resume until `--confirm-delete` (rev 9).
 
 ## Home is also the backup
 
