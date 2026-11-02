@@ -163,3 +163,52 @@ fn a_reissued_certificate_is_collected_by_the_leafs_next_command() {
     leaf.stop();
     home.stop();
 }
+
+/// The deployed fleet's upgrade (thistledown home, birchbook leaf): a v0.1
+/// home with its CA and one shared bundle, an enrolled leaf holding that
+/// bundle as home.pem and no host.pem. Restart home, `approve <leaf>`, and
+/// the leaf's next command collects its own certificate. No re-enrollment.
+#[test]
+fn a_v0_1_fleet_moves_to_per_host_certificates_with_one_approve() {
+    let bed = Bed::enrolled();
+    let p = certs::Paths::of(&bed.home_dirs);
+    certs::ensure(&p).unwrap();
+    let shared = certs::legacy_bundle(&p).unwrap();
+    std::fs::write(&p.bootstrap, &shared).unwrap();
+    std::fs::remove_file(&p.server).unwrap();
+    std::fs::write(bed.leaf_dirs.home_bundle(), &shared).unwrap();
+
+    let home = Daemon::start(bed.home_dirs.clone()).unwrap();
+    assert!(p.server.exists(), "home minted its own server identity");
+    assert_eq!(std::fs::read_to_string(&p.bootstrap).unwrap(), shared);
+    super::test_certs::leaf_toml(&bed, &home.tcp_addr().unwrap().to_string());
+    let leaf = Daemon::start(bed.leaf_dirs.clone()).unwrap();
+
+    let err = local::call(&bed.leaf_dirs, LocalRequest::Status)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("run `replicant approve leaf` on home"),
+        "{err}"
+    );
+
+    let LocalReply::Reissued(r) = local::call(
+        &bed.home_dirs,
+        LocalRequest::Reissue {
+            host: "leaf".into(),
+        },
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(r.replaced, None, "v0.1 pinned nothing");
+    let Ok(LocalReply::LeafStatus(st)) = local::call(&bed.leaf_dirs, LocalRequest::Status) else {
+        panic!()
+    };
+    assert_eq!(st.enrollment, wire::Enrollment::Enrolled);
+    assert_eq!(st.paths, vec!["work"], "subscriptions kept");
+    let own = tls::Identity::load(&bed.leaf_dirs.host_identity()).unwrap();
+    assert_eq!(own.fingerprint(), r.cert);
+    leaf.stop();
+    home.stop();
+}

@@ -57,31 +57,36 @@ Each machine's replicant state lives in `~/.sovran/replicant`, beside the
 other sovran daemons (`REPLICANT_HOME` relocates it). A directory holding
 `fleet.toml` is home; anything else is a leaf.
 
-**Trust, as of v0.1 — temporary, not design.** Home mints a CA and *one*
-credentials bundle (`replicant config export-creds`); each leaf saves it as
-`~/.sovran/replicant/home.pem`. A leaf **names itself** in each request, and
-the bundle also carries home's server key. So any holder of the bundle can act
-as any host: rewrite another host's subscriptions, resume or own another
-host's home marker, read the whole fleet, create pending entries under any
-name, hold the queue, even impersonate home. The realistic risk is accidental,
-not hostile — two boxes with the same short hostname share an identity
-completely. Caps guard against mistakes only, and the ssh-side confinement
-that would be the hard boundary is not built (v0.1's `approve` does not touch
-ssh keys). Acceptable for a read-only v0.1; **not** acceptable once anything
-applies. Scheduled for v0.2, before apply (review F12/Q1), no new
-dependencies:
+**Trust: enrollment is the whole ceremony (v0.2).** Home's CA signs three
+kinds of certificate, and home asks which one it is talking to:
 
-- `approve` mints the per-host client cert from the existing CA as part of
-  enrolling the host (decided 2026-11-01 late); `config export-creds` only
-  prints the bootstrap bundle.
-- `fleet.toml` pins it: `[hosts.x] cert = "sha256:<DER fingerprint>"`.
-- After the handshake home hashes the peer's leaf certificate and derives the
-  host from the fingerprint; the host named in the request is ignored, or
-  refused on mismatch. Fingerprint pinning avoids an X.509 parser.
-- Home's server cert becomes separate from client certs.
+- **Home's server certificate** (`server.pem`, server use only) never leaves
+  home. A leaf also refuses a "home" certificate that would pass as a
+  client, which shuts out v0.1's shared certificate posing as home.
+- **The bootstrap** (`credentials.pem`, client use only), printed by
+  `replicant config export-creds` and saved as a new leaf's `home.pem`. It
+  can ask to be enrolled (`subscribe` from a host with no `[hosts.*]`
+  entry) and collect the certificate `approve` issues. Home refuses
+  anything else it sends.
+- **A host's certificate**, minted by `approve` and pinned in fleet.toml as
+  `[hosts.x] cert = "sha256:<DER fingerprint>"`. After the handshake, home
+  hashes the peer's certificate and *that* is the host. The request's
+  `host` field is not identity: a request naming another host is refused
+  and journaled, and so is a certificate nobody pins. Fingerprint pinning
+  avoids an X.509 parser.
 
-Enrollment already means copying a bundle by hand; the bundle just becomes
-per-host.
+The leaf keeps `home.pem` (its trusted CA) and stores its own certificate
+as `host.pem`. `approve <host>` on an enrolled host reissues (the old pin
+is replaced and the leaf collects the new one on its next command), and
+`replicant host revoke <host>` removes the pin. There is no CRL, because
+the pins *are* the list.
+
+What remains: a pending entry is named by whoever holds the bootstrap, and
+an issued certificate goes to the first bootstrap holder that collects it
+under that name. If someone else got there first, the real leaf finds
+nothing waiting, which is loud, and `approve` reissues. A pairing token is
+not needed while every leaf is Brandon's. Caps still guard against mistakes
+only until the ssh-side confinement exists.
 
 **Data plane:** `rsync -a --delete` over Tailscale SSH. Replicant never
 copies bytes itself; it is policy and guardrails around rsync. The daemon
@@ -336,11 +341,16 @@ Allow list (relative to home dir, space-separated, empty = anything):
   → work/sequoia, work/tundra
 Confirm? [Y/n] y
 Approved. Run `replicant sync` on twinoaks to pull.
+  Its certificate (sha256:…) waits here; twinoaks collects it on its next request.
 ```
 
-`approve` is also where the leaf's SSH key gets authorized on home (and
-confined to its cap, if any), so enrollment is "subscribe on the leaf,
-approve on home" and nothing else.
+`approve` also mints the host's client certificate and pins it in
+fleet.toml (see *Control plane*). The certificate waits on home until the
+leaf's next request collects it over the bootstrap bundle. Collection is
+one-shot, and from then on the leaf uses its own certificate. `approve` is
+also where the leaf's SSH key will be authorized on home and confined to
+its cap, if any (not built). Either way, enrollment is "subscribe on the
+leaf, approve on home" and nothing else.
 
 `approve` does **not** start a sync. Home never initiates writes to a leaf;
 the first pull onto a fresh machine is the largest, least-reviewed sync it
@@ -810,7 +820,9 @@ real pull is a cutover prerequisite, and like cutover it is still deferred.
    in the walker, rsync `--filter=':- .gitignore'` (or a materialized list if
    openrsync refuses it), differential test, hash and guardrail 1 unchanged
    apart from no longer seeing ignored paths.
-2. Per-host certs through `approve`; bootstrap bundle demoted.
+2. Per-host certs through `approve`; bootstrap bundle demoted. Built on
+   `bsneed/v0.2-certs`; see `docs/v0.2-prep-notes.md`, "Per-host
+   certificates".
 3. F3's second half: a lost lease kills the running rsync child.
 4. Apply: real pull and push, baselines written after rsync exit 0,
    markers and resume, backup-dir on push, `--confirm-delete` and the y/N
