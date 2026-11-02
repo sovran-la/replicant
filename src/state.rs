@@ -26,6 +26,10 @@
 //! `.git`. Everything else `for-each-ref` lists is hashed, including anything
 //! outside `refs/heads`, `refs/tags` and `refs/stash` (notes, replace refs).
 //!
+//! **Git-ignored files are not state** (PLAN.md rev 7): they do not sync.
+//! `git status` without `--ignored` never reports them; the unit's excludes
+//! carry them anyway ([`crate::repos::ignored`]), so nothing here could.
+//!
 //! Status entries and manifest entries under an excluded path are dropped, so
 //! a tracked file under an excluded `bin/` does not read as "deleted" on the
 //! side it never reached.

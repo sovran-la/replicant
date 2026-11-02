@@ -119,17 +119,19 @@ pub fn snapshot_timed(
             collisions: Vec::new(),
             is_file: j.is_file,
             files: 0,
+            ignored: Vec::new(),
         };
-        match j.kind {
+        let ex = match j.kind {
             UnitKind::Repo => repo_side(&j.abs, &j.excludes, &mut u)?,
             UnitKind::Loose => {
                 u.state = state::loose(&j.loose);
                 u.files = state::loose_files(&j.loose);
+                j.excludes.clone()
             }
-        }
+        };
         let hash_ms = t.elapsed().as_millis();
         if case_check && !j.is_file {
-            let names = repos::all_names(&j.abs, &j.excludes)?;
+            let names = repos::all_names(&j.abs, &ex)?;
             u.collisions = repos::case_collisions(names.iter().map(String::as_str));
         }
         let total = t.elapsed().as_millis();
@@ -150,17 +152,35 @@ pub fn snapshot_timed(
     Ok((timed.into_iter().map(|(u, _)| u).collect(), slowest))
 }
 
+/// A real repo's facts with its git-ignored paths taken out: the facts, the
+/// ignored list (minus what `ex` already drops), and `ex` with that list
+/// added, which is what the case walk and rsync must use for this side.
+pub(crate) fn repo_facts(
+    abs: &Path,
+    ex: &Excludes,
+) -> Result<(state::RepoFacts, Vec<String>, Excludes)> {
+    let ignored: Vec<String> = repos::ignored(abs)?
+        .into_iter()
+        .filter(|p| !ex.path_excluded(p, p.ends_with('/')))
+        .collect();
+    let ex = super::with_ignored(ex.clone(), &ignored);
+    Ok((state::repo(abs, &ex)?, ignored, ex))
+}
+
 /// Fill a repo unit: a real repo here, a plain directory where the other side
-/// has a repo, or nothing.
-fn repo_side(abs: &Path, ex: &Excludes, u: &mut SideUnit) -> Result<()> {
+/// has a repo, or nothing. Returns the excludes the rest of this side's look
+/// (the case walk) must use.
+fn repo_side(abs: &Path, ex: &Excludes, u: &mut SideUnit) -> Result<Excludes> {
     match repos::git_marker(abs) {
         repos::GitMarker::Repo => {
-            let f = state::repo(abs, ex)?;
+            let (f, ignored, ex) = repo_facts(abs, ex)?;
             u.state = f.state;
             u.head = Some(f.head);
             u.dirty = f.dirty;
             u.locks = f.locks;
             u.files = f.files;
+            u.ignored = ignored;
+            Ok(ex)
         }
         _ => {
             let d = repos::discover(abs, ex)?;
@@ -171,7 +191,7 @@ fn repo_side(abs: &Path, ex: &Excludes, u: &mut SideUnit) -> Result<()> {
                 UnitState::Empty => UnitState::Empty,
             };
             u.files = state::loose_files(&d.loose);
+            Ok(ex.clone())
         }
     }
-    Ok(())
 }

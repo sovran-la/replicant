@@ -216,3 +216,74 @@ fn units_count_their_files_outside_git() {
     let units = snapshot(&plain, &["work/alpha".into()], false).unwrap();
     assert_eq!(find(&units, "work/alpha", UnitKind::Repo).files, 2);
 }
+
+/// Rev 7: a repo unit carries what its own .gitignore files ignore, minus
+/// what the root's excludes already drop; a loose unit ignores nothing.
+#[test]
+fn repo_units_list_their_ignored_paths_and_loose_units_do_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("work/r"));
+    testutil::write(&r.join(".gitignore"), "target/\n*.log\n.env*\n");
+    testutil::git(&r, &["add", ".gitignore"]);
+    testutil::git(&r, &["commit", "-qm", "ignores"]);
+    for f in ["target/x", "a.log", ".env", "sub/b.log"] {
+        testutil::write(&r.join(f), "x");
+    }
+    testutil::write(&tmp.path().join("work/.gitignore"), "*.log\n");
+    testutil::write(&tmp.path().join("work/loose.log"), "x");
+    let found = side(tmp.path(), &[spec("work")]);
+    let units = snapshot(&found, &found.repos(), false).unwrap();
+    let repo = find(&units, "work/r", UnitKind::Repo);
+    assert_eq!(
+        repo.ignored,
+        vec![".env", "a.log", "sub/b.log"],
+        "target/ is the root's"
+    );
+    assert!(repo.dirty.is_empty(), "{:?}", repo.dirty);
+    assert_eq!(repo.files, 2, "README and .gitignore");
+    let loose = find(&units, "work", UnitKind::Loose);
+    assert!(loose.ignored.is_empty());
+    assert_eq!(
+        loose.files, 2,
+        ".gitignore and loose.log: loose units are unaffected"
+    );
+}
+
+#[test]
+fn the_case_walk_skips_ignored_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("work/r"));
+    testutil::write(&r.join(".gitignore"), "*.log\n");
+    for f in ["X.log", "x.log", "Notes.md", "notes.md"] {
+        testutil::write(&r.join(f), f);
+    }
+    let found = side(tmp.path(), &[spec("work")]);
+    let units = snapshot(&found, &found.repos(), true).unwrap();
+    let repo = find(&units, "work/r", UnitKind::Repo);
+    let all = repos::all_names(&r, &Excludes::default()).unwrap();
+    if all.iter().any(|n| n == "X.log") && all.iter().any(|n| n == "x.log") {
+        // A case-sensitive filesystem holds both pairs; only the synced
+        // pair is a collision.
+        assert_eq!(
+            repo.collisions,
+            vec![("Notes.md".into(), "notes.md".into())]
+        );
+    } else {
+        assert!(
+            repo.collisions.is_empty(),
+            "case-insensitive fs holds one name"
+        );
+    }
+    assert!(!repo.collisions.iter().any(|(a, _)| a.ends_with(".log")));
+}
+
+/// An older home sends no `ignored`; the leaf reads it as empty.
+#[test]
+fn a_side_unit_without_ignored_decodes_as_empty() {
+    let json = r#"{"rel":"work/r","sub":"work","kind":"repo","state":"empty","head":null,
+        "dirty":[],"locks":[],"collisions":[],"is_file":false,"files":0}"#;
+    let u: SideUnit = serde_json::from_str(json).unwrap();
+    assert!(u.ignored.is_empty());
+    let back: SideUnit = serde_json::from_str(&serde_json::to_string(&u).unwrap()).unwrap();
+    assert_eq!(back, u);
+}

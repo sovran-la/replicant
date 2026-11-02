@@ -103,6 +103,16 @@ pub(super) fn run(
                 Some(s) => units::excludes(s, &p.rel, p.kind, union, &worktrees)?,
                 None => crate::exclude::Excludes::for_root(&[])?,
             };
+            // The leaf's copy a removal would delete, looked at before the
+            // dry run so its ignored files are spared like any target's.
+            let removed = match remove {
+                true => remove_target(p)?,
+                false => None,
+            };
+            // Git-ignored paths on either side never move: the source's are
+            // not sent, the target's are not deleted for being absent.
+            let ignored = l.into_iter().chain(h).chain(removed.as_ref());
+            let excludes = units::with_ignored(excludes, ignored.flat_map(|u| &u.ignored));
             let (source, target) = match direction {
                 Direction::Pull => (h, l),
                 Direction::Push => (l, h),
@@ -129,9 +139,9 @@ pub(super) fn run(
             if let Some(h) = h {
                 refusals.extend(guard::case_collision(h, direction, leaf_case_insensitive()));
             }
-            let dirty_target = match (remove, target) {
-                (true, _) => remove_target(p)?,
-                (false, t) => t.cloned(),
+            let dirty_target = match remove {
+                true => removed,
+                false => target.cloned(),
             };
             refusals.extend(
                 dirty_target
@@ -156,7 +166,8 @@ fn remove_target(p: &PlannedUnit) -> Result<Option<SideUnit>> {
     if crate::repos::git_marker(&p.leaf_path) != crate::repos::GitMarker::Repo {
         return Ok(None);
     }
-    let f = state::repo(&p.leaf_path, &crate::exclude::Excludes::for_root(&[])?)?;
+    let (f, ignored, _) =
+        units::repo_facts(&p.leaf_path, &crate::exclude::Excludes::for_root(&[])?)?;
     Ok(Some(SideUnit {
         rel: p.rel.clone(),
         sub: p.rel.clone(),
@@ -168,5 +179,6 @@ fn remove_target(p: &PlannedUnit) -> Result<Option<SideUnit>> {
         collisions: vec![],
         is_file: false,
         files: f.files,
+        ignored,
     }))
 }

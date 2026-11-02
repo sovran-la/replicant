@@ -230,3 +230,54 @@ fn a_missing_repo_is_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     assert!(ignored(&tmp.path().join("nope")).is_err());
 }
+
+/// What rsync would send from `r` with `ex`, without `.git` and its insides.
+fn rsync_sends(r: &Path, ex: &crate::exclude::Excludes) -> BTreeSet<String> {
+    let dst = r.parent().unwrap().join("dst");
+    let out = std::process::Command::new("rsync")
+        .args(["-n", "-a", "-8", "--out-format=%n"])
+        .args(ex.rsync_args())
+        .arg(format!("{}/", r.display()))
+        .arg(format!("{}/", dst.display()))
+        .output()
+        .expect("the differential test needs rsync on PATH");
+    assert!(out.status.success(), "rsync failed: {out:?}");
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| l.trim_end_matches('/').to_string())
+        .filter(|l| !l.is_empty() && l != ".")
+        .filter(|l| !l.split('/').any(|c| c == ".git"))
+        .collect()
+}
+
+/// The list rsync is handed and the list the case walk honors agree on the
+/// whole fixture: neither sees an ignored path, both see everything else,
+/// negated, anchored-elsewhere and dir-only-but-a-file paths included.
+#[test]
+fn rsync_and_the_case_walk_skip_exactly_the_ignored_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = fixture(tmp.path());
+    let list = ignored(&r).unwrap();
+    let ex = crate::units::with_ignored(crate::exclude::Excludes::for_root(&[]).unwrap(), &list);
+    let walked: BTreeSet<String> = super::super::all_names(&r, &ex)
+        .unwrap()
+        .into_iter()
+        .filter(|l| !l.split('/').any(|c| c == ".git"))
+        .collect();
+    let sent = rsync_sends(&r, &ex);
+    assert_eq!(walked, sent, "case walk (left) vs rsync (right)");
+    for f in covered(&list) {
+        assert!(!sent.contains(&f), "{f} is ignored but sent");
+    }
+    for f in [
+        "keep.log",
+        "sub/z.log",
+        "sub/build/o",
+        "sub/cache",
+        "sub/deep/local",
+    ] {
+        assert!(sent.contains(f), "{f} must sync: {sent:?}");
+    }
+    assert!(sent.contains(".gitignore") && sent.contains("sub/.gitignore"));
+}

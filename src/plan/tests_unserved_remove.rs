@@ -107,3 +107,24 @@ fn a_carve_out_by_unsubscribe_is_remove_and_resubscribing_restores_it() {
         }
     );
 }
+
+/// Rev 7: a removal is rsync `--delete` from an empty source, and a
+/// git-ignored file is never moved, so it is not deleted either.
+#[test]
+fn a_removal_spares_the_leafs_ignored_files() {
+    let bed = two_subs();
+    let home = bed.home();
+    let h = bed.home_hd.join("work/b/r/.gitignore");
+    testutil::write(&h, ".env*\n");
+    copy(&h, &bed.leaf_hd.join("work/b/r/.gitignore"));
+    baseline_b_as_now(&bed, &home);
+    unsubscribe(&bed, &home, "work/b");
+    testutil::write(&bed.leaf_hd.join("work/b/r/.env.local"), "SECRET\n");
+    let d = go(&bed, &home, &bed.leaf_cfg(), true).unwrap();
+    let r = unit(&d, "work/b/r");
+    assert_eq!(r.decision, Decision::Remove, "ignored files are not state");
+    let changes = &r.diff.as_ref().unwrap().changes;
+    assert!(changes.iter().any(|c| c == "- README"), "{changes:?}");
+    assert!(changes.iter().any(|c| c == "- .gitignore"), "{changes:?}");
+    assert!(!changes.iter().any(|c| c.contains(".env")), "{changes:?}");
+}

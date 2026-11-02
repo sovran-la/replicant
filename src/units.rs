@@ -23,6 +23,7 @@ use std::path::PathBuf;
 
 mod snapshot;
 
+pub(crate) use snapshot::repo_facts;
 pub use snapshot::{UnitTiming, snapshot, snapshot_timed};
 
 /// A subscription as both sides see it: its path, its root's excludes, and
@@ -90,6 +91,14 @@ pub struct SideUnit {
     /// "deleted on X — would remove N files on Y" counts.
     #[serde(default)]
     pub files: u64,
+    /// What the repo's own `.gitignore` files ignore here, relative to the
+    /// unit, minus what the unit's excludes already drop
+    /// ([`repos::ignored`]'s form: a directory ends in `/`). Not state, not
+    /// walked, and never moved by rsync in either direction: the plan
+    /// excludes both sides' lists. Empty for loose units, for a side with
+    /// no repo, and from an older home.
+    #[serde(default)]
+    pub ignored: Vec<String>,
 }
 
 /// One side's discovery of every subscription.
@@ -198,6 +207,22 @@ pub fn excludes(
         }
     }
     Ok(ex)
+}
+
+/// `ex` plus one anchored literal per git-ignored path
+/// ([`SideUnit::ignored`]'s form). Given both sides' lists for a transfer,
+/// rsync neither sends an ignored path nor `--delete`s one from the target.
+pub fn with_ignored<'a>(
+    mut ex: Excludes,
+    ignored: impl IntoIterator<Item = &'a String>,
+) -> Excludes {
+    for p in ignored {
+        match p.strip_suffix('/') {
+            Some(dir) => ex.push_exact(dir, true),
+            None => ex.push_exact(p, false),
+        }
+    }
+    ex
 }
 
 #[cfg(test)]
