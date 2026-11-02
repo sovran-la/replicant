@@ -1,7 +1,7 @@
 //! The trust model over real mTLS: what the bootstrap bundle may do, and
 //! what a host's own certificate may do.
 
-use super::test_certs::{dial, leaf_identity};
+use super::test_certs::{dial, leaf_identity, pair};
 use super::*;
 use crate::testutil::Bed;
 use wire::{HomeReply, HomeRequest};
@@ -66,7 +66,7 @@ fn the_bootstrap_bundle_may_only_ask_to_be_enrolled() {
 }
 
 #[test]
-fn a_client_certificate_that_is_not_the_bootstrap_is_not_gated_by_it() {
+fn a_pinned_certificate_is_not_gated_like_the_bootstrap() {
     let bed = Bed::enrolled();
     let home = Daemon::start(bed.home_dirs.clone()).unwrap();
     let id = leaf_identity(&bed, "leaf");
@@ -128,5 +128,38 @@ fn only_the_bootstrap_collects() {
     let leaf = dial(&home, &leaf_identity(&bed, "leaf"), "leaf", &bed.leaf_hd);
     let err = leaf.refused(HomeRequest::CollectCert);
     assert!(err.contains("already has its own certificate"), "{err}");
+    home.stop();
+}
+
+/// `approve <host>` on an enrolled host replaces its pin; the leaf's next
+/// command finds its certificate unknown, collects the new one over the
+/// bootstrap, and goes on as if nothing happened.
+#[test]
+fn a_reissued_certificate_is_collected_by_the_leafs_next_command() {
+    let bed = Bed::enrolled();
+    let (home, leaf) = pair(&bed);
+    let own = || tls::Identity::load(&bed.leaf_dirs.host_identity()).unwrap();
+    let before = own().fingerprint();
+    assert!(matches!(
+        local::call(&bed.leaf_dirs, LocalRequest::Status),
+        Ok(LocalReply::LeafStatus(_))
+    ));
+    let LocalReply::Reissued(r) = local::call(
+        &bed.home_dirs,
+        LocalRequest::Reissue {
+            host: "leaf".into(),
+        },
+    )
+    .unwrap() else {
+        panic!()
+    };
+    assert_eq!(r.replaced.as_deref(), Some(before.as_str()));
+    let Ok(LocalReply::LeafStatus(st)) = local::call(&bed.leaf_dirs, LocalRequest::Status) else {
+        panic!()
+    };
+    assert_eq!(st.enrollment, wire::Enrollment::Enrolled);
+    assert_eq!(own().fingerprint(), r.cert, "host.pem replaced");
+    assert!(!bed.home_dirs.issued().join("leaf.pem").exists());
+    leaf.stop();
     home.stop();
 }

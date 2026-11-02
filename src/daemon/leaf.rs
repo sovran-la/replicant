@@ -33,8 +33,23 @@ impl Leaf {
         })
     }
 
+    /// Handle one CLI request. If home no longer knows `host.pem` (reissued
+    /// or revoked), ask over the bootstrap for a reissued certificate and,
+    /// given one, try once more: home refuses an unknown certificate before
+    /// acting on anything, so the retry repeats nothing.
     pub fn handle(&self, req: LocalRequest) -> LocalAnswer {
-        self.dispatch(req).map_err(|e| e.to_string())
+        let first = self.dispatch(req.clone());
+        match first {
+            Err(e) if e.to_string().contains(super::home::UNKNOWN_CERT) => {
+                match self.cfg().and_then(|cfg| self.recollect(&cfg)) {
+                    Ok(true) => self.dispatch(req),
+                    Ok(false) => Err(e),
+                    Err(c) => Err(Error::Remote(format!("{e}\nasking for a new one: {c}"))),
+                }
+            }
+            other => other,
+        }
+        .map_err(|e| e.to_string())
     }
 
     fn dispatch(&self, req: LocalRequest) -> Result<LocalReply> {

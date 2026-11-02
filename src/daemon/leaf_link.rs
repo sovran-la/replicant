@@ -105,6 +105,21 @@ impl Leaf {
         }
     }
 
+    /// Collect a reissued certificate over the bootstrap, replacing
+    /// `host.pem` only if one arrives. Whether one did.
+    pub(super) fn recollect(&self, cfg: &LeafConfig) -> Result<bool> {
+        let boot_path = cfg.credentials(&self.dirs);
+        let boot = self.remote(cfg, &boot_path)?;
+        match boot.call(HomeRequest::CollectCert)? {
+            HomeReply::Collected(Collected::Issued { bundle }) => {
+                self.keep_identity(&boot_path, &bundle, &boot.home)?;
+                Ok(true)
+            }
+            HomeReply::Collected(_) => Ok(false),
+            other => Err(Error::Remote(format!("unexpected reply: {other:?}"))),
+        }
+    }
+
     fn remote(&self, cfg: &LeafConfig, identity: &Path) -> Result<Remote<'_>> {
         let identity = Identity::load(identity)?;
         Ok(Remote {

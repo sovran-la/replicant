@@ -28,6 +28,8 @@ pub struct Home {
     /// The bootstrap bundle's fingerprint (`None` only if it vanished
     /// between [`Home::open`]'s generate and read).
     bootstrap: Option<String>,
+    /// The certificate pins of the last fleet.toml that parsed.
+    pins: trust::Pins,
 }
 
 impl Home {
@@ -37,6 +39,7 @@ impl Home {
         super::certs::ensure(&super::certs::Paths::of(&dirs))?;
         Ok(Self {
             bootstrap: super::certs::bootstrap_fingerprint(&dirs.credentials())?,
+            pins: Default::default(),
             journal: Journal::at(dirs.journal()),
             contacts: fleet::contacts(&dirs.state()),
             fleet: cache::FleetCache::open(dirs.fleet())?,
@@ -117,7 +120,7 @@ impl Home {
         if !call.home_dir.is_absolute() {
             return Err(Error::Refused("home_dir must be absolute".into()));
         }
-        let Admitted { host, bootstrap } = self.admit(caller, &claimed, &call.request)?;
+        let Admitted { host, bootstrap } = self.admit(caller, &claimed, &call.request, j)?;
         fleet::touch(&self.contacts, &host, None)?;
         let file = self.dirs.fleet();
         match call.request {
@@ -187,10 +190,12 @@ impl Home {
             // a broken fleet.toml must not abort syncs in flight (review P5).
             // Everything that reads policy fails closed.
             HomeRequest::Heartbeat { lease } => {
+                self.holds(lease, &host)?;
                 self.queue.heartbeat(lease)?;
                 Ok(HomeReply::Done)
             }
             HomeRequest::Release { lease } => {
+                self.holds(lease, &host)?;
                 self.queue.release(lease)?;
                 Ok(HomeReply::Done)
             }
@@ -280,7 +285,7 @@ mod trust;
 #[path = "home_enroll.rs"]
 mod enroll;
 use trust::Admitted;
-pub use trust::{BOOTSTRAP_ONLY, Caller};
+pub use trust::{BOOTSTRAP_ONLY, Caller, UNKNOWN_CERT};
 
 #[path = "home_serve.rs"]
 mod serve;

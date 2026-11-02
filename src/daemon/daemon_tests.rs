@@ -1,40 +1,13 @@
 //! Two real daemons on loopback: home with its mTLS listener, a leaf dialing
 //! it with home's bundle, the CLI talking to each over its Unix socket.
 
+use super::test_certs::pair;
 use super::*;
-use crate::config::{HomeEntry, LeafConfig, leaf::LOCAL_RSYNC};
+use crate::config::LeafConfig;
 use crate::decide::Decision;
 use crate::testutil::{self, Bed};
 use std::os::unix::fs::PermissionsExt;
 use wire::Enrollment;
-
-fn leaf_toml(bed: &Bed, address: &str) {
-    LeafConfig {
-        name: Some("leaf".into()),
-        home_dir: Some(bed.leaf_hd.clone()),
-        home: HomeEntry {
-            name: "home".into(),
-            address: address.into(),
-            credentials: None,
-            rsync_host: Some(LOCAL_RSYNC.into()),
-            rsync_timeout_secs: None,
-        },
-        as_local: Default::default(),
-    }
-    .save(&bed.leaf_dirs.leaf())
-    .unwrap();
-}
-
-/// Home and leaf daemons: the leaf holds home's bootstrap bundle, and its
-/// own certificate if fleet.toml already enrolls it.
-fn pair(bed: &Bed) -> (Daemon, Daemon) {
-    let home = Daemon::start(bed.home_dirs.clone()).unwrap();
-    let addr = home.tcp_addr().unwrap().to_string();
-    super::test_certs::equip_leaf(bed);
-    leaf_toml(bed, &addr);
-    let leaf = Daemon::start(bed.leaf_dirs.clone()).unwrap();
-    (home, leaf)
-}
 
 fn local(dirs: &Dirs, req: LocalRequest) -> LocalReply {
     local::call(dirs, req).unwrap_or_else(|e| panic!("{e}"))

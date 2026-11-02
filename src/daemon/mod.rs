@@ -259,5 +259,9 @@ mod queue_wire_tests;
 mod trust_tests;
 
 #[cfg(test)]
+#[path = "daemon_identity_tests.rs"]
+mod identity_tests;
+
+#[cfg(test)]
 #[path = "test_certs.rs"]
 pub(crate) mod test_certs;
