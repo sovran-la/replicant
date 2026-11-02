@@ -189,6 +189,22 @@ pub fn hand_edit(fleet: &Path, from: &str, to: &str) {
         .unwrap();
 }
 
+/// Wait until the wall clock is in a later whole second than when called, so
+/// a marker written after this starts strictly after every file written
+/// before it (markers keep whole seconds; guardrail 6 counts that second).
+pub fn next_second() {
+    let start = crate::now_secs();
+    while crate::now_secs() == start {
+        let into = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        std::thread::sleep(std::time::Duration::from_nanos(
+            u64::from(1_000_000_000 - into) + 1_000_000,
+        ));
+    }
+}
+
 /// A [`crate::plan::HomeLink`] that calls a [`crate::daemon::home::Home`]
 /// directly, as `host`.
 pub struct InProcess<'a> {

@@ -109,16 +109,20 @@ fn an_interrupted_pull_shows_in_status_resumes_and_clears() {
     let bed = Bed::enrolled();
     testutil::repo(&bed.home_hd.join("work/r"));
     let (home, leaf) = pair(&bed);
-    // A pull that died two hours ago, half done. What rsync wrote carries
-    // the source's mtime (`-a`), from before the marker: nothing changed
-    // here since, so guardrail 6 has nothing to say (review A3).
+    // A pull that died two hours ago, half done: rsync had finished README
+    // (home's bytes and, with `-a`, home's mtime) but not `.git`. The resume
+    // matches README and only creates, so guardrail 6, which looks at what
+    // it would replace or delete, has nothing to say (review A3). A file
+    // here cannot be given a ctime from before the backdated marker, so the
+    // fixture holds nothing the resume would replace (review R1).
+    let home_readme = bed.home_hd.join("work/r/README");
     let half = bed.leaf_hd.join("work/r/README");
-    testutil::write(&half, "half\n");
+    testutil::write(&half, &std::fs::read_to_string(&home_readme).unwrap());
     std::fs::File::options()
         .write(true)
         .open(&half)
         .unwrap()
-        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 3600))
+        .set_modified(std::fs::metadata(&home_readme).unwrap().modified().unwrap())
         .unwrap();
     crate::marker::store(&bed.leaf_dirs.state())
         .put(&Marker {

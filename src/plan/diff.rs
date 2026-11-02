@@ -180,13 +180,15 @@ pub(super) fn run(
     Ok(transfers)
 }
 
-/// The leaf paths `it` would delete or replace whose mtime is after `since`
-/// (whole seconds: anything in that second or later counts). Directories
-/// are left out: their mtimes move whenever an interrupted rsync wrote into
-/// them, and their contents are itemized path by path. A repo's `.git` is
-/// not: a commit made since moves its refs.
+/// The leaf paths `it` would delete or replace that changed after `since`
+/// (whole seconds: anything in that second or later counts). "Changed" is
+/// the later of mtime and ctime (review R1): `mv`, `cp -p`, `tar x` and
+/// `unzip` carry an old mtime into the unit, but the rename or `utimes`
+/// that put it there moves ctime, which no user tool can set back.
+/// Directories are left out: their times move whenever an interrupted rsync
+/// wrote into them, and their contents are itemized path by path. A repo's
+/// `.git` is not: a commit made since moves its refs.
 fn changed_since(p: &PlannedUnit, is_file: bool, it: &Itemized, since: u64) -> Vec<String> {
-    use std::os::unix::fs::MetadataExt;
     let since_ns = i128::from(since) * 1_000_000_000;
     it.changes
         .iter()
@@ -196,13 +198,17 @@ fn changed_since(p: &PlannedUnit, is_file: bool, it: &Itemized, since: u64) -> V
                 true => p.leaf_path.clone(),
                 false => p.leaf_path.join(&c.path),
             };
-            std::fs::symlink_metadata(path).is_ok_and(|m| {
-                !m.is_dir()
-                    && i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()) > since_ns
-            })
+            std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir() && changed_ns(&m) > since_ns)
         })
         .map(|c| c.path.clone())
         .collect()
+}
+
+/// The later of a path's mtime and ctime, in nanoseconds since the epoch.
+fn changed_ns(m: &std::fs::Metadata) -> i128 {
+    use std::os::unix::fs::MetadataExt;
+    let ns = |s: i64, n: i64| i128::from(s) * 1_000_000_000 + i128::from(n);
+    ns(m.mtime(), m.mtime_nsec()).max(ns(m.ctime(), m.ctime_nsec()))
 }
 
 /// The leaf's repo facts for a unit being removed, so guardrail 1 can say

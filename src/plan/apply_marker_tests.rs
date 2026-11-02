@@ -24,12 +24,15 @@ pub(crate) fn fail_at(bed: &Bed, suffix: &str) -> String {
 
 /// A clean first sync (a pull of the tree from home), then home changes
 /// `home_edit` and the next sync's pull of the unit at `suffix` is
-/// interrupted, leaving the leaf's marker for `rel`.
+/// interrupted, leaving the leaf's marker for `rel`. The marker starts in a
+/// later second than the first sync's writes, so guardrail 6 sees those as
+/// older than the interruption, as they would be outside a test.
 pub(crate) fn interrupted(rel: &str, suffix: &str, home_edit: &str) -> (Bed, Home) {
     let bed = Bed::enrolled();
     tree(&bed.home_hd.join("work"));
     let home = bed.home();
     assert_eq!(yes(&bed, &home).outcome, Outcome::Done);
+    testutil::next_second();
     let edited = bed.home_hd.join(home_edit);
     testutil::write(&edited, "home edit\n");
     if home_edit.starts_with("work/alpha/") {
