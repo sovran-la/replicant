@@ -79,6 +79,7 @@ impl Home {
             orphaned: vec![],
             pending_paths: vec![],
             lease_secs: f.lease.as_secs(),
+            marker_alert_secs: f.marker_alert.as_secs(),
         };
         Ok(match self.served(&f, host) {
             Ok((specs, refused, orphaned)) => SubscriptionsView {

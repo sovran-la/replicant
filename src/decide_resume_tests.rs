@@ -24,6 +24,7 @@ fn marker(host: &str, direction: Direction, source: UnitState) -> Marker {
 
 fn with(leaf: &UnitState, home: &UnitState, lm: Option<&Marker>, hm: Option<&Marker>) -> Decision {
     decide(Inputs {
+        rel: "work/x",
         me: "birchbook",
         home_name: "thistledown",
         leaf,
@@ -148,4 +149,27 @@ fn any_other_marker_over_an_unserved_path_is_still_a_conflict() {
         unserved(UnservedReason::Unsubscribed, Some(&elsewhere)),
         Decision::Conflict { .. }
     ));
+}
+
+#[test]
+fn a_marker_above_or_below_the_unit_says_nothing_about_its_source() {
+    // A loose unit `work` holding the marked repo `work/x`: its own source
+    // being empty is not the marked sync's source vanishing.
+    let pull = marker("birchbook", Direction::Pull, p("home-then"));
+    let d = decide(Inputs {
+        rel: "work",
+        me: "birchbook",
+        home_name: "thistledown",
+        leaf: &p("loose"),
+        home: &UnitState::Empty,
+        baseline: None,
+        leaf_marker: Some(&pull),
+        home_marker: None,
+    });
+    assert_eq!(
+        d,
+        Decision::Resume {
+            direction: Direction::Pull
+        }
+    );
 }

@@ -223,4 +223,7 @@ pub struct LeafStatus {
     pub pending_paths: Vec<String>,
     pub plan: Option<Plan>,
     pub queue: Vec<QueueView>,
+    /// Interrupted (or running) syncs over this leaf's paths, either side.
+    #[serde(default)]
+    pub markers: Vec<super::OpenMarker>,
 }

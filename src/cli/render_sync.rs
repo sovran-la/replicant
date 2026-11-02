@@ -1,10 +1,47 @@
 //! What `sync` did: one line per unit applied, then how it ended. Red for
 //! anything that needs a human; the end line always says whether anything
-//! was written and what the next `sync` will do.
+//! was written and what the next `sync` will do. And the open markers
+//! `status` lists.
 
 use super::Style;
+use crate::plan::OpenMarker;
 use crate::plan::apply::{Outcome, SyncReport};
+use crate::timefmt::ago;
 use std::fmt::Write;
+
+/// `status`'s open markers: each with its age; red once it is older than
+/// home's alert age (interrupted), dim before (it may still be running).
+pub fn open_markers(markers: &[OpenMarker], me: &str, home: &str, st: Style) -> String {
+    if markers.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("open markers:\n");
+    for o in markers {
+        let m = &o.marker;
+        let next = if m.host == me {
+            "the next `replicant sync` resumes it".to_string()
+        } else {
+            format!(
+                "quarantined: it waits for {}'s next sync, or `replicant rollback` on {home}",
+                m.host
+            )
+        };
+        let line = format!(
+            "  {}  {} by {}, marked on {}, started {} ago; {next}",
+            m.rel,
+            m.direction,
+            m.host,
+            o.on,
+            ago(o.age_secs)
+        );
+        let line = match o.alert {
+            true => st.red(&format!("{line} (interrupted)")),
+            false => st.dim(&format!("{line} (may still be running)")),
+        };
+        let _ = writeln!(s, "{line}");
+    }
+    s
+}
 
 pub fn synced(r: &SyncReport, st: Style) -> String {
     let mut s = String::new();
@@ -65,3 +102,7 @@ pub fn synced(r: &SyncReport, st: Style) -> String {
     }
     s
 }
+
+#[cfg(test)]
+#[path = "render_sync_tests.rs"]
+mod tests;

@@ -265,5 +265,9 @@ mod trust_tests;
 mod identity_tests;
 
 #[cfg(test)]
+#[path = "daemon_apply_tests.rs"]
+mod apply_tests;
+
+#[cfg(test)]
 #[path = "test_certs.rs"]
 pub(crate) mod test_certs;

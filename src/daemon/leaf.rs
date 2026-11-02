@@ -229,6 +229,7 @@ impl Leaf {
                     pending_paths,
                     plan: None,
                     queue: vec![],
+                    markers: vec![],
                 });
             }
         };
@@ -250,10 +251,19 @@ impl Leaf {
             )?),
             _ => None,
         };
-        let queue = match link.call(HomeRequest::FleetState)? {
-            HomeReply::Fleet(f) => f.queue,
-            _ => vec![],
+        let (queue, home_markers) = match link.call(HomeRequest::FleetState)? {
+            HomeReply::Fleet(f) => (f.queue, f.markers),
+            _ => (vec![], vec![]),
         };
+        let markers = plan::open_markers(
+            &me,
+            &view.home,
+            crate::marker::store(&state).all()?,
+            &home_markers,
+            &view.specs,
+            view.marker_alert_secs,
+            crate::now_secs(),
+        );
         let except = view.specs.iter().flat_map(|s| s.except.clone()).collect();
         Ok(LeafStatus {
             me,
@@ -266,6 +276,7 @@ impl Leaf {
             pending_paths: view.pending_paths,
             plan: planned,
             queue,
+            markers,
         })
     }
 }

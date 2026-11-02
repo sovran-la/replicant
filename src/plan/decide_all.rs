@@ -26,6 +26,7 @@ pub(super) fn decide_all(
         let home_state = h.map(|h| &h.state).unwrap_or(&empty);
         let b = baselines.iter().find(|b| b.rel == l.rel);
         let decision = decide::decide(decide::Inputs {
+            rel: &l.rel,
             me: ctx.me,
             home_name,
             leaf: &l.state,

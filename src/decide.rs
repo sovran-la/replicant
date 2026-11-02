@@ -153,6 +153,8 @@ impl Decision {
 /// What one unit's decision depends on.
 #[derive(Debug, Clone, Copy)]
 pub struct Inputs<'a> {
+    /// The unit's path.
+    pub rel: &'a str,
     /// This leaf's fleet name.
     pub me: &'a str,
     /// Home's fleet name.
@@ -178,10 +180,13 @@ pub fn decide(i: Inputs<'_>) -> Decision {
     // whole-unit delete nobody confirmed (review F4).
     for (m, source) in [(i.leaf_marker, i.home), (i.home_marker, i.leaf)] {
         let Some(m) = m else { continue };
-        if source.is_empty() && !m.source_state.is_empty() {
+        // Only a marker for exactly this unit says what its source held; one
+        // above or below it (a loose unit holding a marked repo) does not.
+        if m.rel == i.rel && source.is_empty() && !m.source_state.is_empty() {
             return Decision::Conflict {
                 why: format!(
-                    "an interrupted {} by {} is marked here, and its source has vanished                      since; restore it, or roll the sync back",
+                    "an interrupted {} by {} is marked here, and its source has vanished \
+                     since; restore it, or roll the sync back",
                     m.direction, m.host
                 ),
             };

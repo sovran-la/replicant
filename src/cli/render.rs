@@ -15,7 +15,7 @@ mod fleet_view;
 mod sync_view;
 use fleet_view::queue;
 pub use fleet_view::{fleet, log, revoked};
-pub use sync_view::synced;
+pub use sync_view::{open_markers, synced};
 
 /// How many diff lines a unit shows without `--verbose`.
 pub const DIFF_PREVIEW: usize = 12;
@@ -264,6 +264,7 @@ pub fn leaf_status(l: &LeafStatus, st: Style) -> String {
     if let Some(p) = &l.plan {
         s.push_str(&plan(p, false, st));
     }
+    s.push_str(&open_markers(&l.markers, &l.me, &l.home, st));
     s.push_str(&queue(&l.queue));
     s
 }

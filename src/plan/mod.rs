@@ -12,9 +12,11 @@ mod bases;
 mod decide_all;
 mod diff;
 mod lease;
+mod open;
 mod types;
 mod unserved;
 
+pub use open::{OpenMarker, open_markers};
 pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings, Tone};
 
 use crate::baseline::{self, Baseline};

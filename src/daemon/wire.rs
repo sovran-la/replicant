@@ -224,6 +224,14 @@ pub struct SubscriptionsView {
     /// For a pending host, what it asked for.
     pub pending_paths: Vec<String>,
     pub lease_secs: u64,
+    /// A marker older than this is reported as interrupted (fleet.toml
+    /// `[daemon] marker_alert_mins`). Absent from an older home: an hour.
+    #[serde(default = "default_marker_alert")]
+    pub marker_alert_secs: u64,
+}
+
+fn default_marker_alert() -> u64 {
+    crate::config::fleet::DEFAULT_MARKER_ALERT_MINS * 60
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
