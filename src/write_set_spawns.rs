@@ -44,6 +44,45 @@ pub(super) const SPAWNS: &[(&str, &str, usize, &str)] = &[
         "its definition, and a single-file unit's deletion through it",
     ),
     ("rsync/apply.rs", "copy_listed(", 1, "its definition"),
+    // `::run(` (re-review R3) counts every `X::run(`: the three `child::run(`
+    // above again, and calls that never reach rsync.
+    ("rsync.rs", "::run(", 1, "the `child::run(` in Runner::run"),
+    (
+        "rsync.rs",
+        ".run(",
+        1,
+        "Transfer::dry_run through Runner::run (`--dry-run` asserted)",
+    ),
+    (
+        "rsync/apply.rs",
+        "::run(",
+        3,
+        "the three `child::run(` counted above",
+    ),
+    (
+        "plan/mod.rs",
+        "::run(",
+        2,
+        "Discovered::run (a read-only walk) and diff::run (the dry runs)",
+    ),
+    (
+        "plan/unserved.rs",
+        "::run(",
+        1,
+        "Discovered::run: a read-only walk",
+    ),
+    (
+        "daemon/home_serve.rs",
+        "::run(",
+        1,
+        "Discovered::run: a read-only walk",
+    ),
+    (
+        "cli/mod.rs",
+        "::run(",
+        2,
+        "approve::run and sync::run: CLI subcommands, which write through the daemons",
+    ),
     (
         "plan/apply_unit.rs",
         ".apply(",

@@ -5,10 +5,12 @@
 //! added here, with its reason.
 //!
 //! The scan matches text, so the ways around a text match are forbidden
-//! outright (review A4): importing `std::fs` functions (or `{…}` lists of
-//! them), a `Command as` alias, any renamed `use … as …`, `libc` item
-//! imports, and importing rsync's `child::run`. With those gone, every
-//! write is spelled as one of `scan::PATTERNS`.
+//! outright (review A4): importing a function (or a `*` glob) from under
+//! any `fs::` segment, `std::fs` or `std::os::unix::fs`, at any depth of
+//! `{…}` nesting (`use std::{fs::write}` too; re-review R3), a
+//! `Command as` alias, any renamed `use … as …`, `libc` item imports, and
+//! importing rsync's `child::run`. Types and traits from them are fine.
+//! With those gone, every write is spelled as one of `scan::PATTERNS`.
 //!
 //! The write set (docs/v0.2-prep-notes.md, "Apply"): synced paths only
 //! through rsync; markers, baselines, contacts and the journal under the
@@ -136,6 +138,60 @@ fn the_check_sees_a_write_it_was_not_told_about() {
         );
     }
     assert!(count("fn f() { std::fs::read(p); File::open(p); }\n").is_empty());
+    // Re-review R3's mutant M6: the same real transfer, spelled as a path.
+    let m6 = "fn dry() { let _ = Transfer::apply(&transfer, &runner); }\n";
+    assert_eq!(count(m6).get("::apply("), Some(&1), "{:?}", count(m6));
+    // Runner::run takes any arguments, so both its spellings count.
+    let run = "fn f() { runner.run(&args); Runner::run(&runner, &args); }\n";
+    assert_eq!(count(run).get(".run("), Some(&1));
+    assert_eq!(count(run).get("::run("), Some(&1));
+    // Every spelling of the listed copies and deletions already counts.
+    for call in [
+        "Self::copy_listed(&r, a, b, &l)",
+        "crate::rsync::delete_listed(&r, None, a, &l)",
+    ] {
+        let n = count(&format!("fn f() {{ {call}; }}\n"));
+        assert!(
+            n.get("copy_listed(").or(n.get("delete_listed(")) == Some(&1),
+            "{call}: {n:?}"
+        );
+    }
+}
+
+#[test]
+fn the_check_refuses_a_function_imported_from_a_nested_group() {
+    // Re-review R3's mutants M3 and M4: the group one level up hid the
+    // function from a prefix match. Both survive rustfmt.
+    for mutant in [
+        "use std::{collections::BTreeMap, fs::write};\nfn f() { write(p, b\"x\"); }\n",
+        "use std::os::unix::{fs::symlink};\nfn f() { symlink(a, b); }\n",
+        "use std::{\n    collections::BTreeMap,\n    fs::{File, remove_file},\n};\n",
+        "use std::{os::{unix::{fs::{PermissionsExt, symlink}}}};\n",
+        "use std::fs::*;\n",
+        "use std::{fs::*, io};\n",
+    ] {
+        assert!(
+            count(mutant).is_empty(),
+            "the count cannot see it: {mutant}"
+        );
+        let why = forbidden(mutant);
+        assert_eq!(why.len(), 1, "{mutant}: {why:?}");
+        assert!(
+            why[0].starts_with("a function import from std::fs or std::os::unix::fs"),
+            "{why:?}"
+        );
+    }
+    // Types and traits from the same places are admitted, at any depth.
+    for fine in [
+        "use std::os::unix::fs::{PermissionsExt};\n",
+        "use std::{collections::BTreeMap, fs::File};\n",
+        "use std::os::unix::{fs::{MetadataExt, PermissionsExt}};\n",
+        "use std::fs::{self, File};\n",
+        "use std::{fs, io};\n",
+        "use crate::cfs::load;\n",
+    ] {
+        assert_eq!(forbidden(fine), Vec::<String>::new(), "refused: {fine}");
+    }
 }
 
 #[test]

@@ -29,8 +29,17 @@ pub(super) const PATTERNS: &[&str] = &[
     "append_raw(",
     "set_modified(",
     // rsync's entry points (review A4): every run is a potential write.
+    // Each in both spellings (re-review R3): `transfer.apply(r)` and
+    // `Transfer::apply(&transfer, r)`; `runner.run(a)` and
+    // `Runner::run(&runner, a)`. `::run(` matches every other `X::run(`
+    // too, so those are listed, each with what it is. `copy_listed(` and
+    // `delete_listed(` already match every spelling, `rsync::copy_listed(`
+    // and `Self::delete_listed(` included.
     "child::run(",
     ".apply(",
+    "::apply(",
+    ".run(",
+    "::run(",
     "copy_listed(",
     "delete_listed(",
     // libc calls that write (review A4).
@@ -128,27 +137,13 @@ pub(super) fn forbidden(text: &str) -> Vec<String> {
         .map(|t| format!("a `Command as` alias: {t}"))
         .collect();
     for u in uses(text) {
-        // Whether `prefix` is followed by a function (a lowercase name other
-        // than `self`), alone or in a `{…}` list. Types and traits are fine:
-        // their writes are spelled `Type::fn(`.
-        let item_after = |prefix: &str| {
-            u.split(prefix).skip(1).any(|rest| {
-                let items = match rest.strip_prefix('{') {
-                    Some(list) => list.split('}').next().unwrap_or(""),
-                    None => rest.split([';', ' ']).next().unwrap_or(""),
-                };
-                items
-                    .split(',')
-                    .map(|i| i.trim().split(' ').next().unwrap_or(""))
-                    .any(|i| i != "self" && i.starts_with(|c: char| c.is_lowercase()))
-            })
-        };
         let why = if u.contains("std::process::Command as") {
             Some("`std::process::Command as`")
-        } else if u.contains("std::fs::{") || item_after("std::fs::") {
-            Some("an import from std::fs (spell the call `std::fs::…` or `fs::…`)")
-        } else if item_after("std::os::unix::fs::") {
-            Some("a function import from std::os::unix::fs")
+        } else if fs_functions(&u) {
+            Some(
+                "a function import from std::fs or std::os::unix::fs (spell the call \
+                 `std::fs::…` or `fs::…`)",
+            )
         } else if u.contains("libc::") {
             Some("an import from libc (spell the call `libc::…`)")
         } else if u.contains("child::run") || (u.contains("child::{") && u.contains("run")) {
@@ -161,4 +156,61 @@ pub(super) fn forbidden(text: &str) -> Vec<String> {
         out.extend(why.map(|w| format!("{w}: {}", u.trim_end())));
     }
     out
+}
+
+/// Whether a joined `use` imports a function (any lowercase name other than
+/// `self`, or a `*` glob) from under an `fs::` segment, at any depth of
+/// `{…}` nesting (re-review R3): `std::fs::write`, `std::{fs::write}`,
+/// `std::os::unix::{fs::symlink}`. Types and traits (`File`,
+/// `PermissionsExt`) are fine: their writes are spelled `Type::fn(`.
+fn fs_functions(u: &str) -> bool {
+    let mut names = Vec::new();
+    for (i, _) in u.match_indices("fs::") {
+        let segment_starts = u[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        if segment_starts {
+            let rest = &u[i + "fs::".len()..];
+            leaves(&rest[..tree_end(rest)], &mut names);
+        }
+    }
+    names
+        .iter()
+        .any(|n| *n != "self" && !n.starts_with(|c: char| c.is_uppercase()))
+}
+
+/// Where the use-tree at the start of `s` ends: the first `,`, `;` or `}`
+/// outside its own braces.
+fn tree_end(s: &str) -> usize {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' if depth > 0 => depth -= 1,
+            ',' | ';' | '}' if depth == 0 => return i,
+            _ => {}
+        }
+    }
+    s.len()
+}
+
+/// The names a use-tree imports: the last segment of each path in it, with
+/// any `as` rename dropped.
+fn leaves<'a>(tree: &'a str, out: &mut Vec<&'a str>) {
+    let tree = tree.trim();
+    let Some(open) = tree.find('{') else {
+        let last = tree.rsplit("::").next().unwrap_or("");
+        out.extend(last.split_whitespace().next());
+        return;
+    };
+    let mut rest = &tree[open + 1..];
+    loop {
+        let end = tree_end(rest);
+        leaves(&rest[..end], out);
+        match rest[end..].chars().next() {
+            Some(',') => rest = &rest[end + 1..],
+            _ => break,
+        }
+    }
 }
