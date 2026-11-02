@@ -154,8 +154,11 @@ impl Home {
                     lease_secs: lease.as_secs(),
                 })
             }
+            // A lease lives on what it was granted, so these read no policy:
+            // a broken fleet.toml must not abort syncs in flight (review P5).
+            // Everything that reads policy fails closed.
             HomeRequest::Heartbeat { lease } => {
-                self.queue.heartbeat(lease, self.fleet()?.lease)?;
+                self.queue.heartbeat(lease)?;
                 Ok(HomeReply::Done)
             }
             HomeRequest::Release { lease } => {

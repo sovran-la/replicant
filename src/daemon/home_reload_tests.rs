@@ -166,3 +166,65 @@ fn home_s_own_writes_are_still_seen() {
     };
     assert_eq!(v.specs[0].except, vec!["work/x"]);
 }
+
+/// Review P5: a lease lives on the length it was granted. A broken fleet.toml
+/// refuses everything that reads policy, never a heartbeat or a release.
+#[test]
+fn a_broken_fleet_toml_does_not_touch_granted_leases() {
+    let bed = two_subscriptions();
+    let home = bed.home();
+    let lease = |r: HomeAnswer| match r.result {
+        Ok(HomeReply::Lease { lease, lease_secs }) => (lease, lease_secs),
+        other => panic!("{other:?}"),
+    };
+    let (id, secs) = lease(call(
+        &home,
+        "leaf",
+        &bed.leaf_hd,
+        HomeRequest::Acquire { no_wait: true },
+    ));
+    assert_eq!(secs, crate::config::fleet::DEFAULT_LEASE_SECS);
+
+    hand_edit(&bed, "[hosts.leaf]\n", "[hosts.leaf\n");
+    for _ in 0..2 {
+        let hb = call(
+            &home,
+            "leaf",
+            &bed.leaf_hd,
+            HomeRequest::Heartbeat { lease: id },
+        );
+        assert!(hb.result.is_ok(), "heartbeat: {:?}", hb.result);
+    }
+    // The refresh is real: the entry outlives its original lease length.
+    let at = std::time::Instant::now() + Duration::from_secs(secs) - Duration::from_millis(50);
+    assert!(home.queue.expire(at).is_empty(), "refreshed");
+
+    for request in [
+        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Subscriptions,
+        HomeRequest::Subscribe {
+            paths: vec![format!("{}/work/c", bed.leaf_hd.display())],
+        },
+        HomeRequest::State {
+            leaf_repos: vec![],
+            case_check: false,
+            baselines: vec![],
+        },
+    ] {
+        let what = format!("{request:?}");
+        let err = call(&home, "leaf", &bed.leaf_hd, request)
+            .result
+            .unwrap_err();
+        assert!(err.contains("fleet.toml"), "{what}: fails closed: {err}");
+    }
+    assert!(home.approve("leaf", &[]).is_err(), "approve fails closed");
+
+    let rel = call(
+        &home,
+        "leaf",
+        &bed.leaf_hd,
+        HomeRequest::Release { lease: id },
+    );
+    assert!(rel.result.is_ok(), "release: {:?}", rel.result);
+    assert!(home.queue.view().is_empty());
+}

@@ -3,8 +3,9 @@
 //! One invariant: an entry proceeds only when every entry ahead of it is
 //! completely done. Nothing interleaves on home.
 //!
-//! Every entry carries a lease. The holder of the head heartbeats; an entry
-//! whose lease runs out is **expired** — removed and reported, so the next
+//! Every entry carries a lease, of the length it was granted at enqueue; the
+//! fleet's policy is read once, there, and never again for that entry. The
+//! holder of the head heartbeats; an entry whose lease runs out is **expired** — removed and reported, so the next
 //! entry proceeds. Expiry releases the queue and nothing else (it does not
 //! clear markers; see [`crate::marker`]).
 //!
@@ -52,6 +53,9 @@ struct Entry {
     paths: Vec<String>,
     enqueued_at: u64,
     started_at: Option<u64>,
+    /// The lease length it was granted. Heartbeats refresh by this, never
+    /// by the fleet's current policy (review P5).
+    lease: Duration,
     expires: Instant,
 }
 
@@ -146,6 +150,7 @@ impl Queue {
             paths,
             enqueued_at: crate::now_secs(),
             started_at: None,
+            lease,
             expires: Instant::now() + lease,
         });
         Ok(id)
@@ -203,12 +208,14 @@ impl Queue {
         }
     }
 
-    /// Extend a lease. An unknown id means it already expired.
-    pub fn heartbeat(&self, id: u64, lease: Duration) -> Result<()> {
+    /// Extend a lease by the length it was granted. An unknown id means it
+    /// already expired. Reads no policy, so a broken fleet.toml cannot cost
+    /// a holder its lease (review P5).
+    pub fn heartbeat(&self, id: u64) -> Result<()> {
         let mut q = self.lock();
         match q.entries.iter_mut().find(|e| e.id == id) {
             Some(e) => {
-                e.expires = Instant::now() + lease;
+                e.expires = Instant::now() + e.lease;
                 Ok(())
             }
             None => Err(Error::Refused(format!(
