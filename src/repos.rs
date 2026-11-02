@@ -13,8 +13,12 @@
 //! Everything else is **loose**: a file, symlink or directory that belongs to
 //! no repo, recorded with enough metadata for the manifest in [`crate::state`].
 //!
-//! Symlinks are never followed. The walk is parallel ([`walk`]); every list
-//! in a [`Discovery`] is sorted, so the result is the same run to run.
+//! Symlinks inside the tree are never followed: they are entries, and rsync
+//! `-a` copies them as links. The one exception is a subscription's base
+//! ([`discover_base`], review P4): `~/work2 → /Volumes/data/work2` is the
+//! directory it names, and a dangling one is missing. The walk is parallel
+//! ([`walk`]); every list in a [`Discovery`] is sorted, so the result is the
+//! same run to run.
 //!
 //! **A missing base is not an empty one** (review F4). [`discover`] reports a
 //! base that does not exist as `exists: false`, and its callers must not
@@ -92,6 +96,22 @@ pub fn discover(base: &Path, ex: &Excludes) -> Result<Discovery> {
     Ok(d)
 }
 
+/// [`discover`] for a subscription base, following it if it is a symlink
+/// (review P4): the most likely `--as` layout is a link to an external
+/// volume, and read as a link it would be one loose file. A dangling link is
+/// `exists: false`, so the missing-base rule applies to an unmounted volume.
+/// Only the base is followed; links inside the tree stay entries.
+pub fn discover_base(base: &Path, ex: &Excludes) -> Result<Discovery> {
+    match fs::symlink_metadata(base) {
+        Ok(m) if m.file_type().is_symlink() => match fs::canonicalize(base) {
+            Ok(target) => discover(&target, ex),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Discovery::default()),
+            Err(e) => Err(e.into()),
+        },
+        _ => discover(base, ex),
+    }
+}
+
 /// What a directory's `.git` says it is.
 #[derive(Debug, PartialEq, Eq)]
 pub enum GitMarker {
@@ -158,12 +178,11 @@ fn entry(abs: &Path, rel: &str, meta: &fs::Metadata) -> Result<Entry> {
 
 /// Every path under `base` including inside repos (but not `.git/objects`,
 /// whose names are hex and cannot collide), for case-collision checks.
+/// `base`, a unit's root, is followed if it is a symlink, as discovery and
+/// git do (review P4); nothing below it is.
 pub fn all_names(base: &Path, ex: &Excludes) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    if fs::symlink_metadata(base)
-        .map(|m| m.is_dir())
-        .unwrap_or(false)
-    {
+    if fs::metadata(base).map(|m| m.is_dir()).unwrap_or(false) {
         walk_names(base, "", ex, &mut out)?;
     }
     Ok(out)

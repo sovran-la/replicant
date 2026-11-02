@@ -99,12 +99,13 @@ pub struct Discovered {
 }
 
 impl Discovered {
-    /// Discover each subscription at the path `map` gives it on this side.
+    /// Discover each subscription at the path `map` gives it on this side,
+    /// following the base if it is a symlink ([`repos::discover_base`]).
     pub fn run(subs: &[SubSpec], map: &dyn Fn(&str) -> PathBuf) -> Result<Self> {
         let mut out = Vec::new();
         for s in subs {
             let abs = map(&s.rel);
-            let d = repos::discover(&abs, &s.excludes_at(&s.rel)?)?;
+            let d = repos::discover_base(&abs, &s.excludes_at(&s.rel)?)?;
             out.push((s.clone(), abs, d));
         }
         Ok(Self { subs: out })

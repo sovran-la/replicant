@@ -307,3 +307,6 @@ mod unserved;
 
 #[path = "tests_rooted.rs"]
 mod rooted;
+
+#[path = "tests_symlink.rs"]
+mod symlink;
