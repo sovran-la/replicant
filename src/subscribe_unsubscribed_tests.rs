@@ -69,6 +69,6 @@ fn resubscribing_forgets_the_record_for_what_it_restores_only() {
 fn approve_starts_with_no_record() {
     let (_t, p) = fixture();
     sub(&p, "spruce", &["~/work"]);
-    approve(&load(&p), &p, "spruce", &[]).unwrap();
+    approve(&load(&p), &p, "spruce", &[], PIN).unwrap();
     assert!(load(&p).subscription("spruce").unsubscribed.is_empty());
 }

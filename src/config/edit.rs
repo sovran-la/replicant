@@ -76,6 +76,7 @@ fn drop_pending(doc: &mut DocumentMut, host: &str) {
     }
 }
 
+/// A `None` cert leaves any existing pin alone: only [`set_cert`] removes one.
 fn put_host(doc: &mut DocumentMut, host: &str, entry: &HostEntry) -> Result<()> {
     let t = child(doc, "hosts", host)?;
     t.insert("home_dir", value(entry.home_dir.display().to_string()));
@@ -86,6 +87,9 @@ fn put_host(doc: &mut DocumentMut, host: &str, entry: &HostEntry) -> Result<()> 
         None => {
             t.remove("allow");
         }
+    }
+    if let Some(cert) = &entry.cert {
+        t.insert("cert", value(cert.as_str()));
     }
     Ok(())
 }
@@ -114,6 +118,23 @@ pub fn remove_pending(path: &Path, host: &str) -> Result<()> {
 pub fn set_host(path: &Path, host: &str, entry: &HostEntry) -> Result<()> {
     let mut doc = load(path)?;
     put_host(&mut doc, host, entry)?;
+    store(path, &doc)
+}
+
+/// Pin `cert` for an enrolled host, or remove its pin (`None`). Refused for a
+/// host with no `[hosts.*]` entry: a pin is not an enrollment.
+pub fn set_cert(path: &Path, host: &str, cert: Option<&str>) -> Result<()> {
+    let mut doc = load(path)?;
+    let t = doc
+        .get_mut("hosts")
+        .and_then(Item::as_table_mut)
+        .and_then(|t| t.get_mut(host))
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| Error::Refused(format!("{host} is not enrolled in fleet.toml")))?;
+    match cert {
+        Some(c) => t.insert("cert", value(c)),
+        None => t.remove("cert"),
+    };
     store(path, &doc)
 }
 
@@ -201,15 +222,61 @@ mod tests {
         let capped = HostEntry {
             home_dir: "/Users/x".into(),
             allow: Some(vec!["work/t".into()]),
+            cert: None,
         };
         set_host(&p, "t16", &capped).unwrap();
         assert_eq!(Fleet::load(&p).unwrap().hosts["t16"], capped);
         let open = HostEntry {
             home_dir: "/Users/x".into(),
             allow: None,
+            cert: None,
         };
         set_host(&p, "t16", &open).unwrap();
         assert_eq!(Fleet::load(&p).unwrap().hosts["t16"], open);
+    }
+
+    const PIN: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn a_pin_is_set_replaced_and_removed_and_survives_other_host_writes() {
+        let (_t, p) = fixture();
+        let entry = HostEntry {
+            home_dir: "/Users/x".into(),
+            allow: None,
+            cert: Some(PIN.into()),
+        };
+        set_host(&p, "t16", &entry).unwrap();
+        assert_eq!(Fleet::load(&p).unwrap().host_for_cert(PIN), Some("t16"));
+        // Changing the cap (no cert in hand) keeps the pin.
+        let capped = HostEntry {
+            allow: Some(vec!["work/t".into()]),
+            cert: None,
+            ..entry.clone()
+        };
+        set_host(&p, "t16", &capped).unwrap();
+        assert_eq!(
+            Fleet::load(&p).unwrap().hosts["t16"].cert.as_deref(),
+            Some(PIN)
+        );
+        let other = PIN.replace("0123", "ffff");
+        set_cert(&p, "t16", Some(&other)).unwrap();
+        let f = Fleet::load(&p).unwrap();
+        assert_eq!(f.host_for_cert(PIN), None, "replaced");
+        assert_eq!(f.host_for_cert(&other), Some("t16"));
+        set_cert(&p, "t16", None).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("cert"), "{text}");
+        assert!(text.contains("# the big one"), "comments kept: {text}");
+        assert!(text.contains("allow"), "the rest of the entry kept: {text}");
+    }
+
+    #[test]
+    fn a_pin_for_a_host_that_is_not_enrolled_is_refused() {
+        let (_t, p) = fixture();
+        let before = std::fs::read_to_string(&p).unwrap();
+        let err = set_cert(&p, "ghost", Some(PIN)).unwrap_err().to_string();
+        assert!(err.contains("ghost is not enrolled"), "{err}");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
     }
 
     #[test]

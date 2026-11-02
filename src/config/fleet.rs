@@ -6,7 +6,7 @@
 
 use crate::paths;
 use crate::{Error, Result};
-use serde::Deserialize;
+use raw::RawFleet;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -16,67 +16,6 @@ pub const DEFAULT_STALE_AFTER_HOURS: u64 = 72;
 
 /// How long a queue entry lives without a heartbeat.
 pub const DEFAULT_LEASE_SECS: u64 = 30;
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawFleet {
-    #[serde(default)]
-    daemon: RawDaemon,
-    #[serde(default)]
-    roots: BTreeMap<String, RawRoot>,
-    #[serde(default)]
-    hosts: BTreeMap<String, RawHost>,
-    #[serde(default)]
-    subscriptions: BTreeMap<String, RawSubscription>,
-    #[serde(default)]
-    pending: BTreeMap<String, RawPending>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawDaemon {
-    listen: Option<String>,
-    name: Option<String>,
-    home_dir: Option<String>,
-    stale_after_hours: Option<u64>,
-    lease_secs: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawRoot {
-    path: String,
-    #[serde(default)]
-    exclude: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawHost {
-    home_dir: String,
-    allow: Option<Vec<String>>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawSubscription {
-    #[serde(default)]
-    paths: Vec<String>,
-    #[serde(default)]
-    except: Vec<String>,
-    #[serde(default)]
-    unsubscribed: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawPending {
-    home_dir: String,
-    #[serde(default)]
-    paths: Vec<String>,
-    #[serde(default)]
-    requested_at: u64,
-}
 
 /// A directory home serves, with its excludes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +33,10 @@ pub struct HostEntry {
     pub home_dir: PathBuf,
     /// The cap, as normalized relative paths. `None` is "anything home serves".
     pub allow: Option<Vec<String>>,
+    /// The pinned fingerprint of the host's client certificate
+    /// (`sha256:<hex>` of its DER), written by `approve`. A request over that
+    /// certificate *is* this host; `None` admits no certificate as it.
+    pub cert: Option<String>,
 }
 
 /// What one host is subscribed to.
@@ -205,17 +148,28 @@ impl Fleet {
         }
 
         let mut hosts = BTreeMap::new();
+        let mut pinned: BTreeMap<String, String> = BTreeMap::new();
         for (h, e) in raw.hosts {
             let hd = absolute(&e.home_dir).map_err(|m| bad(format!("[hosts.{h}] {m}")))?;
             let allow = e
                 .allow
                 .map(|list| check_rels(&list).map_err(|m| bad(format!("[hosts.{h}] allow: {m}"))))
                 .transpose()?;
+            if let Some(c) = &e.cert {
+                check_fingerprint(c).map_err(|m| bad(format!("[hosts.{h}] cert: {m}")))?;
+                if let Some(other) = pinned.insert(c.clone(), h.clone()) {
+                    return Err(bad(format!(
+                        "[hosts.{other}] and [hosts.{h}] pin the same cert; one certificate is \
+                         one host"
+                    )));
+                }
+            }
             hosts.insert(
                 h,
                 HostEntry {
                     home_dir: hd,
                     allow,
+                    cert: e.cert,
                 },
             );
         }
@@ -280,6 +234,14 @@ impl Fleet {
         self.home_dir.join(rel)
     }
 
+    /// The enrolled host whose pinned certificate has fingerprint `fp`.
+    pub fn host_for_cert(&self, fp: &str) -> Option<&str> {
+        self.hosts
+            .iter()
+            .find(|(_, e)| e.cert.as_deref() == Some(fp))
+            .map(|(h, _)| h.as_str())
+    }
+
     /// One host's subscription, or the empty one.
     pub fn subscription(&self, host: &str) -> Subscription {
         self.subscriptions.get(host).cloned().unwrap_or_default()
@@ -294,6 +256,22 @@ fn absolute(raw: &str) -> std::result::Result<PathBuf, String> {
     Ok(p)
 }
 
+/// `sha256:` and 64 lowercase hex digits, as `approve` writes it.
+fn check_fingerprint(raw: &str) -> std::result::Result<(), String> {
+    let hex = raw.strip_prefix("sha256:").unwrap_or("");
+    let ok = hex.len() == 64
+        && hex
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "{raw:?} is not a fingerprint; `approve` writes \"sha256:<64 lowercase hex>\""
+        ))
+    }
+}
+
 fn check_rels(list: &[String]) -> std::result::Result<Vec<String>, String> {
     list.iter()
         .map(|p| {
@@ -302,6 +280,9 @@ fn check_rels(list: &[String]) -> std::result::Result<Vec<String>, String> {
         })
         .collect()
 }
+
+#[path = "fleet_raw.rs"]
+mod raw;
 
 #[cfg(test)]
 #[path = "fleet_tests.rs"]

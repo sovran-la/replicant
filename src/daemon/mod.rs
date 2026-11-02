@@ -77,7 +77,6 @@ impl Daemon {
     pub fn start(dirs: Dirs) -> Result<Self> {
         let lock = lock(&dirs)?;
         let role = if dirs.is_home() {
-            certs::ensure(&certs::Paths::of(&dirs))?;
             Role::Home(Arc::new(home::Home::open(dirs.clone())?))
         } else {
             Role::Leaf(Arc::new(leaf::Leaf::open(dirs.clone())))
@@ -238,6 +237,7 @@ fn home_local(h: &home::Home, req: LocalRequest) -> Result<LocalReply> {
         LocalRequest::Approve { host, allow } => {
             Ok(LocalReply::Approved(h.approve(&host, &allow)?))
         }
+        LocalRequest::Reissue { host } => Ok(LocalReply::Reissued(h.reissue(&host)?)),
         LocalRequest::Subscribe { .. }
         | LocalRequest::Unsubscribe { .. }
         | LocalRequest::DryRun { .. } => Err(Error::Refused(

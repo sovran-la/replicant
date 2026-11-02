@@ -222,6 +222,9 @@ pub enum LocalRequest {
         host: String,
         allow: Vec<String>,
     },
+    Reissue {
+        host: String,
+    },
 }
 
 pub type LocalAnswer = Result<LocalReply, String>;
@@ -239,6 +242,7 @@ pub enum LocalReply {
     Pending { hosts: Vec<PendingView> },
     AllowPreview(AllowPreview),
     Approved(Approved),
+    Reissued(Reissued),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,4 +262,16 @@ pub struct Approved {
     pub allow: Option<Vec<String>>,
     pub subscribed: Vec<String>,
     pub dropped: Vec<String>,
+    /// The pinned fingerprint of the certificate minted for the host.
+    pub cert: String,
+}
+
+/// `approve <host>` for an enrolled host: a new certificate, pinned in place
+/// of the old one, waiting for the host to collect it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reissued {
+    pub host: String,
+    pub cert: String,
+    /// The pin it replaced, if there was one.
+    pub replaced: Option<String>,
 }

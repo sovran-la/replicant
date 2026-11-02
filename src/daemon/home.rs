@@ -25,12 +25,16 @@ pub struct Home {
     pub queue: Queue,
     pub journal: Journal,
     contacts: Store,
-    /// The bootstrap bundle's fingerprint, when home has one.
+    /// The bootstrap bundle's fingerprint (`None` only if it vanished
+    /// between [`Home::open`]'s generate and read).
     bootstrap: Option<String>,
 }
 
 impl Home {
+    /// Open home, generating its CA, server identity and bootstrap bundle
+    /// on a first start.
     pub fn open(dirs: Dirs) -> Result<Self> {
+        super::certs::ensure(&super::certs::Paths::of(&dirs))?;
         Ok(Self {
             bootstrap: super::certs::bootstrap_fingerprint(&dirs.credentials())?,
             journal: Journal::at(dirs.journal()),
@@ -240,23 +244,6 @@ impl Home {
         subscribe::preview_allow(&*self.fleet()?, host, raw)
     }
 
-    pub fn approve(&self, host: &str, raw: &[String]) -> Result<Approved> {
-        let mut f = self.fleet()?;
-        let out = subscribe::approve(&f, &self.dirs.fleet(), host, raw)?;
-        self.reload(&mut f)?;
-        let allow = out
-            .allow
-            .as_ref()
-            .map(|a| a.join(" "))
-            .unwrap_or_else(|| "(none)".into());
-        let mut ignore = Vec::new();
-        self.journal(
-            &mut ignore,
-            Line::new("approve", host, "", format!("allow:{allow}")),
-        );
-        Ok(out)
-    }
-
     pub fn log(&self, filter: &Filter) -> Result<Vec<Line>> {
         self.journal.read(filter)
     }
@@ -282,6 +269,9 @@ mod cache;
 
 #[path = "home_trust.rs"]
 mod trust;
+
+#[path = "home_enroll.rs"]
+mod enroll;
 use trust::Admitted;
 pub use trust::{BOOTSTRAP_ONLY, Caller};
 

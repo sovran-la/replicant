@@ -92,7 +92,11 @@ fn pending_host_flow_end_to_end() {
     let log = home.log(&Filter::default()).unwrap();
     let events: Vec<_> = log.iter().map(|l| l.event.as_str()).collect();
     assert_eq!(events, ["pending", "approve"]);
-    assert_eq!(log[1].detail, "allow:work/tundra");
+    assert_eq!(
+        log[1].detail,
+        format!("allow:work/tundra cert:{}", approved.cert),
+        "approve journals the pin it wrote"
+    );
 }
 
 #[test]

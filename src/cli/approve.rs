@@ -31,12 +31,12 @@ pub fn run(
     let LocalReply::Pending { hosts } = call(LocalRequest::Pending)? else {
         return Err(Error::Daemon("unexpected reply to pending".into()));
     };
+    if let Some(h) = only.filter(|h| !hosts.iter().any(|p| p.host == *h)) {
+        return reissue(input, out, h, call);
+    }
     if hosts.is_empty() {
         writeln!(out, "Nothing pending.")?;
         return Ok(());
-    }
-    if let Some(h) = only.filter(|h| !hosts.iter().any(|p| p.host == *h)) {
-        return Err(Error::Refused(format!("{h} is not pending")));
     }
     let now = crate::now_secs();
     writeln!(out, "Pending:")?;
@@ -92,12 +92,57 @@ pub fn run(
             writeln!(out, "Not approved.")?;
             continue;
         }
-        call(LocalRequest::Approve {
+        let LocalReply::Approved(a) = call(LocalRequest::Approve {
             host: p.host.clone(),
             allow: vec![raw],
-        })?;
+        })?
+        else {
+            return Err(Error::Daemon("unexpected reply to approve".into()));
+        };
         writeln!(out, "Approved. Run `replicant sync` on {} to pull.", p.host)?;
+        writeln!(
+            out,
+            "  Its certificate ({}) waits here; {} collects it on its next request.",
+            a.cert, p.host
+        )?;
     }
+    Ok(())
+}
+
+/// `approve <host>` for a host that is not pending: issue an enrolled host a
+/// new certificate (a lost `host.pem`, or a fleet upgraded from v0.1).
+fn reissue(
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    host: &str,
+    call: &dyn Fn(LocalRequest) -> Result<LocalReply>,
+) -> Result<()> {
+    let LocalReply::Fleet(f) = call(LocalRequest::Fleet)? else {
+        return Err(Error::Daemon("unexpected reply to fleet".into()));
+    };
+    if !f.hosts.iter().any(|h| h.name == host) {
+        return Err(Error::Refused(format!("{host} is not pending or enrolled")));
+    }
+    let yes = ask(
+        input,
+        out,
+        &format!(
+            "{host} is enrolled. Issue it a new certificate? Any certificate it has now stops \
+             working. [y/N] "
+        ),
+    )?;
+    if !matches!(yes.as_deref(), Some("y" | "Y" | "yes")) {
+        writeln!(out, "Not reissued.")?;
+        return Ok(());
+    }
+    let LocalReply::Reissued(r) = call(LocalRequest::Reissue { host: host.into() })? else {
+        return Err(Error::Daemon("unexpected reply to reissue".into()));
+    };
+    writeln!(
+        out,
+        "Issued {host} a new certificate ({}); it collects it on its next request.",
+        r.cert
+    )?;
     Ok(())
 }
 
@@ -108,6 +153,7 @@ mod tests {
     use crate::daemon::wire::HomeRequest;
     use crate::plan::HomeLink;
     use crate::testutil::{Bed, InProcess};
+    use std::os::unix::fs::PermissionsExt;
 
     fn local(home: &Home) -> impl Fn(LocalRequest) -> Result<LocalReply> + '_ {
         move |req| match req {
@@ -120,6 +166,8 @@ mod tests {
             LocalRequest::Approve { host, allow } => {
                 Ok(LocalReply::Approved(home.approve(&host, &allow)?))
             }
+            LocalRequest::Fleet => Ok(LocalReply::Fleet(home.fleet_state()?)),
+            LocalRequest::Reissue { host } => Ok(LocalReply::Reissued(home.reissue(&host)?)),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -232,5 +280,92 @@ mod tests {
         pending_twinoaks(&bed, &home);
         let (r, _) = drive(&home, "", Some("ghost"));
         assert!(r.unwrap_err().to_string().contains("ghost is not pending"));
+    }
+
+    #[test]
+    fn approve_mints_and_pins_and_leaves_the_bundle_for_collection() {
+        let bed = Bed::new("");
+        let home = bed.home();
+        pending_twinoaks(&bed, &home);
+        let (r, out) = drive(&home, "y\n\n\n", None);
+        r.unwrap();
+        let f = crate::config::Fleet::load(&bed.home_dirs.fleet()).unwrap();
+        let pin = f.hosts["twinoaks"].cert.clone().expect("pinned");
+        assert!(
+            out.contains(&format!("Its certificate ({pin}) waits here")),
+            "{out}"
+        );
+        let issued = bed.home_dirs.issued().join("twinoaks.pem");
+        let id = crate::daemon::tls::Identity::load(&issued).unwrap();
+        assert_eq!(
+            id.fingerprint(),
+            pin,
+            "the waiting bundle is the pinned cert"
+        );
+        let mode = std::fs::metadata(&issued).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let dir = std::fs::metadata(bed.home_dirs.issued())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(dir & 0o777, 0o700);
+        let log = home.log(&Default::default()).unwrap();
+        let line = log.iter().find(|l| l.event == "approve").unwrap();
+        assert!(line.detail.contains(&pin), "{}", line.detail);
+    }
+
+    /// The v0.1 upgrade and the lost-key case: `approve <host>` on an
+    /// enrolled host re-mints and replaces the pin.
+    #[test]
+    fn approve_of_an_enrolled_host_reissues_after_asking() {
+        let bed = Bed::enrolled();
+        let home = bed.home();
+        let before = std::fs::read_to_string(bed.home_dirs.fleet()).unwrap();
+        for script in ["", "n\n", "\n"] {
+            let (r, out) = drive(&home, script, Some("leaf"));
+            r.unwrap();
+            assert!(out.contains("Not reissued."), "{script:?}: {out}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(bed.home_dirs.fleet()).unwrap(),
+            before
+        );
+        assert!(!bed.home_dirs.issued().join("leaf.pem").exists());
+
+        let (r, out) = drive(&home, "y\n", Some("leaf"));
+        r.unwrap();
+        let first = crate::config::Fleet::load(&bed.home_dirs.fleet())
+            .unwrap()
+            .hosts["leaf"]
+            .cert
+            .clone()
+            .expect("pinned");
+        assert!(out.contains(&format!("new certificate ({first})")), "{out}");
+        let (r, _) = drive(&home, "y\n", Some("leaf"));
+        r.unwrap();
+        let f = crate::config::Fleet::load(&bed.home_dirs.fleet()).unwrap();
+        let second = f.hosts["leaf"].cert.clone().unwrap();
+        assert_ne!(first, second, "the old pin is replaced");
+        assert_eq!(
+            f.subscription("leaf").paths,
+            vec!["work"],
+            "enrollment kept"
+        );
+        let id =
+            crate::daemon::tls::Identity::load(&bed.home_dirs.issued().join("leaf.pem")).unwrap();
+        assert_eq!(id.fingerprint(), second);
+        let log = home.log(&Default::default()).unwrap();
+        let last = log.iter().rfind(|l| l.event == "reissue").unwrap();
+        assert!(
+            last.detail.contains(&format!("replaces:{first}")),
+            "{}",
+            last.detail
+        );
+        assert!(
+            home.reissue("ghost")
+                .unwrap_err()
+                .to_string()
+                .contains("not enrolled")
+        );
     }
 }

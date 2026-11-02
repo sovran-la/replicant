@@ -142,7 +142,8 @@ impl Leaf {
             }),
             LocalRequest::Pending
             | LocalRequest::PreviewAllow { .. }
-            | LocalRequest::Approve { .. } => Err(Error::Refused(
+            | LocalRequest::Approve { .. }
+            | LocalRequest::Reissue { .. } => Err(Error::Refused(
                 "approve runs on home, and this machine is a leaf".into(),
             )),
         }

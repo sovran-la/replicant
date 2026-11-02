@@ -36,6 +36,8 @@ fn s(v: &[&str]) -> Vec<String> {
 }
 
 const MAC: &str = "/Users/morgan";
+/// A well-formed certificate pin for approve.
+const PIN: &str = "sha256:00000000000000000000000000000000000000000000000000000000000000aa";
 
 #[test]
 fn unknown_host_becomes_pending_and_is_served_nothing() {
