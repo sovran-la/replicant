@@ -6,6 +6,7 @@ rev 7 2026-11-01 late (decided: git-ignored files do not sync; approve mints per
 rev 8 2026-11-01 night (apply built on `bsneed/v0.2-apply`, pending review: F3's kill, sync applies, markers, home-side push backup, rollback per push, fleet view's last sync),
 rev 9 2026-11-02 (apply review fixed: a marker resumes only its own unit; a resume will not replace leaf work newer than its marker (guardrail 6); a rolled-back push holds its pusher until `--accept-rollback`).
 rev 10 2026-11-02 (sync shows each unit as it applies, with its time and the total; Ctrl-C at the CLI stops the running rsync, leaving its unit interrupted with its marker).
+rev 11 2026-11-02 (a confirmed plan is what each unit will do and what it would delete, not the bytes it carries: an edit or a touch between the plan shown and the `y` no longer voids it).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -450,6 +451,18 @@ and the decision is manual.
 All questions are asked first, then a summary of what is about to happen,
 then writes. Nothing is modified while deciding; Ctrl-C during the
 questions is free.
+
+The daemon plans again when the person says y and writes only if that
+plan is the one confirmed (rev 11): per unit, its path, kind, decision
+(pull, push, resume, remove, deleted on X, conflict…), refusals and the
+set of paths it would delete; and the refused subscriptions. Not the
+bytes: a push or pull copies whatever is there when it runs, and a live
+tree (an editor's autosave, `.DS_Store`, a `git status` rewriting an
+index) always changes something in the seconds between the plan shown
+and the `y`. A unit more or fewer, a decision flipped, or one path more
+or fewer to delete, and nothing is written: "the plan changed after it
+was shown", exit 1, run `sync` again to see the new one. A plan that may
+not go at all (a conflict, a refusal) says why instead (exit 2).
 
 While it writes, each unit is shown as it starts and as it ends (rev 10):
 `[12/155] push  work/ai_stuff/bonsai … 220 files  1.4s`, or why it did not
