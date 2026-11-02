@@ -230,6 +230,19 @@ impl Home {
         changes: &[String],
         finished: bool,
     ) -> Result<Option<String>> {
+        // What the leaf says rsync wrote becomes rollback's delete list
+        // (review N2): every path must stay inside the unit, as the backup
+        // list must (empty: a single-file unit itself).
+        for c in changes {
+            let path = c
+                .split_once(' ')
+                .map_or("", |(_, p)| p.trim_end_matches('/'));
+            if !path.is_empty() && paths::check_rel(path).is_err() {
+                return Err(Error::Refused(format!(
+                    "{c:?} is not a change inside {rel}; nothing recorded"
+                )));
+            }
+        }
         let m: Option<Marker> = marker::store(&self.dirs.state()).get(rel)?;
         let Some(id) = m.filter(|m| m.host == host).and_then(|m| m.push) else {
             return Ok(None);

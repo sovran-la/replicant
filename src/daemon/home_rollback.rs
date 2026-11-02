@@ -54,6 +54,12 @@ pub(super) fn undo(push: &Push) -> Undo {
             };
             let is_dir = path.ends_with('/');
             let path = path.trim_end_matches('/').to_string();
+            // A manifest from before record_run checked its paths (review
+            // N2): never delete or restore outside the unit.
+            if !path.is_empty() && crate::paths::check_rel(&path).is_err() {
+                u.unbacked.push(path);
+                continue;
+            }
             if !seen.insert(path.clone()) {
                 continue;
             }

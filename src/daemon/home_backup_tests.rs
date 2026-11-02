@@ -126,3 +126,79 @@ fn old_backups_are_swept_unless_their_push_is_still_open() {
     );
     assert_eq!(home.sweep_backups(now).unwrap(), 0);
 }
+
+fn push_of(changes: &[&str]) -> Push {
+    Push {
+        version: 1,
+        id: "leaf/20261101T000000Z".into(),
+        host: "leaf".into(),
+        unit: "work".into(),
+        is_file: false,
+        started_at: 1,
+        runs: vec![run(changes, &[], &[], true)],
+        finished_at: None,
+        rolled_back_at: None,
+        rollback_settled_at: None,
+    }
+}
+
+#[test]
+fn undo_never_deletes_or_restores_outside_the_unit() {
+    // Review N2: a manifest written before record_run checked its paths.
+    let bad = [
+        "+ ../../etc/x",
+        "+ /etc/y",
+        "- a/../../z",
+        "~ ./w",
+        "+ d//e",
+    ];
+    let mut changes = bad.to_vec();
+    changes.push("+ ok");
+    let u = undo(&push_of(&changes));
+    assert_eq!(u.delete, vec![("ok".to_string(), false)]);
+    assert!(u.restore.iter().all(Vec::is_empty));
+    assert_eq!(u.unbacked.len(), bad.len(), "{:?}", u.unbacked);
+}
+
+#[test]
+fn record_run_refuses_a_change_outside_the_unit() {
+    let bed = Bed::enrolled();
+    let home = bed.home();
+    let id = "leaf/20261101T000000Z";
+    pushes(&bed.home_dirs.state()).put(&push_of(&[])).unwrap();
+    marker::store(&bed.home_dirs.state())
+        .put(&Marker {
+            version: 1,
+            rel: "work".into(),
+            direction: crate::marker::Direction::Push,
+            host: "leaf".into(),
+            source_state: crate::state::UnitState::Empty,
+            started_at: 0,
+            push: Some(id.into()),
+        })
+        .unwrap();
+    for bad in ["+ ../x", "+ /etc/passwd", "- a/../../b", "~ ./c"] {
+        let e = home
+            .record_run("leaf", "work", &[bad.to_string(), "+ fine".into()], true)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("is not a change inside work"), "{bad}: {e}");
+        let p: Push = pushes(&bed.home_dirs.state()).get(id).unwrap().unwrap();
+        assert_eq!(p, push_of(&[]), "{bad}: nothing recorded");
+    }
+    let ok = [
+        "+ d/".to_string(),
+        "+ d/f".into(),
+        "~ a".into(),
+        "- b".into(),
+    ];
+    assert_eq!(
+        home.record_run("leaf", "work", &ok, true)
+            .unwrap()
+            .as_deref(),
+        Some(id)
+    );
+    let p: Push = pushes(&bed.home_dirs.state()).get(id).unwrap().unwrap();
+    assert_eq!(p.runs[0].changes, ok);
+    assert!(p.finished_at.is_some());
+}
