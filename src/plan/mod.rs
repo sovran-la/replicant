@@ -11,7 +11,7 @@ mod lease;
 mod types;
 mod unserved;
 
-pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings};
+pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings, Tone};
 
 use crate::baseline::{self, Baseline};
 use crate::config::LeafConfig;
@@ -126,7 +126,7 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
             &leaf_units,
             &leaf_markers,
         );
-        let gone = unserved::plan(ctx, &snap, &baselines, &leaf_markers)?;
+        let gone = unserved::plan(ctx, &view.home, &snap, &baselines, &leaf_markers)?;
         planned.extend(gone.units);
         planned.sort_by(|a, b| a.rel.cmp(&b.rel).then(a.kind.cmp(&b.kind)));
         t.leaf_state_ms = ms(started);
@@ -159,6 +159,7 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         dry_run,
         units,
         refused: view.refused,
+        orphaned: view.orphaned,
         timings: t,
     };
     let reported = plan

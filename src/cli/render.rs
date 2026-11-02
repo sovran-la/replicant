@@ -4,7 +4,7 @@
 
 use crate::daemon::wire::{Enrollment, SubscribeOutcome, UnsubscribeOutcome};
 use crate::decide::Decision;
-use crate::plan::{LeafStatus, Plan, PlannedUnit};
+use crate::plan::{LeafStatus, Plan, PlannedUnit, Tone};
 use crate::units::UnitKind;
 use std::fmt::Write;
 
@@ -83,7 +83,8 @@ pub fn unsubscribed(o: &UnsubscribeOutcome) -> String {
         let _ = writeln!(s, "except: {}", o.except.join(", "));
     }
     s.push_str(
-        "The next sync removes unsubscribed paths from this machine (through guardrail 1).\n",
+        "The next sync removes unsubscribed paths from this machine, if nothing changed there \
+         since the last sync (and through guardrail 1).\n",
     );
     s
 }
@@ -100,10 +101,10 @@ fn head(h: &Option<String>) -> String {
 
 fn unit_line(u: &PlannedUnit, st: Style) -> String {
     let label = u.decision.label();
-    let label = if u.decision.is_blocking() {
-        st.red(&label)
-    } else {
-        label
+    let label = match (&u.decision, u.decision.is_blocking()) {
+        (_, true) | (Decision::Orphaned { changed: true, .. }, _) => st.red(&label),
+        (Decision::Orphaned { .. }, _) => st.dim(&label),
+        _ => label,
     };
     let kind = match u.kind {
         UnitKind::Repo => "repo",
@@ -131,6 +132,17 @@ pub fn plan(p: &Plan, verbose: bool, st: Style) -> String {
             st.red(&format!("{}: {}", r.headline(), r.detail.join("; ")))
         );
     }
+    for r in &p.orphaned {
+        let _ = writeln!(
+            s,
+            "{}",
+            st.dim(&format!(
+                "not served: {}: {}",
+                r.headline(),
+                r.detail.join("; ")
+            ))
+        );
+    }
     for u in &p.units {
         if matches!(u.decision, Decision::Nothing { .. }) && !verbose {
             continue;
@@ -138,6 +150,15 @@ pub fn plan(p: &Plan, verbose: bool, st: Style) -> String {
         let _ = writeln!(s, "{}", unit_line(u, st));
         if let Some(note) = u.deletion_note(&p.me, &p.home) {
             let _ = writeln!(s, "    {}", st.red(&note));
+        }
+        match u.unserved_note() {
+            Some((note, Tone::Alarm)) => {
+                let _ = writeln!(s, "    {}", st.red(&note));
+            }
+            Some((note, Tone::Quiet)) => {
+                let _ = writeln!(s, "    {}", st.dim(&note));
+            }
+            None => {}
         }
         for r in &u.refusals {
             let _ = writeln!(s, "    {}", st.red(&format!("REFUSED {}", r.headline())));

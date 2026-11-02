@@ -59,6 +59,40 @@ impl PlannedUnit {
     }
 }
 
+/// How loud a note under a unit is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// Needs a human, or warns of work that will not travel: red.
+    Alarm,
+    /// Information that changes nothing: dim.
+    Quiet,
+}
+
+impl PlannedUnit {
+    /// For a unit home no longer serves, what it means here (review F5).
+    pub fn unserved_note(&self) -> Option<(String, Tone)> {
+        match &self.decision {
+            Decision::Orphaned { reason, changed } => {
+                let mut s = format!(
+                    "no longer served by home ({reason}); `replicant unsubscribe {}` to remove \
+                     here, or re-subscribe",
+                    self.leaf_path.display()
+                );
+                if !changed {
+                    return Some((s, Tone::Quiet));
+                }
+                s.push_str(&format!(
+                    "; changed here since baseline ({}) — home will not accept them",
+                    crate::decide::files_here(self.leaf_files)
+                ));
+                Some((s, Tone::Alarm))
+            }
+            Decision::HomeRootMissing { why } => Some((why.clone(), Tone::Alarm)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Timings {
     pub discover_ms: u64,
@@ -75,8 +109,13 @@ pub struct Plan {
     pub home: String,
     pub dry_run: bool,
     pub units: Vec<PlannedUnit>,
-    /// Subscriptions home will not serve (guardrail 5).
+    /// Subscriptions home will not serve because its config is broken (a
+    /// root gone): blocking (guardrail 5).
     pub refused: Vec<Refusal>,
+    /// Subscriptions home will not serve by its own policy (a cap narrowed,
+    /// an exclude added): shown, never blocking (review F5).
+    #[serde(default)]
+    pub orphaned: Vec<Refusal>,
     pub timings: Timings,
 }
 
@@ -134,6 +173,8 @@ fn key_of(d: &Decision) -> &'static str {
         Decision::Push | Decision::Resume { .. } => "push →",
         Decision::Remove => "remove",
         Decision::DeletedOn { .. } => "deleted, needs confirmation",
+        Decision::Orphaned { .. } => "orphaned, not served",
+        Decision::HomeRootMissing { .. } => "home root missing",
         Decision::Conflict { .. } => "conflict",
         Decision::Quarantined { .. } => "quarantined",
         Decision::Nothing { .. } => "nothing",

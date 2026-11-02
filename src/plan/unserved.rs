@@ -1,7 +1,8 @@
 //! Baselines home no longer serves (review F5). The leaf hashes its copy of
 //! each the way the baseline was hashed, with the excludes and carve-outs
 //! home reports for it, and [`decide::decide_unserved`] decides: `Remove`
-//! only for an explicit unsubscribe of an unchanged, unmarked unit.
+//! only for an explicit unsubscribe of an unchanged, unmarked unit; an
+//! orphan, a conflict or a broken home root otherwise.
 
 use super::{LeafCtx, PlannedUnit};
 use crate::baseline::Baseline;
@@ -22,6 +23,7 @@ pub(super) struct Unserved {
 /// One planned unit per baseline outside every spec home serves.
 pub(super) fn plan(
     ctx: LeafCtx<'_>,
+    home_name: &str,
     snap: &HomeSnapshot,
     baselines: &[Baseline],
     leaf_markers: &[Marker],
@@ -80,9 +82,14 @@ pub(super) fn plan(
                 .find(|u| u.rel == b.rel && u.kind == b.kind);
             let leaf = u.map_or(&empty, |u| &u.state);
             let files = u.map_or(0, |u| u.files);
+            let path = local(&b.rel);
+            let told = told(&b.rel);
             let decision = decide::decide_unserved(UnservedInputs {
+                home_name,
                 rel: &b.rel,
-                reason: told(&b.rel).map_or(UnservedReason::NotServed, |u| u.reason),
+                path: &path.display().to_string(),
+                reason: told.map_or(UnservedReason::NotServed, |u| u.reason),
+                detail: told.map_or("", |u| u.detail.as_str()),
                 leaf,
                 baseline: b,
                 files,
@@ -97,7 +104,7 @@ pub(super) fn plan(
                 home: UnitState::Empty,
                 leaf_head: u.and_then(|u| u.head.clone()),
                 home_head: None,
-                leaf_path: local(&b.rel),
+                leaf_path: path,
                 home_path: snap.home_dir.join(&b.rel),
                 diff: None,
                 refusals: vec![],

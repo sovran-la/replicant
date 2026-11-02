@@ -1,10 +1,13 @@
 //! Review F5: a baseline home no longer serves is `Remove` only when the host
-//! explicitly unsubscribed it and the leaf is unchanged since baseline.
-//! Everything else out of bounds — a cap narrowed by hand, a root renamed or
-//! mistyped in fleet.toml — is a blocking conflict row, never a delete.
+//! explicitly unsubscribed it and the leaf is unchanged since baseline. The
+//! rest is weighted by home's reason (amended 2026-11-01): unsubscribed with
+//! unpushed work is a blocking conflict; a cap narrowed or a path dropped by
+//! hand is an orphan, shown and never blocking; a root renamed or mistyped
+//! in fleet.toml blocks. None of them is ever a delete.
 //! Every edit here lands behind a running `Home` (the F11 reload).
 
 use super::*;
+use crate::decide::UnservedReason;
 
 /// `leaf` subscribed to `work/a` and `work/b`, a repo in each on both sides,
 /// identical, plus a loose file in `work/b` on both.
@@ -83,37 +86,114 @@ fn unsubscribe(bed: &Bed, home: &Home, rel: &str) {
     assert!(matches!(r, HomeReply::Unsubscribed(_)), "{r:?}");
 }
 
-#[test]
-fn a_cap_narrowed_by_hand_is_a_conflict_not_a_remove() {
-    let bed = two_subs();
-    let home = bed.home();
-    baseline_b_as_now(&bed, &home);
+/// Narrow the cap to `work/a` by hand, behind the running `home`, and move
+/// `work/a/r` on home past its baseline, so the rest of the sync has a pull.
+fn narrow_cap_and_move_a(bed: &Bed, home: &Home) {
+    let now = status(bed, home);
+    let a = unit(&now, "work/a/r");
+    put(
+        bed,
+        "work/a/r",
+        UnitKind::Repo,
+        a.leaf.clone(),
+        a.home.clone(),
+    );
     testutil::hand_edit(
         &bed.home_dirs.fleet(),
         "[hosts.leaf]\n",
         "[hosts.leaf]\nallow = [\"work/a\"]\n",
     );
+    let a = bed.home_hd.join("work/a/r");
+    testutil::write(&a.join("README"), "home moved\n");
+    testutil::git(&a, &["commit", "-qam", "home moved"]);
+}
+
+/// The plan as `status` renders it, with colour.
+fn rendered(p: &Plan) -> String {
+    crate::cli::render::plan(p, false, crate::cli::render::Style { color: true })
+}
+
+fn orphaned(reason: UnservedReason, changed: bool) -> Decision {
+    Decision::Orphaned { reason, changed }
+}
+
+#[test]
+fn a_cap_narrowed_by_hand_orphans_an_unchanged_leaf_and_the_sync_proceeds() {
+    let bed = two_subs();
+    let home = bed.home();
+    baseline_b_as_now(&bed, &home);
+    narrow_cap_and_move_a(&bed, &home);
     let p = status(&bed, &home);
     for rel in ["work/b/r", "work/b"] {
-        let w = why(unit(&p, rel));
-        assert!(
-            w.starts_with(&format!("home no longer serves {rel} (cap narrowed);")),
-            "{w}"
+        assert_eq!(
+            unit(&p, rel).decision,
+            orphaned(UnservedReason::CapNarrowed, false),
+            "{rel}"
         );
-        assert!(w.contains("unchanged since baseline"), "{w}");
-        assert!(w.ends_with("re-subscribe, or unsubscribe to remove"), "{w}");
     }
-    assert!(why(unit(&p, "work/b/r")).contains("; 1 file here,"));
-    assert!(p.blocked(), "a conflict blocks: exit 2");
+    assert!(!p.blocked(), "an orphan does not block: exit 0");
+    assert!(p.refused.is_empty(), "{:?}", p.refused);
+    assert_eq!(
+        p.orphaned.len(),
+        1,
+        "the subscription is shown, not refused"
+    );
+    assert_eq!(p.orphaned[0].unit, "work/b");
 
-    // A dry run does not diff it either: there is nothing to carry out.
+    let text = rendered(&p);
+    let note = format!(
+        "no longer served by home (cap narrowed); `replicant unsubscribe {}` to remove here, \
+         or re-subscribe",
+        bed.leaf_hd.join("work/b/r").display()
+    );
+    assert!(
+        text.contains(&format!("\x1b[2m{note}\x1b[0m")),
+        "dim: {text}"
+    );
+    assert!(
+        text.contains("\x1b[2morphaned (cap narrowed)\x1b[0m"),
+        "{text}"
+    );
+
+    // The rest of the sync proceeds: the dry run pulls work/a/r and does not
+    // diff, let alone delete, the orphans.
     let d = go(&bed, &home, &bed.leaf_cfg(), true).unwrap();
+    assert_eq!(unit(&d, "work/a/r").decision, Decision::Pull);
+    assert!(unit(&d, "work/a/r").diff.as_ref().unwrap().files_changed > 0);
     assert!(unit(&d, "work/b/r").diff.is_none());
+    assert!(!d.blocked());
     assert!(bed.leaf_hd.join("work/b/r/README").exists());
 }
 
 #[test]
-fn a_root_renamed_in_fleet_toml_is_a_conflict_not_a_remove() {
+fn a_cap_narrowed_over_unpushed_work_is_a_red_orphan_and_still_exit_0() {
+    let bed = two_subs();
+    let home = bed.home();
+    baseline_b_as_now(&bed, &home);
+    narrow_cap_and_move_a(&bed, &home);
+    testutil::write(&bed.leaf_hd.join("work/b/r/README"), "unpushed\n");
+    let p = status(&bed, &home);
+    let r = unit(&p, "work/b/r");
+    assert_eq!(r.decision, orphaned(UnservedReason::CapNarrowed, true));
+    assert!(!p.blocked(), "warn, not block");
+    let text = rendered(&p);
+    assert!(
+        text.contains(
+            "changed here since baseline (1 file here) — home will not accept them\x1b[0m"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("\x1b[31morphaned, changed (cap narrowed)\x1b[0m"),
+        "red: {text}"
+    );
+    let d = go(&bed, &home, &bed.leaf_cfg(), true).unwrap();
+    assert_eq!(unit(&d, "work/a/r").decision, Decision::Pull);
+    assert!(unit(&d, "work/b/r").diff.is_none());
+}
+
+#[test]
+fn a_root_renamed_in_fleet_toml_blocks() {
     let bed = two_subs();
     let home = bed.home();
     baseline_b_as_now(&bed, &home);
@@ -122,13 +202,25 @@ fn a_root_renamed_in_fleet_toml_is_a_conflict_not_a_remove() {
     let real = format!("path = \"{}/work\"", bed.home_hd.display());
     testutil::hand_edit(&bed.home_dirs.fleet(), &real, &typo);
     let p = status(&bed, &home);
-    let w = why(unit(&p, "work/b/r"));
-    assert!(w.contains("(no root serves it)"), "{w}");
-    assert!(p.blocked());
+    for rel in ["work/b/r", "work/b"] {
+        let Decision::HomeRootMissing { why } = &unit(&p, rel).decision else {
+            panic!("{rel}: {:?}", unit(&p, rel).decision)
+        };
+        assert_eq!(
+            *why,
+            format!(
+                "home's root for {rel} is missing or renamed (subscription work/b: no root in \
+                 fleet.toml covers it; roots: work2); fix fleet.toml on home"
+            )
+        );
+    }
+    assert!(p.blocked(), "exit 2");
+    assert!(!p.refused.is_empty(), "the subscription is refused too");
+    assert!(rendered(&p).contains("\x1b[31mhome's root for work/b/r is missing"));
 }
 
 #[test]
-fn a_path_removed_from_subscriptions_by_hand_is_not_an_unsubscribe() {
+fn a_path_removed_from_subscriptions_by_hand_is_an_orphan_not_an_unsubscribe() {
     let bed = two_subs();
     let home = bed.home();
     baseline_b_as_now(&bed, &home);
@@ -137,111 +229,16 @@ fn a_path_removed_from_subscriptions_by_hand_is_not_an_unsubscribe() {
         "paths = [\"work/a\", \"work/b\"]",
         "paths = [\"work/a\"]",
     );
-    let w = why(unit(&status(&bed, &home), "work/b/r")).to_string();
-    assert!(w.contains("(not subscribed)"), "{w}");
-}
-
-#[test]
-fn an_explicit_unsubscribe_with_an_unchanged_leaf_is_remove() {
-    let bed = two_subs();
-    let home = bed.home();
-    baseline_b_as_now(&bed, &home);
-    unsubscribe(&bed, &home, "work/b");
     let p = status(&bed, &home);
-    assert_eq!(unit(&p, "work/b/r").decision, Decision::Remove);
-    let loose = p
-        .units
-        .iter()
-        .find(|u| u.rel == "work/b" && u.kind == UnitKind::Loose)
-        .unwrap();
-    assert_eq!(loose.decision, Decision::Remove);
-    assert!(!p.blocked(), "{:#?}", p.units);
-
-    // The dry run shows the deletion and still deletes nothing.
-    let d = go(&bed, &home, &bed.leaf_cfg(), true).unwrap();
-    assert!(unit(&d, "work/b/r").diff.as_ref().unwrap().deleted > 0);
-    assert!(bed.leaf_hd.join("work/b/r/README").exists());
-    let loose = loose_diff(&d, "work/b");
-    assert!(loose.iter().any(|c| c == "- notes.txt"), "{loose:?}");
-}
-
-/// The loose unit's dry-run changes.
-fn loose_diff(p: &Plan, rel: &str) -> Vec<String> {
-    p.units
-        .iter()
-        .find(|u| u.rel == rel && u.kind == UnitKind::Loose)
-        .and_then(|u| u.diff.as_ref())
-        .unwrap_or_else(|| panic!("no loose diff for {rel}"))
-        .changes
-        .clone()
-}
-
-#[test]
-fn removing_a_loose_unit_spares_a_repo_inside_it_that_is_in_conflict() {
-    let bed = two_subs();
-    let home = bed.home();
-    baseline_b_as_now(&bed, &home);
-    unsubscribe(&bed, &home, "work/b");
-    testutil::write(&bed.leaf_hd.join("work/b/r/README"), "unpushed\n");
-    let d = go(&bed, &home, &bed.leaf_cfg(), true).unwrap();
-    assert!(matches!(
-        unit(&d, "work/b/r").decision,
-        Decision::Conflict { .. }
-    ));
-    let loose = loose_diff(&d, "work/b");
-    assert!(
-        !loose
-            .iter()
-            .any(|c| c[2..] == *"r" || c[2..].starts_with("r/")),
-        "the loose removal would delete the repo: {loose:?}"
-    );
-    assert!(loose.iter().any(|c| c == "- notes.txt"), "{loose:?}");
-}
-
-#[test]
-fn an_explicit_unsubscribe_with_unpushed_leaf_work_is_a_conflict() {
-    let bed = two_subs();
-    let home = bed.home();
-    baseline_b_as_now(&bed, &home);
-    unsubscribe(&bed, &home, "work/b");
-    testutil::write(&bed.leaf_hd.join("work/b/r/README"), "unpushed\n");
-    testutil::write(&bed.leaf_hd.join("work/b/new.txt"), "unpushed\n");
-    let p = status(&bed, &home);
-    for rel in ["work/b/r", "work/b"] {
-        let w = why(unit(&p, rel));
-        assert!(w.contains("(unsubscribed)"), "{w}");
-        assert!(w.contains("changed since baseline"), "{w}");
-        assert!(!w.contains("unchanged"), "{w}");
-    }
-    assert!(why(unit(&p, "work/b")).contains("; 2 files here,"));
-}
-
-#[test]
-fn a_carve_out_by_unsubscribe_is_remove_and_resubscribing_restores_it() {
-    let bed = two_subs();
-    let home = bed.home();
-    baseline_b_as_now(&bed, &home);
-    unsubscribe(&bed, &home, "work/b/r");
     assert_eq!(
-        unit(&status(&bed, &home), "work/b/r").decision,
-        Decision::Remove
+        unit(&p, "work/b/r").decision,
+        orphaned(UnservedReason::NotServed, false)
     );
-    let link = InProcess {
-        home: &home,
-        host: "leaf".into(),
-        home_dir: bed.leaf_hd.clone(),
-    };
-    link.call(HomeRequest::Subscribe {
-        paths: vec![bed.leaf_hd.join("work/b/r").display().to_string()],
-    })
-    .unwrap();
-    assert_eq!(
-        unit(&status(&bed, &home), "work/b/r").decision,
-        Decision::Nothing {
-            why: "unchanged".into()
-        }
-    );
+    assert!(!p.blocked());
 }
+
+#[path = "tests_unserved_remove.rs"]
+mod remove;
 
 #[path = "tests_unserved_edge.rs"]
 mod edge;

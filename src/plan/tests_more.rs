@@ -93,7 +93,7 @@ fn unsubscribed_baseline_is_removed_through_guard1() {
     let r = dry(&bed);
     let r = unit(&r, "work/old");
     assert!(
-        matches!(&r.decision, Decision::Conflict { why } if why.contains("(unsubscribed)")),
+        matches!(&r.decision, Decision::Conflict { why } if why.starts_with("unsubscribed but changed")),
         "{:?}",
         r.decision
     );

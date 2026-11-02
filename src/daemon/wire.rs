@@ -127,8 +127,14 @@ pub struct SubscriptionsView {
     /// In-bounds subscriptions, with their root excludes and carve-outs.
     pub specs: Vec<SubSpec>,
     pub cap: Option<Vec<String>>,
-    /// Subscriptions home will not serve: outside a cap narrowed since.
+    /// Subscriptions home will not serve because no root covers them:
+    /// home's config is broken, so the leaf blocks.
     pub refused: Vec<Refusal>,
+    /// Subscriptions home will not serve by policy: outside a cap narrowed
+    /// since, or wholly inside a root exclude. Shown, never blocking (review
+    /// F5). Absent from an older home: none.
+    #[serde(default)]
+    pub orphaned: Vec<Refusal>,
     /// For a pending host, what it asked for.
     pub pending_paths: Vec<String>,
     pub lease_secs: u64,
@@ -164,6 +170,10 @@ pub struct Unserved {
     /// the leaf hashes its copy the way the baseline was hashed.
     pub spec: SubSpec,
     pub reason: UnservedReason,
+    /// What home can say about it: for a missing root, which subscription
+    /// lost it and which roots fleet.toml has.
+    #[serde(default)]
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

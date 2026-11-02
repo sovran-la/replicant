@@ -176,8 +176,10 @@ fn cap_narrowed_after_subscribing_bounds_what_is_served() {
         v.specs.iter().map(|s| s.rel.as_str()).collect::<Vec<_>>(),
         ["work/a"]
     );
-    assert_eq!(v.refused.len(), 1);
-    assert_eq!(v.refused[0].unit, "work/b");
+    // Home's policy, not a broken config: orphaned, not refused (F5).
+    assert!(v.refused.is_empty(), "{:?}", v.refused);
+    assert_eq!(v.orphaned.len(), 1);
+    assert_eq!(v.orphaned[0].unit, "work/b");
 
     let HomeReply::State(s) = ok(call(
         &home,

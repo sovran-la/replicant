@@ -116,7 +116,7 @@ fn subscribing_inside_a_root_exclude_is_refused_up_front() {
 #[test]
 fn a_subscription_an_exclude_now_covers_is_refused_when_served() {
     // Written before the exclude existed (here: by hand), it is not served:
-    // it shows as a refusal, and its baseline as excluded, never a delete.
+    // it shows as orphaned, and so does its baseline: never a delete.
     let bed = sovran(&[".sovran/agents/state", ".sovran/agents/types"]);
     put_baseline(
         &bed,
@@ -125,20 +125,24 @@ fn a_subscription_an_exclude_now_covers_is_refused_when_served() {
         UnitState::Present("h".into()),
     );
     let p = go(&bed, &bed.home(), &bed.leaf_cfg(), false).unwrap();
-    assert_eq!(p.refused.len(), 1, "{:?}", p.refused);
-    assert_eq!(p.refused[0].unit, ".sovran/agents/state");
+    assert!(p.refused.is_empty(), "{:?}", p.refused);
+    assert_eq!(p.orphaned.len(), 1, "{:?}", p.orphaned);
+    assert_eq!(p.orphaned[0].unit, ".sovran/agents/state");
     assert!(
-        p.refused[0].detail[0].contains("inside [roots.sovran] exclude \"agents/state\""),
+        p.orphaned[0].detail[0].contains("inside [roots.sovran] exclude \"agents/state\""),
         "{:?}",
-        p.refused[0]
+        p.orphaned[0]
     );
-    assert!(p.blocked());
-    let r = unit(&p, ".sovran/agents/state/r");
-    assert_ne!(r.decision, Decision::Remove);
     assert!(
-        r.decision.label().contains("excluded by its root"),
-        "{:?}",
-        r.decision
+        !p.blocked(),
+        "home's policy, not a broken config: an orphan"
+    );
+    assert_eq!(
+        unit(&p, ".sovran/agents/state/r").decision,
+        Decision::Orphaned {
+            reason: crate::decide::UnservedReason::Excluded,
+            changed: true
+        }
     );
     assert!(p.units.iter().any(|u| u.rel == ".sovran/agents/types"));
 }

@@ -26,9 +26,13 @@
 //! And, for a baseline home no longer serves (review F5, [`decide_unserved`]):
 //!
 //! ```text
-//! unsubscribed baseline → remove from the leaf, only if the host explicitly
-//!                         unsubscribed it AND leaf == baseline.leaf (and no
-//!                         marker covers it); otherwise conflict
+//! marker over it            → conflict naming the interrupted sync (blocking)
+//! unsubscribed, leaf same    → remove from the leaf
+//! unsubscribed, leaf changed → conflict: push first, or unsubscribe --force
+//! root missing on home       → home root missing (blocking: fix fleet.toml)
+//! cap narrowed, excluded,
+//!   or not served            → orphaned: never deleted, never blocking;
+//!                              red when the leaf changed since baseline
 //! ```
 //!
 //! Plus three rows the plan implies but does not tabulate:
@@ -46,6 +50,9 @@ use crate::baseline::Baseline;
 use crate::marker::{Direction, Marker};
 use crate::state::UnitState;
 use serde::{Deserialize, Serialize};
+
+mod unserved;
+pub use unserved::{UnservedInputs, UnservedReason, decide_unserved, files_here};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "decision")]
@@ -78,6 +85,21 @@ pub enum Decision {
     DeletedOn {
         host: String,
     },
+    /// Home no longer serves this path, for a reason that is home's policy
+    /// rather than this host's choice (a cap narrowed, an exclude added, a
+    /// path dropped from fleet.toml), and nothing is marked over it. Never
+    /// moves data and never blocks; `changed` means the leaf holds work
+    /// since baseline that home will not accept (rendered red).
+    Orphaned {
+        reason: UnservedReason,
+        #[serde(default)]
+        changed: bool,
+    },
+    /// Home's fleet.toml has no root for this path: almost always a broken
+    /// config on home, not a decision. Blocking.
+    HomeRootMissing {
+        why: String,
+    },
 }
 
 impl Decision {
@@ -96,7 +118,10 @@ impl Decision {
     pub fn is_blocking(&self) -> bool {
         matches!(
             self,
-            Decision::Conflict { .. } | Decision::Quarantined { .. } | Decision::DeletedOn { .. }
+            Decision::Conflict { .. }
+                | Decision::Quarantined { .. }
+                | Decision::DeletedOn { .. }
+                | Decision::HomeRootMissing { .. }
         )
     }
 
@@ -110,6 +135,15 @@ impl Decision {
             Decision::Quarantined { by, .. } => format!("quarantined (dead push by {by})"),
             Decision::Remove => "remove (unsubscribed)".into(),
             Decision::DeletedOn { host } => format!("deleted on {host}"),
+            Decision::Orphaned {
+                reason,
+                changed: false,
+            } => format!("orphaned ({reason})"),
+            Decision::Orphaned {
+                reason,
+                changed: true,
+            } => format!("orphaned, changed ({reason})"),
+            Decision::HomeRootMissing { .. } => "home root missing".into(),
         }
     }
 }
@@ -186,83 +220,6 @@ pub fn decide(i: Inputs<'_>) -> Decision {
         (true, true) => Decision::Conflict {
             why: "both changed since baseline".into(),
         },
-    }
-}
-
-/// Why home no longer serves a path a leaf holds a baseline for. Home says;
-/// a leaf that is not told assumes [`UnservedReason::NotServed`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UnservedReason {
-    /// The host ran `unsubscribe` on it: a removed subscription or a
-    /// carve-out. The only reason that can become [`Decision::Remove`].
-    Unsubscribed,
-    /// Its subscription is outside the host's cap, narrowed since.
-    CapNarrowed,
-    /// Its subscription is under no root fleet.toml configures: a root
-    /// removed, renamed or mistyped.
-    RootMissing,
-    /// Its subscription lies wholly inside one of its root's excludes
-    /// (review P3): an exclude added since.
-    Excluded,
-    /// None of the above: never subscribed as far as home knows, or dropped
-    /// from `paths` by a hand edit.
-    NotServed,
-}
-
-impl std::fmt::Display for UnservedReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            UnservedReason::Unsubscribed => "unsubscribed",
-            UnservedReason::CapNarrowed => "cap narrowed",
-            UnservedReason::RootMissing => "no root serves it",
-            UnservedReason::Excluded => "excluded by its root",
-            UnservedReason::NotServed => "not subscribed",
-        })
-    }
-}
-
-/// What a baseline home no longer serves is decided on.
-#[derive(Debug, Clone, Copy)]
-pub struct UnservedInputs<'a> {
-    pub rel: &'a str,
-    pub reason: UnservedReason,
-    /// The leaf's state of the unit now.
-    pub leaf: &'a UnitState,
-    pub baseline: &'a Baseline,
-    /// Files the leaf holds in the unit now.
-    pub files: u64,
-    /// A marker on either side covering the unit.
-    pub marker: Option<&'a Marker>,
-}
-
-/// PLAN's last row (review F5): `Remove` only when the host explicitly
-/// unsubscribed the path, the leaf is unchanged since baseline, and no
-/// interrupted sync is marked over it. Anything else is a blocking conflict,
-/// never a delete: a cap narrowed or a root mistyped is not an unsubscribe,
-/// and deleting unpushed loose work is exactly what guardrail 1 cannot see.
-pub fn decide_unserved(i: UnservedInputs<'_>) -> Decision {
-    let changed = *i.leaf != i.baseline.leaf;
-    if i.reason == UnservedReason::Unsubscribed && !changed && i.marker.is_none() {
-        return Decision::Remove;
-    }
-    let files = if i.files == 1 { "file" } else { "files" };
-    let since = if changed { "changed" } else { "unchanged" };
-    let marked = i
-        .marker
-        .map(|m| {
-            format!(
-                "; an interrupted {} by {} is marked here",
-                m.direction, m.host
-            )
-        })
-        .unwrap_or_default();
-    Decision::Conflict {
-        why: format!(
-            "home no longer serves {} ({}); {} {files} here, {since} since baseline{marked}; \
-             re-subscribe, or unsubscribe to remove",
-            i.rel, i.reason, i.files
-        ),
     }
 }
 

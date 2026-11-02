@@ -92,5 +92,11 @@ fn a_baseline_an_older_home_says_nothing_about_is_not_served() {
         scratch_dir: &scratch,
     };
     let p = plan(&link, ctx, false, false).unwrap();
-    assert!(why(unit(&p, "work/b/r")).contains("(not subscribed)"));
+    assert_eq!(
+        unit(&p, "work/b/r").decision,
+        Decision::Orphaned {
+            reason: UnservedReason::NotServed,
+            changed: false
+        }
+    );
 }
