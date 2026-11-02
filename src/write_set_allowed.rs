@@ -2,26 +2,8 @@
 //! with the part of the write set it is.
 
 /// (file, pattern, count, why).
+/// Processes, and every way into rsync, are in `write_set_spawns.rs`.
 pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
-    // Processes.
-    (
-        "rsync/child.rs",
-        "Command::new(",
-        1,
-        "rsync: the only writer of synced paths",
-    ),
-    (
-        "rsync/client.rs",
-        "Command::new(",
-        1,
-        "rsync --version: reads nothing",
-    ),
-    (
-        "git.rs",
-        "Command::new(",
-        1,
-        "git, read-only (no optional locks)",
-    ),
     // Records under state/: baselines, markers, contacts.
     ("record.rs", "write_atomic(", 1, "Store::put: state dir"),
     ("record.rs", "remove_file(", 1, "Store::delete: state dir"),
