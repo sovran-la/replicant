@@ -1,5 +1,5 @@
-//! The fleet view (`status --fleet`, and `status` on home), the queue, and
-//! the journal.
+//! The fleet view (`status --fleet`, and `status` on home), the queue, the
+//! journal, and `host revoke`.
 
 use super::Style;
 use crate::daemon::fleet::FleetState;
@@ -111,6 +111,23 @@ pub fn fleet(f: &FleetState, st: Style) -> String {
         );
     }
     s.push_str(&queue(&f.queue));
+    s
+}
+
+pub fn revoked(r: &crate::daemon::wire::Revoked) -> String {
+    let mut s = match &r.cert {
+        Some(c) => format!("Revoked {}'s certificate ({c}).\n", r.host),
+        None => format!("{} had no certificate pinned.\n", r.host),
+    };
+    if r.uncollected {
+        let _ = writeln!(s, "Dropped the certificate waiting for it, uncollected.");
+    }
+    let _ = writeln!(
+        s,
+        "Its requests are refused; `replicant approve {}` issues a new certificate. Its \
+         enrollment and subscriptions are unchanged.",
+        r.host
+    );
     s
 }
 

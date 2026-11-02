@@ -6,7 +6,7 @@ pub mod approve;
 mod args;
 pub mod render;
 
-pub use args::{Cli, Cmd, ConfigCmd};
+pub use args::{Cli, Cmd, ConfigCmd, HostCmd};
 
 use crate::config::Dirs;
 use crate::daemon::journal::Filter;
@@ -173,8 +173,17 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
                     "export-creds runs on home (the machine with fleet.toml)".into(),
                 ));
             }
-            certs::ensure(&dirs.ca_key(), &dirs.ca_cert(), &dirs.credentials())?;
+            certs::ensure(&certs::Paths::of(dirs))?;
             print!("{}", certs::read_pem(&dirs.credentials())?);
+            Ok(0)
+        }
+        Cmd::Host {
+            cmd: HostCmd::Revoke { host },
+        } => {
+            let LocalReply::Revoked(r) = call(LocalRequest::Revoke { host })? else {
+                return unexpected();
+            };
+            print!("{}", render::revoked(&r));
             Ok(0)
         }
         Cmd::Config {
@@ -249,6 +258,12 @@ mod tests {
                 ..
             }
         ));
+        let c = Cli::try_parse_from(["replicant", "host", "revoke", "birchbook"]).unwrap();
+        assert!(matches!(
+            c.cmd,
+            Cmd::Host { cmd: HostCmd::Revoke { ref host } } if host == "birchbook"
+        ));
+        assert!(Cli::try_parse_from(["replicant", "host", "revoke"]).is_err());
         let c = Cli::try_parse_from(["replicant", "status", "--fleet"]).unwrap();
         assert!(matches!(c.cmd, Cmd::Status { fleet: true, .. }));
         assert!(Cli::try_parse_from(["replicant", "log", "--since", "2h", "--host", "x"]).is_ok());

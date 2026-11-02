@@ -11,7 +11,7 @@ use std::fmt::Write;
 #[path = "render_fleet.rs"]
 mod fleet_view;
 use fleet_view::queue;
-pub use fleet_view::{fleet, log};
+pub use fleet_view::{fleet, log, revoked};
 
 /// How many diff lines a unit shows without `--verbose`.
 pub const DIFF_PREVIEW: usize = 12;

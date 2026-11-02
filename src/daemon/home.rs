@@ -25,11 +25,21 @@ pub struct Home {
     pub queue: Queue,
     pub journal: Journal,
     contacts: Store,
+    /// The bootstrap bundle's fingerprint (`None` only if it vanished
+    /// between [`Home::open`]'s generate and read).
+    bootstrap: Option<String>,
+    /// The certificate pins of the last fleet.toml that parsed.
+    pins: trust::Pins,
 }
 
 impl Home {
+    /// Open home, generating its CA, server identity and bootstrap bundle
+    /// on a first start.
     pub fn open(dirs: Dirs) -> Result<Self> {
+        super::certs::ensure(&super::certs::Paths::of(&dirs))?;
         Ok(Self {
+            bootstrap: super::certs::bootstrap_fingerprint(&dirs.credentials())?,
+            pins: Default::default(),
             journal: Journal::at(dirs.journal()),
             contacts: fleet::contacts(&dirs.state()),
             fleet: cache::FleetCache::open(dirs.fleet())?,
@@ -59,17 +69,34 @@ impl Home {
         }
     }
 
-    /// Handle one leaf request from a caller that is always connected.
+    /// Handle one request in-process, as the host it names, from a caller
+    /// that is always connected. Tests only: nothing in-process is a leaf.
+    #[cfg(test)]
     pub fn handle(&self, call: HomeCall) -> HomeAnswer {
-        self.handle_from(call, &|| true)
+        self.answer(call, &Caller::Trusted, &|| true)
     }
 
-    /// Handle one leaf request. `connected` says whether the leaf is still on
-    /// the line; a queue wait refreshes its lease only while it is.
-    pub fn handle_from(&self, call: HomeCall, connected: &dyn Fn() -> bool) -> HomeAnswer {
+    /// Handle one leaf request from the TLS peer whose certificate has
+    /// fingerprint `peer`. `connected` says whether the leaf is still on the
+    /// line; a queue wait refreshes its lease only while it is.
+    pub fn handle_from(
+        &self,
+        call: HomeCall,
+        peer: &str,
+        connected: &dyn Fn() -> bool,
+    ) -> HomeAnswer {
+        self.answer(call, &Caller::Cert(peer.into()), connected)
+    }
+
+    pub(super) fn answer(
+        &self,
+        call: HomeCall,
+        caller: &Caller,
+        connected: &dyn Fn() -> bool,
+    ) -> HomeAnswer {
         let mut journal = Vec::new();
         let result = self
-            .dispatch(call, connected, &mut journal)
+            .dispatch(call, caller, connected, &mut journal)
             .map_err(|e| e.to_string());
         HomeAnswer { result, journal }
     }
@@ -77,6 +104,7 @@ impl Home {
     fn dispatch(
         &self,
         call: HomeCall,
+        caller: &Caller,
         connected: &dyn Fn() -> bool,
         j: &mut Vec<String>,
     ) -> Result<HomeReply> {
@@ -86,17 +114,21 @@ impl Home {
                 call.version
             )));
         }
-        let host = short_hostname(&call.host)
+        let claimed = short_hostname(&call.host)
             .filter(|h| *h == call.host)
             .ok_or_else(|| Error::Refused(format!("{:?} is not a valid host name", call.host)))?;
         if !call.home_dir.is_absolute() {
             return Err(Error::Refused("home_dir must be absolute".into()));
         }
+        let Admitted { host, bootstrap } = self.admit(caller, &claimed, &call.request, j)?;
         fleet::touch(&self.contacts, &host, None)?;
         let file = self.dirs.fleet();
         match call.request {
             HomeRequest::Subscribe { paths } => {
                 let mut f = self.fleet()?;
+                if bootstrap {
+                    self.bootstrap_may_subscribe(&f, &host)?;
+                }
                 let out = subscribe::subscribe(&f, &file, &host, &call.home_dir, &paths)?;
                 self.reload(&mut f)?;
                 let (event, detail) = if out.enrolled {
@@ -158,10 +190,12 @@ impl Home {
             // a broken fleet.toml must not abort syncs in flight (review P5).
             // Everything that reads policy fails closed.
             HomeRequest::Heartbeat { lease } => {
+                self.holds(lease, &host)?;
                 self.queue.heartbeat(lease)?;
                 Ok(HomeReply::Done)
             }
             HomeRequest::Release { lease } => {
+                self.holds(lease, &host)?;
                 self.queue.release(lease)?;
                 Ok(HomeReply::Done)
             }
@@ -192,6 +226,13 @@ impl Home {
                 Ok(HomeReply::Done)
             }
             HomeRequest::FleetState => Ok(HomeReply::Fleet(self.fleet_state()?)),
+            HomeRequest::CollectCert if bootstrap => {
+                Ok(HomeReply::Collected(self.collect(&host, j)?))
+            }
+            HomeRequest::CollectCert => Err(Error::Refused(format!(
+                "{host} already has its own certificate; a reissued one is collected over the \
+                 bootstrap bundle"
+            ))),
         }
     }
 
@@ -213,23 +254,6 @@ impl Home {
 
     pub fn preview_allow(&self, host: &str, raw: &[String]) -> Result<AllowPreview> {
         subscribe::preview_allow(&*self.fleet()?, host, raw)
-    }
-
-    pub fn approve(&self, host: &str, raw: &[String]) -> Result<Approved> {
-        let mut f = self.fleet()?;
-        let out = subscribe::approve(&f, &self.dirs.fleet(), host, raw)?;
-        self.reload(&mut f)?;
-        let allow = out
-            .allow
-            .as_ref()
-            .map(|a| a.join(" "))
-            .unwrap_or_else(|| "(none)".into());
-        let mut ignore = Vec::new();
-        self.journal(
-            &mut ignore,
-            Line::new("approve", host, "", format!("allow:{allow}")),
-        );
-        Ok(out)
     }
 
     pub fn log(&self, filter: &Filter) -> Result<Vec<Line>> {
@@ -254,6 +278,14 @@ impl Home {
 
 #[path = "home_fleet.rs"]
 mod cache;
+
+#[path = "home_trust.rs"]
+mod trust;
+
+#[path = "home_enroll.rs"]
+mod enroll;
+use trust::Admitted;
+pub use trust::{BOOTSTRAP_ONLY, Caller, UNKNOWN_CERT};
 
 #[path = "home_serve.rs"]
 mod serve;

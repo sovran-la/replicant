@@ -1,11 +1,15 @@
-//! One bundle in, a rustls server and client configuration out. The agents
+//! One bundle in, a rustls server or client configuration out. The agents
 //! crate's `remote/tls.rs`, trimmed.
 //!
-//! - The **server** presents the leaf certificate and demands a client
-//!   certificate signed by the bundle's CA. No `allow_unauthenticated`: a peer
-//!   without one is refused in the handshake and never reaches a handler.
-//! - The **client** presents the same leaf and trusts only that CA. No webpki
-//!   roots: trusting them would let any public CA impersonate home.
+//! - The **server** (home, with `server.pem`) presents its certificate and
+//!   demands a client certificate signed by the bundle's CA. No
+//!   `allow_unauthenticated`: a peer without one is refused in the handshake
+//!   and never reaches a handler. *Which* client it is, home decides after the
+//!   handshake by fingerprint ([`super::home`]).
+//! - The **client** (a leaf, with `host.pem` or the bootstrap `home.pem`)
+//!   presents its certificate and trusts only that CA, and only a certificate
+//!   no client could also present ([`verify`]). No webpki roots: trusting
+//!   them would let any public CA impersonate home.
 //!
 //! The bundle is leaf, key, CA, and the parser checks that shape: exactly two
 //! certificates (the last is the CA) and one key, or a refusal naming what is
@@ -13,8 +17,8 @@
 
 use super::certs;
 use crate::{Error, Result};
+use rustls::client::WebPkiServerVerifier;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -56,11 +60,13 @@ impl Identity {
         Ok(roots)
     }
 
+    /// `sha256:<hex>` of this identity's certificate: what fleet.toml pins.
+    pub fn fingerprint(&self) -> String {
+        certs::fingerprint(&self.chain[0])
+    }
+
     pub fn server_config(&self) -> Result<Arc<ServerConfig>> {
-        let verifier =
-            WebPkiClientVerifier::builder_with_provider(Arc::new(self.roots()?), provider())
-                .build()
-                .map_err(|e| Error::Tls(format!("could not build the client verifier: {e}")))?;
+        let verifier = verify::client_verifier(self.roots()?, provider())?;
         let cfg = ServerConfig::builder_with_provider(provider())
             .with_safe_default_protocol_versions()
             .map_err(|e| Error::Tls(e.to_string()))?
@@ -71,15 +77,25 @@ impl Identity {
     }
 
     pub fn client_config(&self) -> Result<Arc<ClientConfig>> {
+        let server =
+            WebPkiServerVerifier::builder_with_provider(Arc::new(self.roots()?), provider())
+                .build()
+                .map_err(|e| Error::Tls(format!("could not build the server verifier: {e}")))?;
+        let client = verify::client_verifier(self.roots()?, provider())?;
         let cfg = ClientConfig::builder_with_provider(provider())
             .with_safe_default_protocol_versions()
             .map_err(|e| Error::Tls(e.to_string()))?
-            .with_root_certificates(self.roots()?)
+            .dangerous()
+            .with_custom_certificate_verifier(verify::HomeVerifier::new(server, client))
             .with_client_auth_cert(self.chain.clone(), self.key.clone_key())
             .map_err(|e| Error::Tls(format!("rustls refused the identity: {e}")))?;
         Ok(Arc::new(cfg))
     }
 }
+
+#[path = "tls_verify.rs"]
+mod verify;
+pub use verify::DUAL_USE;
 
 pub fn parse(pem: &str, path: &Path) -> Result<Identity> {
     let refuse =
@@ -110,19 +126,22 @@ mod tests {
     use super::*;
 
     fn bundle(dir: &Path) -> PathBuf {
-        let b = dir.join("credentials.pem");
-        certs::ensure(&dir.join("ca.key"), &dir.join("ca.pem"), &b).unwrap();
-        b
+        let p = certs::Paths::of(&crate::config::Dirs::at(dir.to_path_buf()));
+        certs::ensure(&p).unwrap();
+        p.bootstrap
     }
 
     #[test]
-    fn generated_bundle_parses_into_both_configs() {
+    fn generated_bundles_parse_into_their_configs() {
         let tmp = tempfile::tempdir().unwrap();
         let id = Identity::load(&bundle(tmp.path())).unwrap();
         assert_eq!(id.chain.len(), 1);
-        id.server_config().unwrap();
         id.client_config().unwrap();
+        let server = Identity::load(&tmp.path().join("server.pem")).unwrap();
+        server.server_config().unwrap();
         assert!(!format!("{id:?}").contains("PRIVATE"), "key redacted");
+        assert_eq!(id.fingerprint(), certs::fingerprint(&id.chain[0]));
+        assert_ne!(id.fingerprint(), server.fingerprint());
     }
 
     #[test]

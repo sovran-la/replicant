@@ -61,7 +61,7 @@ fn a_leaf_that_hangs_up_while_waiting_is_expired_and_never_reaches_the_head() {
     )
     .unwrap();
     let home = Daemon::start(bed.home_dirs.clone()).unwrap();
-    let id = Identity::load(&bed.home_dirs.credentials()).unwrap();
+    let id = Identity::load(&super::test_certs::leaf_identity(&bed, "leaf")).unwrap();
     let leaf = Arc::new(Leaf {
         dialer: Dialer::new(&id, Duration::from_secs(5)).unwrap(),
         addr: home.tcp_addr().unwrap().to_string(),

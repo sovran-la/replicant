@@ -40,8 +40,16 @@ pub fn preview_allow(fleet: &Fleet, host: &str, raw: &[String]) -> Result<AllowP
     })
 }
 
-/// Approve a pending host with a cap (empty = none). Never starts a sync.
-pub fn approve(fleet: &Fleet, file: &Path, host: &str, raw_allow: &[String]) -> Result<Approved> {
+/// Approve a pending host with a cap (empty = none), pinning `cert` (the
+/// fingerprint of the client certificate home minted for it) in the same
+/// write. Never starts a sync.
+pub fn approve(
+    fleet: &Fleet,
+    file: &Path,
+    host: &str,
+    raw_allow: &[String],
+    cert: &str,
+) -> Result<Approved> {
     let preview = preview_allow(fleet, host, raw_allow)?;
     let p = &fleet.pending[host];
     edit::approve(
@@ -50,6 +58,7 @@ pub fn approve(fleet: &Fleet, file: &Path, host: &str, raw_allow: &[String]) -> 
         &HostEntry {
             home_dir: p.home_dir.clone(),
             allow: preview.allow.clone(),
+            cert: Some(cert.into()),
         },
         &Subscription {
             paths: preview.keep.clone(),
@@ -61,5 +70,6 @@ pub fn approve(fleet: &Fleet, file: &Path, host: &str, raw_allow: &[String]) -> 
         allow: preview.allow,
         subscribed: preview.keep,
         dropped: preview.drop,
+        cert: cert.into(),
     })
 }

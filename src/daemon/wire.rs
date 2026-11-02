@@ -5,17 +5,17 @@
 //! does not know rather than guessing at it, as the agents crate does: a
 //! half-understood subscription request is worse than a refused one.
 
-use super::fleet::{FleetState, PendingView};
-use super::journal::{Filter, Line};
+use super::fleet::FleetState;
 use crate::decide::{Decision, UnservedReason};
 use crate::guard::Refusal;
 use crate::marker::Marker;
-use crate::plan::{LeafStatus, Plan};
 use crate::units::{SideUnit, SubSpec};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const WIRE_VERSION: u32 = 1;
+/// 2: per-host certificates. Home derives the caller from its certificate,
+/// and a leaf collects its own with [`HomeRequest::CollectCert`].
+pub const WIRE_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------- leaf → home
 
@@ -23,7 +23,10 @@ pub const WIRE_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HomeCall {
     pub version: u32,
-    /// The leaf's fleet name. Self-asserted: see [`super::certs`].
+    /// The leaf's fleet name. Never trusted for identity: home derives the
+    /// host from the peer certificate and refuses a request that names
+    /// another. Over the bootstrap bundle it names the host asking to be
+    /// enrolled, or collecting its certificate.
     pub host: String,
     /// The leaf's `$HOME`, for path normalization and pending enrollment.
     pub home_dir: PathBuf,
@@ -66,6 +69,10 @@ pub enum HomeRequest {
         summary: String,
     },
     FleetState,
+    /// Over the bootstrap bundle: the certificate `approve` issued this
+    /// host, if one is waiting. One-shot: home deletes its copy as it
+    /// answers.
+    CollectCert,
 }
 
 /// Home's answer, plus any journal lines it wrote about the caller so the
@@ -87,6 +94,20 @@ pub enum HomeReply {
     Done,
     State(HomeSnapshot),
     Fleet(FleetState),
+    Collected(Collected),
+}
+
+/// What [`HomeRequest::CollectCert`] found for the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Collected {
+    /// The host's identity bundle (certificate, key, CA). Home no longer
+    /// has a copy.
+    Issued { bundle: String },
+    /// Waiting for `replicant approve` on home.
+    Pending { home: String, paths: Vec<String> },
+    /// Home has no record of the host: it has not subscribed.
+    Unknown { home: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,78 +205,6 @@ pub struct ReportedUnit {
 
 // ---------------------------------------------------------------- CLI → daemon
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalCall {
-    pub version: u32,
-    pub request: LocalRequest,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum LocalRequest {
-    Ping,
-    Subscribe {
-        home: String,
-        address: Option<String>,
-        rsync_host: Option<String>,
-        credentials: Option<String>,
-        paths: Vec<String>,
-        as_local: Option<PathBuf>,
-    },
-    Unsubscribe {
-        paths: Vec<String>,
-    },
-    Status,
-    Fleet,
-    DryRun {
-        no_wait: bool,
-    },
-    Log {
-        filter: Filter,
-    },
-    Pending,
-    PreviewAllow {
-        host: String,
-        raw: Vec<String>,
-    },
-    Approve {
-        host: String,
-        allow: Vec<String>,
-    },
-}
-
-pub type LocalAnswer = Result<LocalReply, String>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "reply", rename_all = "snake_case")]
-pub enum LocalReply {
-    Pong { role: String, name: String },
-    Subscribed(SubscribeOutcome),
-    Unsubscribed(UnsubscribeOutcome),
-    LeafStatus(Box<LeafStatus>),
-    Fleet(FleetState),
-    Plan(Box<Plan>),
-    Log { lines: Vec<Line> },
-    Pending { hosts: Vec<PendingView> },
-    AllowPreview(AllowPreview),
-    Approved(Approved),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AllowPreview {
-    pub host: String,
-    /// The normalized cap, or `None` for no cap.
-    pub allow: Option<Vec<String>>,
-    /// Requested paths the cap admits.
-    pub keep: Vec<String>,
-    /// Requested paths the cap refuses; approving drops them.
-    pub drop: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Approved {
-    pub host: String,
-    pub allow: Option<Vec<String>>,
-    pub subscribed: Vec<String>,
-    pub dropped: Vec<String>,
-}
+#[path = "wire_local.rs"]
+mod local;
+pub use local::*;

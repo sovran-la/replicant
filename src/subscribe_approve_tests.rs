@@ -35,6 +35,7 @@ fn pending_host_flow_preview_then_approve_with_cap() {
         &p,
         "newbox",
         &s(&["/Users/morgan/work/sequoia ~/work/tundra"]),
+        PIN,
     )
     .unwrap();
     assert_eq!(ok.dropped, s(&["work/rust"]));
@@ -58,7 +59,7 @@ fn pending_host_flow_preview_then_approve_with_cap() {
 fn approve_with_empty_allow_means_no_cap() {
     let (_t, p) = fixture();
     subscribe(&load(&p), &p, "open", Path::new(MAC), &s(&["~/work"])).unwrap();
-    let ok = approve(&load(&p), &p, "open", &s(&[""])).unwrap();
+    let ok = approve(&load(&p), &p, "open", &s(&[""]), PIN).unwrap();
     assert_eq!(ok.allow, None);
     assert_eq!(load(&p).hosts["open"].allow, None);
     assert_eq!(load(&p).subscription("open").paths, s(&["work"]));
@@ -68,7 +69,7 @@ fn approve_with_empty_allow_means_no_cap() {
 fn approve_or_preview_of_a_non_pending_host_is_refused() {
     let (_t, p) = fixture();
     assert!(preview_allow(&load(&p), "birchbook", &[]).is_err());
-    assert!(approve(&load(&p), &p, "ghost", &[]).is_err());
+    assert!(approve(&load(&p), &p, "ghost", &[], PIN).is_err());
 }
 
 #[test]
@@ -76,7 +77,7 @@ fn bad_allow_is_refused_before_anything_is_written() {
     let (_t, p) = fixture();
     subscribe(&load(&p), &p, "newbox", Path::new(MAC), &s(&["~/work"])).unwrap();
     let before = std::fs::read_to_string(&p).unwrap();
-    assert!(approve(&load(&p), &p, "newbox", &s(&["~/work/../etc"])).is_err());
+    assert!(approve(&load(&p), &p, "newbox", &s(&["~/work/../etc"]), PIN).is_err());
     assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
 }
 
@@ -92,7 +93,7 @@ fn approve_is_one_write_a_failing_step_leaves_the_file_untouched() {
         std::fs::read_to_string(&p).unwrap()
     );
     std::fs::write(&p, &broken).unwrap();
-    assert!(approve(&f, &p, "newbox", &s(&[""])).is_err());
+    assert!(approve(&f, &p, "newbox", &s(&[""]), PIN).is_err());
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
         broken,
@@ -104,9 +105,15 @@ fn approve_is_one_write_a_failing_step_leaves_the_file_untouched() {
 fn approve_writes_host_subscription_and_clears_pending_together() {
     let (_t, p) = fixture();
     subscribe(&load(&p), &p, "newbox", Path::new(MAC), &s(&["~/work"])).unwrap();
-    approve(&load(&p), &p, "newbox", &s(&["~/work"])).unwrap();
+    approve(&load(&p), &p, "newbox", &s(&["~/work"]), PIN).unwrap();
     let text = std::fs::read_to_string(&p).unwrap();
     assert!(text.contains("[hosts.newbox]"), "{text}");
+    assert_eq!(
+        load(&p).hosts["newbox"].cert.as_deref(),
+        Some(PIN),
+        "pinned"
+    );
+    assert_eq!(load(&p).host_for_cert(PIN), Some("newbox"));
     assert!(text.contains("[subscriptions.newbox]"), "{text}");
     assert!(!text.contains("[pending"), "{text}");
     assert!(text.contains("[hosts.twinoaks]"), "others kept: {text}");

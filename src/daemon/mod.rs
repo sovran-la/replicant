@@ -77,7 +77,6 @@ impl Daemon {
     pub fn start(dirs: Dirs) -> Result<Self> {
         let lock = lock(&dirs)?;
         let role = if dirs.is_home() {
-            certs::ensure(&dirs.ca_key(), &dirs.ca_cert(), &dirs.credentials())?;
             Role::Home(Arc::new(home::Home::open(dirs.clone())?))
         } else {
             Role::Leaf(Arc::new(leaf::Leaf::open(dirs.clone())))
@@ -94,7 +93,7 @@ impl Daemon {
                             .into(),
                     )
                 })?;
-                let identity = tls::Identity::load(&dirs.credentials())?;
+                let identity = tls::Identity::load(&dirs.server_identity())?;
                 let l = Arc::new(remote::MtlsListener::bind(
                     &crate::config::with_port(&listen),
                     &identity,
@@ -175,9 +174,22 @@ fn spawn_tcp(
                     Ok(s) => s,
                     Err(e) => return eprintln!("replicant: refused a connection: {e}"),
                 };
-                let answer = match remote::recv::<_, wire::HomeCall>(&mut s) {
-                    Ok(call) => home.handle_from(call, &|| remote::connected(&s.sock)),
-                    Err(e) => wire::HomeAnswer {
+                // Mandatory client auth: a finished handshake has a peer
+                // certificate, and home decides who it is by its fingerprint.
+                let peer = s
+                    .conn
+                    .peer_certificates()
+                    .and_then(|c| c.first())
+                    .map(|c| certs::fingerprint(c));
+                let answer = match (remote::recv::<_, wire::HomeCall>(&mut s), peer) {
+                    (Ok(call), Some(peer)) => {
+                        home.handle_from(call, &peer, &|| remote::connected(&s.sock))
+                    }
+                    (Ok(_), None) => wire::HomeAnswer {
+                        result: Err("no client certificate".into()),
+                        journal: vec![],
+                    },
+                    (Err(e), _) => wire::HomeAnswer {
                         result: Err(e.to_string()),
                         journal: vec![],
                     },
@@ -225,6 +237,8 @@ fn home_local(h: &home::Home, req: LocalRequest) -> Result<LocalReply> {
         LocalRequest::Approve { host, allow } => {
             Ok(LocalReply::Approved(h.approve(&host, &allow)?))
         }
+        LocalRequest::Reissue { host } => Ok(LocalReply::Reissued(h.reissue(&host)?)),
+        LocalRequest::Revoke { host } => Ok(LocalReply::Revoked(h.revoke(&host)?)),
         LocalRequest::Subscribe { .. }
         | LocalRequest::Unsubscribe { .. }
         | LocalRequest::DryRun { .. } => Err(Error::Refused(
@@ -240,3 +254,15 @@ mod tests;
 #[cfg(test)]
 #[path = "daemon_queue_tests.rs"]
 mod queue_wire_tests;
+
+#[cfg(test)]
+#[path = "daemon_trust_tests.rs"]
+mod trust_tests;
+
+#[cfg(test)]
+#[path = "daemon_identity_tests.rs"]
+mod identity_tests;
+
+#[cfg(test)]
+#[path = "test_certs.rs"]
+pub(crate) mod test_certs;

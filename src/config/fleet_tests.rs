@@ -140,3 +140,52 @@ fn lease_is_at_least_one_second() {
     let f = parse("[daemon]\nname=\"h\"\nhome_dir=\"/h\"\nlease_secs=0\n").unwrap();
     assert_eq!(f.lease, Duration::from_secs(1));
 }
+
+const PIN_A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PIN_B: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn with_hosts(hosts: &str) -> Result<Fleet> {
+    parse(&format!("[daemon]\nname=\"h\"\nhome_dir=\"/h\"\n{hosts}"))
+}
+
+#[test]
+fn a_pinned_cert_names_its_host_and_an_unpinned_host_has_none() {
+    let f = with_hosts(&format!(
+        "[hosts.a]\nhome_dir=\"/u\"\ncert=\"{PIN_A}\"\n[hosts.b]\nhome_dir=\"/u\"\ncert=\"{PIN_B}\"\n\
+         [hosts.c]\nhome_dir=\"/u\"\n"
+    ))
+    .unwrap();
+    assert_eq!(f.host_for_cert(PIN_A), Some("a"));
+    assert_eq!(f.host_for_cert(PIN_B), Some("b"));
+    assert_eq!(f.hosts["c"].cert, None);
+    assert_eq!(f.host_for_cert(&PIN_A.replace('a', "b")), None);
+    assert_eq!(f.host_for_cert(""), None, "no pin matches nothing");
+}
+
+#[test]
+fn malformed_pins_are_refused() {
+    for bad in [
+        "aaaa",
+        "sha256:",
+        "sha1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sha256:gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+    ] {
+        let err = with_hosts(&format!("[hosts.a]\nhome_dir=\"/u\"\ncert=\"{bad}\"\n"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[hosts.a] cert"), "{bad}: {err}");
+    }
+}
+
+#[test]
+fn one_cert_pinned_for_two_hosts_is_refused() {
+    let err = with_hosts(&format!(
+        "[hosts.a]\nhome_dir=\"/u\"\ncert=\"{PIN_A}\"\n[hosts.b]\nhome_dir=\"/u\"\ncert=\"{PIN_A}\"\n"
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("same cert"), "{err}");
+}
