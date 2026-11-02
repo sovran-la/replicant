@@ -19,7 +19,8 @@ use std::path::PathBuf;
 /// 2: per-host certificates. Home derives the caller from its certificate,
 /// and a leaf collects its own with [`HomeRequest::CollectCert`].
 /// 3: apply ([`HomeRequest::BeginPush`] and the rest of `sync`'s writes).
-/// 4: [`HomeSnapshot::rolled_back`] (review A2), and `--accept-rollback`.
+/// 4: [`HomeSnapshot::rolled_back`] (review A2), and `--accept-rollback`
+/// (and `rollback_accepted` on [`HomeRequest::Agree`], re-review R2).
 pub const WIRE_VERSION: u32 = 4;
 
 // ---------------------------------------------------------------- leaf → home
@@ -111,10 +112,15 @@ pub enum HomeRequest {
     },
     /// Apply: both sides agree on `rel`. Home records `baseline` as its copy
     /// for this host, or drops its copy when `None` (the unit was deleted).
+    /// Agreeing settles a rollback of this host's push of `rel`, but one
+    /// without a baseline only when `rollback_accepted` (re-review R2).
     Agree {
         lease: u64,
         rel: String,
         baseline: Option<Baseline>,
+        /// The host passed `--accept-rollback` naming `rel`.
+        #[serde(default)]
+        rollback_accepted: bool,
     },
     /// Apply: the unit is done. Home clears its marker (a push) and
     /// journals `sync <host> <rel> <detail>`.

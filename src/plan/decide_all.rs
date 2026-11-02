@@ -1,6 +1,6 @@
 //! Every unit both sides hold, decided by the direction table.
 
-use super::apply::names;
+use super::apply::accepts_rollback;
 use super::{LeafCtx, PlannedUnit};
 use crate::baseline::Baseline;
 use crate::daemon::wire::HomeSnapshot;
@@ -55,10 +55,7 @@ pub(super) fn decide_all(
                 leaf_path: &leaf_path,
                 home_path: &home_path,
                 rolled_back: snap.rolled_back.iter().find(|r| r.unit == l.rel),
-                accepted: ctx
-                    .accept_rollback
-                    .iter()
-                    .any(|e| names(e, &l.rel, &leaf_path, ctx.home_dir)),
+                accepted: accepts_rollback(ctx, &l.rel, &leaf_path),
             },
         );
         out.push(PlannedUnit {

@@ -235,6 +235,7 @@ fn transfer(
             lease,
             rel: u.rel.clone(),
             baseline: agreed.clone(),
+            rollback_accepted: crate::plan::apply::accepts_rollback(ctx, &u.rel, &u.leaf_path),
         })?,
         "agree",
     )?;

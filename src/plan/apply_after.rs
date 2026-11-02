@@ -89,6 +89,7 @@ pub(super) fn adopt(
             lease: watch.id(),
             rel: u.rel.clone(),
             baseline: b.clone(),
+            rollback_accepted: crate::plan::apply::accepts_rollback(ctx, &u.rel, &u.leaf_path),
         })?,
         "agree",
     )?;

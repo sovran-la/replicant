@@ -251,6 +251,13 @@ pub fn names(entry: &str, rel: &str, leaf_path: &Path, home_dir: &Path) -> bool 
     local.is_absolute() && local == leaf_path
 }
 
+/// Whether this sync's `--accept-rollback` names the unit `rel`.
+pub(super) fn accepts_rollback(ctx: LeafCtx<'_>, rel: &str, leaf_path: &Path) -> bool {
+    ctx.accept_rollback
+        .iter()
+        .any(|e| names(e, rel, leaf_path, ctx.home_dir))
+}
+
 fn summary(outcome: &Outcome, applied: &[AppliedUnit]) -> String {
     let files: usize = applied.iter().map(|a| a.files_changed).sum();
     let del: usize = applied.iter().map(|a| a.deleted).sum();

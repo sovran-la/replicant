@@ -101,10 +101,12 @@ impl Home {
                 lease,
                 rel,
                 baseline,
+                rollback_accepted,
             } => {
                 self.at_head(lease, host)?;
                 paths::check_rel(&rel).map_err(|why| Error::Path(format!("{rel:?}: {why}")))?;
                 let store = leaf_baselines(&self.dirs.state(), host);
+                let settles = baseline.is_some() || rollback_accepted;
                 match baseline {
                     Some(b) if b.rel != rel => Err(Error::Refused(format!(
                         "a baseline for {} sent as {rel}",
@@ -117,8 +119,12 @@ impl Home {
                     None => store.delete(&rel),
                 }?;
                 // Agreeing again settles any rollback of this host's push
-                // of the unit (review A2).
-                self.settle_rollbacks(host, &rel)?;
+                // of the unit (review A2). Agreeing that it is gone does
+                // not, unless the host accepted the rollback: home's backup
+                // may then hold the last copy of what it pushed (R2).
+                if settles {
+                    self.settle_rollbacks(host, &rel)?;
+                }
                 Ok(HomeReply::Done)
             }
             HomeRequest::Settle {

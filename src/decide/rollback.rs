@@ -8,7 +8,8 @@
 //!
 //! ```text
 //! rolled back push of mine, leaf != home:
-//!   pull, resume pull, deleted on home → conflict "home rolled back your push"
+//!   pull, resume pull, deleted on home,
+//!   remove (unsubscribed)              → conflict "home rolled back your push"
 //!   conflict                           → the same conflict, saying both
 //!   anything else (a push, nothing)    → as the table says; the leaf is not
 //!                                        written
@@ -17,8 +18,15 @@
 //! accepted (`--accept-rollback <path>`) → as the table says
 //! ```
 //!
+//! The unserved rows (`decide_unserved`) go through it too (re-review R2):
+//! a `Remove` deletes the leaf's copy on the premise that home holds what
+//! the leaf holds, which a rollback breaks.
+//!
 //! Home stops reporting it once the host and home agree on the unit again
-//! (a finished pull, an adoption, a later push): `Agree` settles it.
+//! (a finished pull, an adoption, a later push): `Agree` with a baseline
+//! settles it. An `Agree` without one (a removal, a deletion, a forget)
+//! leaves the leaf's pushed work only in home's backup, so it settles only
+//! when the host accepted the rollback for that unit.
 
 use super::Decision;
 use crate::marker::Direction;
@@ -56,9 +64,13 @@ pub fn hold_rolled_back(d: Decision, h: Held<'_>) -> Decision {
     let Some(rb) = h.rolled_back.filter(|_| !h.accepted && h.leaf != h.home) else {
         return d;
     };
+    let accepting = match d {
+        Decision::Remove => "lets the removal delete the leaf's copy",
+        _ => "takes home's copy over the leaf's",
+    };
     let why = format!(
         "home rolled back your push {} at {}; leaf {}, home {}. `sync --accept-rollback {}` \
-         takes home's copy over the leaf's",
+         {accepting}",
         rb.id,
         crate::timefmt::iso(rb.at),
         h.leaf_path.display(),
@@ -67,6 +79,7 @@ pub fn hold_rolled_back(d: Decision, h: Held<'_>) -> Decision {
     );
     match d {
         Decision::Pull
+        | Decision::Remove
         | Decision::Resume {
             direction: Direction::Pull,
         } => Decision::Conflict { why },

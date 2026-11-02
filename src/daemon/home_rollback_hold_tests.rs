@@ -238,3 +238,6 @@ fn the_sweep_keeps_an_unsettled_rollback_and_sweeps_it_once_settled() {
     assert_eq!(home.sweep_backups(later).unwrap(), 1);
     assert!(!home.push_dir(&id).exists());
 }
+
+#[path = "home_rollback_remove_tests.rs"]
+mod remove;

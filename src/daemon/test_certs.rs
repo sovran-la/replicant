@@ -144,6 +144,7 @@ pub fn apply_requests() -> Vec<HomeRequest> {
             lease: 1,
             rel: "work".into(),
             baseline: None,
+            rollback_accepted: false,
         },
         HomeRequest::Settle {
             lease: 1,

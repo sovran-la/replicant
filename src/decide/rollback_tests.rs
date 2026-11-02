@@ -68,6 +68,78 @@ fn whatever_would_write_the_leaf_is_held_as_a_blocking_conflict() {
 }
 
 #[test]
+fn an_unsubscribed_removal_is_held_until_accepted() {
+    // Re-review R2: home serves the unit no more, so its side is empty.
+    let r = rb();
+    let got = held(
+        Decision::Remove,
+        &p("pushed"),
+        &UnitState::Empty,
+        Some(&r),
+        false,
+    );
+    let Decision::Conflict { why } = &got else {
+        panic!("{got:?}");
+    };
+    assert!(got.is_blocking());
+    assert_eq!(got.direction(), None, "nothing moves");
+    assert!(
+        why.starts_with("home rolled back your push leaf/20261101T120000Z at "),
+        "{why}"
+    );
+    assert!(
+        why.ends_with("`sync --accept-rollback work` lets the removal delete the leaf's copy"),
+        "{why}"
+    );
+    assert_eq!(
+        held(
+            Decision::Remove,
+            &p("pushed"),
+            &UnitState::Empty,
+            Some(&r),
+            true
+        ),
+        Decision::Remove,
+        "accepted"
+    );
+    assert_eq!(
+        held(
+            Decision::Remove,
+            &p("pushed"),
+            &UnitState::Empty,
+            None,
+            false
+        ),
+        Decision::Remove,
+        "never rolled back"
+    );
+    assert_eq!(
+        held(
+            Decision::Remove,
+            &UnitState::Empty,
+            &UnitState::Empty,
+            Some(&r),
+            false
+        ),
+        Decision::Remove,
+        "nothing left here to remove"
+    );
+    // The other unserved rows write nothing on the leaf.
+    for d in [
+        Decision::Orphaned {
+            reason: crate::decide::UnservedReason::CapNarrowed,
+            changed: true,
+        },
+        Decision::HomeRootMissing { why: "gone".into() },
+    ] {
+        assert_eq!(
+            held(d.clone(), &p("pushed"), &UnitState::Empty, Some(&r), false),
+            d
+        );
+    }
+}
+
+#[test]
 fn a_conflict_says_both() {
     let got = held(
         Decision::Conflict {

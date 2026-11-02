@@ -83,6 +83,7 @@ fn every_write_needs_the_callers_own_lease_at_the_head() {
                 lease,
                 rel: "work".into(),
                 baseline: Some(b.clone()),
+                rollback_accepted: false,
             },
             HomeRequest::Settle {
                 lease,
@@ -242,6 +243,7 @@ fn agree_writes_and_drops_home_s_copy_of_the_baseline() {
         lease: l,
         rel: rel.into(),
         baseline,
+        rollback_accepted: false,
     };
     let e = as_host(&home, &bed, "leaf", agree("work/other", Some(b.clone()))).unwrap_err();
     assert!(e.contains("sent as work/other"), "{e}");
