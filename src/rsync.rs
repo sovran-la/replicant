@@ -16,6 +16,7 @@ mod child;
 mod client;
 mod parse;
 mod scratch;
+mod spill;
 
 pub use client::Client;
 pub use parse::parse;
@@ -40,7 +41,8 @@ pub struct Runner {
     pub ssh: String,
     /// The local rsync, which decides how home's path is quoted.
     pub client: Client,
-    /// A private directory (the config dir's) for the empty stand-in.
+    /// A private directory (the config dir's) for the empty stand-in and a
+    /// long exclude list's file.
     pub scratch: PathBuf,
 }
 
@@ -193,9 +195,12 @@ impl Transfer {
             false => None,
         };
         let args = self.args(runner, empty.as_ref().map_or(Path::new(""), |e| e.path()));
+        // A long ignored list rides in a file; it must outlive the child.
+        let (args, excludes_file) = spill::spill(args, &runner.scratch, spill::LIMIT)?;
         debug_assert!(args.iter().any(|a| a == "--dry-run"));
         let out = child::run("rsync", &args, runner.timeout)?;
         drop(empty);
+        drop(excludes_file);
         let code = out.code.unwrap_or(-1);
         if code != 0 && code != VANISHED {
             return Err(Error::Rsync(format!(

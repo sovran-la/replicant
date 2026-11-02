@@ -1,4 +1,5 @@
-//! The empty directory an absent source stands in with.
+//! The empty directory an absent source stands in with, and the templates
+//! `spill.rs` makes its exclude file from.
 //!
 //! Made with mkdtemp(3) under the config dir: a fresh, uniquely named, 0700
 //! directory every time, never one that already existed. A predictable name in
@@ -15,24 +16,35 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub(super) struct EmptyDir(PathBuf);
 
+/// A NUL-terminated `scratch/<prefix>XXXXXX` template for mkdtemp(3) or
+/// mkstemp(3), with `scratch` created private if it is missing.
+pub(super) fn template(scratch: &Path, prefix: &str) -> Result<Vec<u8>> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(scratch)?;
+    let template = scratch.join(format!("{prefix}XXXXXX"));
+    Ok(CString::new(template.as_os_str().as_bytes())
+        .map_err(std::io::Error::other)?
+        .into_bytes_with_nul())
+}
+
+/// The path a filled-in template names.
+pub(super) fn made(mut bytes: Vec<u8>) -> PathBuf {
+    bytes.pop();
+    PathBuf::from(OsString::from_vec(bytes))
+}
+
 impl EmptyDir {
     pub fn new(scratch: &Path) -> Result<Self> {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(scratch)?;
-        let template = scratch.join("empty-XXXXXX");
-        let mut bytes = CString::new(template.as_os_str().as_bytes())
-            .map_err(std::io::Error::other)?
-            .into_bytes_with_nul();
+        let mut bytes = template(scratch, "empty-")?;
         // SAFETY: `bytes` is a NUL-terminated, writable buffer that outlives
         // the call; mkdtemp rewrites the X's in place and nothing else.
-        let made = unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) };
-        if made.is_null() {
+        let made_dir = unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) };
+        if made_dir.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
-        bytes.pop();
-        Ok(Self(PathBuf::from(OsString::from_vec(bytes))))
+        Ok(Self(made(bytes)))
     }
 
     pub fn path(&self) -> &Path {
