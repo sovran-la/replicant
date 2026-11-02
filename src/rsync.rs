@@ -1,8 +1,8 @@
 //! The data plane: build an rsync command and parse its itemized output.
 //!
-//! replicant never copies a byte itself. In v0.1 it never runs rsync for real
-//! either: [`Transfer::args`] always carries `--dry-run`, and there is no code
-//! path that omits it.
+//! replicant never copies a byte itself. A plan runs [`Transfer::dry_run`],
+//! whose arguments always carry `--dry-run`; only `sync`'s apply runs
+//! [`Transfer::apply`], the same arguments without it (`rsync/apply.rs`).
 //!
 //! Output is read with `--itemize-changes --out-format=%i %n`, which both
 //! rsync 3 (Linux) and openrsync (macOS's /usr/bin/rsync, protocol 29) print
@@ -12,12 +12,14 @@
 //! connection, and the child is killed at [`Runner::timeout`]. A wedged
 //! transfer would otherwise hold the head of home's queue for the whole fleet.
 
+mod apply;
 mod child;
 mod client;
 mod parse;
 mod scratch;
 mod spill;
 
+pub use apply::{Ran, copy_listed, delete_listed};
 pub use child::{Abort, Stopped};
 pub use client::Client;
 pub use parse::parse;
@@ -108,7 +110,7 @@ pub struct Transfer {
     pub source_absent: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChangeKind {
     Create,
     Update,
@@ -183,12 +185,19 @@ impl Transfer {
         }
     }
 
-    /// The full argument list. `empty` is the directory standing in for an
-    /// absent source.
+    /// The dry run's full argument list. `empty` is the directory standing
+    /// in for an absent source.
     pub fn args(&self, runner: &Runner, empty: &Path) -> Vec<String> {
-        let mut a: Vec<String> = ["-a", "--delete", "--dry-run", "--itemize-changes"]
-            .map(String::from)
-            .into();
+        self.build(runner, empty, true)
+    }
+
+    /// The argument list, with `--dry-run` or (apply only) without.
+    fn build(&self, runner: &Runner, empty: &Path, dry: bool) -> Vec<String> {
+        let mut a: Vec<String> = ["-a", "--delete"].map(String::from).into();
+        if dry {
+            a.push("--dry-run".into());
+        }
+        a.push("--itemize-changes".into());
         a.push("--out-format=%i %n".into());
         // Names as raw bytes: rsync 3 under a daemon with no LANG escapes
         // high-bit bytes as \#ooo, which guardrail 1 could not match against

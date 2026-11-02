@@ -52,6 +52,55 @@ impl EmptyDir {
     }
 }
 
+/// A private file of lines (an include list, a `--files-from` list) under
+/// the scratch dir, removed on drop. Made with mkstemp(3), like the
+/// directory above.
+#[derive(Debug)]
+pub(super) struct ListFile(PathBuf);
+
+impl ListFile {
+    /// Write `lines`, one per line. A line holding a line break cannot be
+    /// written this way and is an error.
+    pub fn new<'a>(
+        scratch: &Path,
+        prefix: &str,
+        lines: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Self> {
+        use std::io::Write;
+        use std::os::fd::FromRawFd;
+        let mut bytes = template(scratch, prefix)?;
+        // SAFETY: `bytes` is a NUL-terminated, writable buffer that outlives
+        // the call; mkstemp rewrites the X's in place and returns an owned fd.
+        let fd = unsafe { libc::mkstemp(bytes.as_mut_ptr().cast()) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let file = ListFile(made(bytes));
+        // SAFETY: `fd` was just opened by mkstemp and nothing else owns it.
+        let mut w = std::io::BufWriter::new(unsafe { std::fs::File::from_raw_fd(fd) });
+        for l in lines {
+            if l.contains(['\n', '\r']) {
+                return Err(crate::Error::Rsync(format!(
+                    "{l:?} holds a line break; rsync cannot be handed it in a list"
+                )));
+            }
+            writeln!(w, "{l}")?;
+        }
+        w.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        Ok(file)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ListFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 impl Drop for EmptyDir {
     fn drop(&mut self) {
         // remove_dir, not remove_dir_all: it was empty, and if something
