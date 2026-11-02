@@ -202,6 +202,9 @@ pub enum UnservedReason {
     /// Its subscription is under no root fleet.toml configures: a root
     /// removed, renamed or mistyped.
     RootMissing,
+    /// Its subscription lies wholly inside one of its root's excludes
+    /// (review P3): an exclude added since.
+    Excluded,
     /// None of the above: never subscribed as far as home knows, or dropped
     /// from `paths` by a hand edit.
     NotServed,
@@ -213,6 +216,7 @@ impl std::fmt::Display for UnservedReason {
             UnservedReason::Unsubscribed => "unsubscribed",
             UnservedReason::CapNarrowed => "cap narrowed",
             UnservedReason::RootMissing => "no root serves it",
+            UnservedReason::Excluded => "excluded by its root",
             UnservedReason::NotServed => "not subscribed",
         })
     }

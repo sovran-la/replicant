@@ -55,6 +55,7 @@ pub(super) fn plan(
                 rel: b.rel.clone(),
                 exclude: vec![],
                 except: vec![],
+                root: String::new(),
             },
         })
         .collect();

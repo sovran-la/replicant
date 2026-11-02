@@ -304,3 +304,6 @@ mod except;
 
 #[path = "tests_unserved.rs"]
 mod unserved;
+
+#[path = "tests_rooted.rs"]
+mod rooted;

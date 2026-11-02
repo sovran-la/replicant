@@ -8,7 +8,7 @@ use crate::daemon::wire::{Enrollment, HomeSnapshot, SubscriptionsView, Unserved}
 use crate::decide::UnservedReason;
 use crate::guard::{self, Refusal};
 use crate::marker::{self, Marker};
-use crate::subscribe::outside_cap;
+use crate::subscribe::{inside_exclude, outside_cap};
 use crate::units::{self, Discovered, SubSpec};
 use crate::{Error, Result, paths};
 
@@ -34,16 +34,24 @@ impl Home {
             let root = f.root_for(p);
             let cap_refusal = guard::bounds(p, &sub.paths, &[], entry.allow.as_deref());
             match (root, cap_refusal) {
-                (Some(r), None) => specs.push(SubSpec {
-                    rel: p.clone(),
-                    exclude: r.exclude.clone(),
-                    except: sub
-                        .except
-                        .iter()
-                        .filter(|e| paths::is_within(e, p))
-                        .cloned()
-                        .collect(),
-                }),
+                (Some(r), None) => match inside_exclude(r, p)? {
+                    Some(why) => refused.push(Refusal {
+                        guard: guard::Guard::SubscriptionBounds,
+                        unit: p.clone(),
+                        detail: vec![why],
+                    }),
+                    None => specs.push(SubSpec {
+                        rel: p.clone(),
+                        exclude: r.exclude.clone(),
+                        except: sub
+                            .except
+                            .iter()
+                            .filter(|e| paths::is_within(e, p))
+                            .cloned()
+                            .collect(),
+                        root: r.rel.clone(),
+                    }),
+                },
                 (None, _) => refused.push(Refusal {
                     guard: guard::Guard::SubscriptionBounds,
                     unit: p.clone(),
@@ -187,14 +195,22 @@ fn unserved(f: &Fleet, host: &str, specs: &[SubSpec], baselines: &[String]) -> V
                 Some(p) if !outside_cap(std::slice::from_ref(p), cap).is_empty() => {
                     UnservedReason::CapNarrowed
                 }
+                Some(p)
+                    if f.root_for(p)
+                        .is_some_and(|r| inside_exclude(r, p).ok().flatten().is_some()) =>
+                {
+                    UnservedReason::Excluded
+                }
                 Some(_) if within_any(b, &sub.except) => UnservedReason::Unsubscribed,
                 Some(_) => UnservedReason::NotServed,
                 None if within_any(b, &sub.unsubscribed) => UnservedReason::Unsubscribed,
                 None => UnservedReason::NotServed,
             };
+            let root = f.root_for(b);
             let spec = SubSpec {
                 rel: b.clone(),
-                exclude: f.root_for(b).map(|r| r.exclude.clone()).unwrap_or_default(),
+                exclude: root.map(|r| r.exclude.clone()).unwrap_or_default(),
+                root: root.map(|r| r.rel.clone()).unwrap_or_default(),
                 except: sub
                     .except
                     .iter()

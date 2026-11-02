@@ -26,6 +26,7 @@ fn units_at(base: &Path, rel: &str, case_check: bool) -> Vec<SideUnit> {
         rel: rel.into(),
         exclude: vec![],
         except: vec![],
+        root: String::new(),
     }];
     let b = base.to_path_buf();
     let found = Discovered::run(&subs, &move |r| b.join(r)).unwrap();

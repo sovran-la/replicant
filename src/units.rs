@@ -27,14 +27,32 @@ pub use snapshot::{UnitTiming, snapshot, snapshot_timed};
 
 /// A subscription as both sides see it: its path, its root's excludes, and
 /// the host's carve-outs under it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubSpec {
     pub rel: String,
     pub exclude: Vec<String>,
     pub except: Vec<String>,
+    /// Its root's path (`.sovran`), which a slash `exclude` is relative to
+    /// (review P3). Absent from an older home: empty, and slash patterns
+    /// are applied relative to each unit, as they were.
+    #[serde(default)]
+    pub root: String,
 }
 
 impl SubSpec {
+    /// `rel`'s path below this subscription's root, `""` at the root.
+    pub fn prefix<'a>(&self, rel: &'a str) -> &'a str {
+        if self.root.is_empty() {
+            return "";
+        }
+        paths::relative_to(rel, &self.root).unwrap_or("")
+    }
+
+    /// The root's excludes as they apply inside the unit at `rel`.
+    pub fn excludes_at(&self, rel: &str) -> Result<Excludes> {
+        Excludes::for_unit(&self.exclude, self.prefix(rel))
+    }
+
     /// Whether `rel` is inside this subscription and not carved out of it.
     pub fn covers(&self, rel: &str) -> bool {
         paths::is_within(rel, &self.rel) && !excepted(rel, &self.except)
@@ -86,7 +104,7 @@ impl Discovered {
         let mut out = Vec::new();
         for s in subs {
             let abs = map(&s.rel);
-            let d = repos::discover(&abs, &Excludes::for_root(&s.exclude)?)?;
+            let d = repos::discover(&abs, &s.excludes_at(&s.rel)?)?;
             out.push((s.clone(), abs, d));
         }
         Ok(Self { subs: out })
@@ -147,7 +165,8 @@ pub(crate) fn first_component(rel: &str) -> &str {
 }
 
 /// The exclude list for one unit, relative to the unit's directory: the
-/// root's excludes and the built-ins, plus every carve-out and worktree
+/// root's excludes (slash patterns rewritten from the root to the unit) and
+/// the built-ins, plus every carve-out and worktree
 /// checkout inside it, plus (for a loose unit) every repo inside it, which is
 /// a unit of its own. A carve-out matches a file or a directory; repos and
 /// worktrees, directories only.
@@ -161,7 +180,7 @@ pub fn excludes(
     union_repos: &[String],
     worktrees: &[String],
 ) -> Result<Excludes> {
-    let mut ex = Excludes::for_root(&spec.exclude)?;
+    let mut ex = spec.excludes_at(rel)?;
     let repos: &[String] = if kind == UnitKind::Loose {
         union_repos
     } else {

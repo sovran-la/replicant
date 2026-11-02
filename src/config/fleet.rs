@@ -180,7 +180,8 @@ impl Fleet {
                 if pat.starts_with('/') || pat.is_empty() {
                     return Err(bad(format!(
                         "[roots.{rname}] exclude {pat:?}: anchored and empty patterns are not \
-                         supported; write it unanchored (e.g. \"agents/state\")"
+                         supported; write it without the leading `/` (a pattern with a `/` is \
+                         relative to the root, e.g. \"agents/state\")"
                     )));
                 }
                 crate::exclude::check(pat)

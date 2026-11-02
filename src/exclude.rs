@@ -11,7 +11,8 @@
 //! unit root, or against the bare file name. So:
 //!
 //! - `target`, `*.jsonl`: a name, at any depth
-//! - `agents/state`, `src/*.rs`: a path from the unit root (it has a `/`)
+//! - `agents/state`, `src/*.rs`: a path from the *root* (it has a `/`);
+//!   [`Excludes::for_unit`] rewrites it for each unit (review P3)
 //! - `**/x/y`, `a/**/b`: `**` is any number of directories, including none
 //! - `/x`: anchored, the unit-relative path only (only generated internally;
 //!   fleet.toml refuses anchored patterns, see [`crate::config::fleet`])
@@ -90,6 +91,29 @@ pub fn check(raw: &str) -> std::result::Result<(), String> {
     pattern::parse(raw).map(|_| ())
 }
 
+fn parsed(raw: &str) -> Result<pattern::Parsed> {
+    pattern::parse(raw).map_err(|why| Error::Config(format!("exclude pattern {raw:?}: {why}")))
+}
+
+/// The root exclude that leaves nothing of the unit at `prefix` (its path
+/// below the root) to sync, if one does: it matches the unit or one of its
+/// ancestors, root-relatively, or everything inside it (`cache/**` for unit
+/// `cache`). The unit is taken to be a directory.
+pub fn covering(root_excludes: &[String], prefix: &str) -> Result<Option<String>> {
+    if prefix.is_empty() {
+        return Ok(None);
+    }
+    for raw in root_excludes {
+        let p = parsed(raw)?;
+        let mut alone = Excludes::default();
+        alone.add(p.clone());
+        if alone.path_excluded(prefix, true) || p.rebase(prefix) == pattern::Rebased::Covers {
+            return Ok(Some(raw.clone()));
+        }
+    }
+    Ok(None)
+}
+
 impl Excludes {
     pub fn new<S: AsRef<str>>(patterns: &[S]) -> Result<Self> {
         let mut e = Self::default();
@@ -99,11 +123,30 @@ impl Excludes {
         Ok(e)
     }
 
-    /// The built-ins plus a root's own excludes.
+    /// The built-ins plus a root's own excludes, applied at the root.
     pub fn for_root(root_excludes: &[String]) -> Result<Self> {
+        Self::for_unit(root_excludes, "")
+    }
+
+    /// The built-ins plus a root's own excludes, as they apply inside the
+    /// unit at `prefix`, the unit's path below its root (`""` at the root).
+    /// A pattern with a `/` is relative to the root and is rewritten for the
+    /// unit (review P3, `pattern/rebase.rs`); names and `**/` patterns match
+    /// at any depth as written. A unit that a pattern [`covering`] excludes
+    /// whole gets `/**`: nothing inside it is ever walked or sent.
+    pub fn for_unit(root_excludes: &[String], prefix: &str) -> Result<Self> {
         let mut e = Self::new(BUILTIN)?;
-        for p in root_excludes {
-            e.push(p)?;
+        if covering(root_excludes, prefix)?.is_some() {
+            e.add(pattern::everything());
+            return Ok(e);
+        }
+        for raw in root_excludes {
+            let p = parsed(raw)?;
+            match p.rebase(prefix) {
+                pattern::Rebased::Same => e.add(p),
+                pattern::Rebased::Within(ps) => ps.into_iter().for_each(|q| e.add(q)),
+                pattern::Rebased::Covers => unreachable!("covering() checked every pattern"),
+            }
         }
         Ok(e)
     }
@@ -111,9 +154,7 @@ impl Excludes {
     /// Add one pattern, or say why it cannot be matched the same way by
     /// replicant and rsync.
     pub fn push(&mut self, raw: &str) -> Result<()> {
-        let p = pattern::parse(raw)
-            .map_err(|why| Error::Config(format!("exclude pattern {raw:?}: {why}")))?;
-        self.add(p);
+        self.add(parsed(raw)?);
         Ok(())
     }
 

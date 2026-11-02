@@ -4,10 +4,11 @@ use super::*;
 use crate::record::RECORD_VERSION;
 use crate::units::UnitKind;
 
-const REASONS: [UnservedReason; 4] = [
+const REASONS: [UnservedReason; 5] = [
     UnservedReason::Unsubscribed,
     UnservedReason::CapNarrowed,
     UnservedReason::RootMissing,
+    UnservedReason::Excluded,
     UnservedReason::NotServed,
 ];
 
@@ -117,6 +118,7 @@ fn reasons_render_and_round_trip() {
             "unsubscribed",
             "cap narrowed",
             "no root serves it",
+            "excluded by its root",
             "not subscribed"
         ]
     );

@@ -224,8 +224,9 @@ exclude = ["projects", "todos", "statsig", "*.jsonl", ".credentials.json"]
 [roots.sovran]
 path    = "/home/morgan/.sovran"
 # daemon state, locks, sockets, logs — including replicant's own state dir.
-# A pattern with a "/" is relative to the unit it is applied in; "**/" matches
-# at any depth.
+# A pattern with a "/" is relative to the root ("agents/state" is
+# ~/.sovran/agents/state, whatever a host subscribes to); a bare name or a
+# "**/" pattern matches at any depth. Subscribing inside an exclude is refused.
 exclude = ["agents/state", "replicant", "**/*.sock", "**/*.lock", "**/*.log"]
 
 [hosts.birchbook]
