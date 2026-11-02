@@ -7,6 +7,14 @@
 //! and `GIT_OPTIONAL_LOCKS=0`, which turns that refresh off, and with
 //! `core.fsmonitor=false`: a repo with fsmonitor enabled would otherwise have
 //! `git status` start a daemon (or run a hook) that writes into `.git/`.
+//!
+//! **Only the repo's own `.gitignore` files decide what is ignored** (PLAN.md
+//! rev 7). Every call runs with `core.excludesFile=/dev/null`: the user's
+//! global gitignore differs per machine, and a file it hides is still synced
+//! (`repos::ignored` does not read it), so the hash must see it as untracked
+//! work. `.git/info/exclude` cannot be switched off for `git status`; a file
+//! ignored only there still syncs but is invisible to the hash (pinned in
+//! `state_ignored_tests.rs`).
 
 use crate::{Error, Result};
 use std::path::Path;
@@ -43,6 +51,7 @@ fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
         .arg("--no-optional-locks")
         .args(["-c", "core.fsmonitor=false"])
+        .args(["-c", "core.excludesFile=/dev/null"])
         .args(args)
         .current_dir(repo)
         .env("GIT_OPTIONAL_LOCKS", "0")

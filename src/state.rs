@@ -231,3 +231,7 @@ pub fn workers() -> usize {
 #[cfg(test)]
 #[path = "state_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "state_ignored_tests.rs"]
+mod ignored_tests;
