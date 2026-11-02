@@ -77,7 +77,7 @@ impl Daemon {
     pub fn start(dirs: Dirs) -> Result<Self> {
         let lock = lock(&dirs)?;
         let role = if dirs.is_home() {
-            certs::ensure(&dirs.ca_key(), &dirs.ca_cert(), &dirs.credentials())?;
+            certs::ensure(&certs::Paths::of(&dirs))?;
             Role::Home(Arc::new(home::Home::open(dirs.clone())?))
         } else {
             Role::Leaf(Arc::new(leaf::Leaf::open(dirs.clone())))
@@ -94,7 +94,7 @@ impl Daemon {
                             .into(),
                     )
                 })?;
-                let identity = tls::Identity::load(&dirs.credentials())?;
+                let identity = tls::Identity::load(&dirs.server_identity())?;
                 let l = Arc::new(remote::MtlsListener::bind(
                     &crate::config::with_port(&listen),
                     &identity,

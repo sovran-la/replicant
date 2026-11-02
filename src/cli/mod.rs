@@ -173,7 +173,7 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
                     "export-creds runs on home (the machine with fleet.toml)".into(),
                 ));
             }
-            certs::ensure(&dirs.ca_key(), &dirs.ca_cert(), &dirs.credentials())?;
+            certs::ensure(&certs::Paths::of(dirs))?;
             print!("{}", certs::read_pem(&dirs.credentials())?);
             Ok(0)
         }

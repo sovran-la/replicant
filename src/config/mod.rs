@@ -8,8 +8,10 @@
 //! |---|---|---|
 //! | `fleet.toml` | home | Brandon, plus `subscribe`/`approve` through [`edit`] |
 //! | `leaf.toml` | leaf | `subscribe` |
-//! | `ca.key`, `ca.pem`, `credentials.pem` | home | the daemon, first start |
-//! | `home.pem` | leaf | Brandon, copied from home's `config export-creds` |
+//! | `ca.key`, `ca.pem`, `server.pem`, `credentials.pem` | home | the daemon, first start |
+//! | `state/issued/<host>.pem` | home | `approve`; deleted when the host collects it |
+//! | `home.pem` | leaf | Brandon, copied from home's `config export-creds` (bootstrap) |
+//! | `host.pem` | leaf | the daemon, collected from home after `approve` |
 //! | `replicant.sock`, `daemon.lock` | both | the daemon |
 //! | `journal.log` | both | the daemon (home: everything; leaf: its own lines) |
 //! | `state/` | both | the daemon: contacts, markers, baselines |
@@ -83,9 +85,22 @@ impl Dirs {
     pub fn ca_cert(&self) -> PathBuf {
         self.root.join("ca.pem")
     }
-    /// Where a leaf looks for home's bundle when leaf.toml names none.
+    /// Home's server identity. Never leaves home.
+    pub fn server_identity(&self) -> PathBuf {
+        self.root.join("server.pem")
+    }
+    /// Where a leaf looks for home's bootstrap bundle when leaf.toml names
+    /// none. Kept after enrollment: its CA is what the leaf trusts.
     pub fn home_bundle(&self) -> PathBuf {
         self.root.join("home.pem")
+    }
+    /// A leaf's own client identity, collected from home after `approve`.
+    pub fn host_identity(&self) -> PathBuf {
+        self.root.join("host.pem")
+    }
+    /// Home's issued, not yet collected, host identities.
+    pub fn issued(&self) -> PathBuf {
+        self.state().join("issued")
     }
 
     /// Whether this machine is home.

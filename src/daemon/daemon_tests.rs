@@ -221,8 +221,9 @@ fn a_leaf_with_another_homes_bundle_is_refused_in_the_handshake() {
     let (home, leaf) = pair(&bed);
     let stranger = tempfile::tempdir().unwrap();
     let p = stranger.path();
-    certs::ensure(&p.join("ca.key"), &p.join("ca.pem"), &p.join("c.pem")).unwrap();
-    std::fs::copy(p.join("c.pem"), bed.leaf_dirs.home_bundle()).unwrap();
+    let theirs = certs::Paths::of(&Dirs::at(p.to_path_buf()));
+    certs::ensure(&theirs).unwrap();
+    std::fs::copy(&theirs.bootstrap, bed.leaf_dirs.home_bundle()).unwrap();
     let err = local::call(&bed.leaf_dirs, LocalRequest::Status)
         .unwrap_err()
         .to_string();

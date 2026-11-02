@@ -84,7 +84,7 @@ pub enum Cmd {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCmd {
-    /// On home: print the bundle a leaf saves as home.pem.
+    /// On home: print the bootstrap bundle a new leaf saves as home.pem.
     ExportCreds,
     /// Where replicant keeps things and which role this machine has.
     Show,
