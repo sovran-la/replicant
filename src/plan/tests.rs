@@ -31,6 +31,7 @@ fn go(bed: &Bed, home: &Home, cfg: &LeafConfig, dry: bool) -> Result<Plan> {
             state_dir: &state,
             scratch_dir: &scratch,
             rsync: crate::plan::RSYNC,
+            accept_rollback: &[],
         },
         dry,
         false,

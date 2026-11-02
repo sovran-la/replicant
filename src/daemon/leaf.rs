@@ -90,13 +90,16 @@ impl Leaf {
                     other => Err(Error::Remote(format!("unexpected reply: {other:?}"))),
                 }
             }
-            LocalRequest::DryRun { no_wait } => self.planning(|link, ctx| {
+            LocalRequest::DryRun {
+                no_wait,
+                accept_rollback,
+            } => self.planning(&accept_rollback, |link, ctx| {
                 Ok(LocalReply::Plan(Box::new(plan::plan(
                     link, ctx, true, no_wait,
                 )?)))
             }),
             LocalRequest::Sync { opts } => {
-                let (me, report) = self.planning(|link, ctx| {
+                let (me, report) = self.planning(&opts.accept_rollback, |link, ctx| {
                     Ok((ctx.me.to_string(), plan::apply::sync(link, ctx, &opts)?))
                 })?;
                 journal_unheard(&self.journal, &me, &report.outcome);
@@ -118,8 +121,13 @@ impl Leaf {
         }
     }
 
-    /// Run `f` with the link to home, as this host, and the plan context.
-    fn planning<T>(&self, f: impl FnOnce(&dyn HomeLink, LeafCtx<'_>) -> Result<T>) -> Result<T> {
+    /// Run `f` with the link to home, as this host, and the plan context
+    /// (`accept`: `--accept-rollback`).
+    fn planning<T>(
+        &self,
+        accept: &[String],
+        f: impl FnOnce(&dyn HomeLink, LeafCtx<'_>) -> Result<T>,
+    ) -> Result<T> {
         let cfg = self.cfg()?;
         let link = self.link(&cfg)?.host()?;
         let (me, hd, state) = (cfg.name()?, cfg.home_dir()?, self.dirs.state());
@@ -133,6 +141,7 @@ impl Leaf {
                 state_dir: &state,
                 scratch_dir: &scratch,
                 rsync: plan::RSYNC,
+                accept_rollback: accept,
             },
         )
     }
@@ -236,6 +245,7 @@ impl Leaf {
                     state_dir: &state,
                     scratch_dir: &scratch,
                     rsync: plan::RSYNC,
+                    accept_rollback: &[],
                 },
                 false,
                 false,

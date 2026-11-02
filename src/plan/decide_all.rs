@@ -1,5 +1,6 @@
 //! Every unit both sides hold, decided by the direction table.
 
+use super::apply::names;
 use super::{LeafCtx, PlannedUnit};
 use crate::baseline::Baseline;
 use crate::daemon::wire::HomeSnapshot;
@@ -25,7 +26,9 @@ pub(super) fn decide_all(
         let empty = UnitState::Empty;
         let home_state = h.map(|h| &h.state).unwrap_or(&empty);
         let b = baselines.iter().find(|b| b.rel == l.rel);
-        let decision = decide::decide(decide::Inputs {
+        let leaf_path = ctx.cfg.local_path(&l.rel, ctx.home_dir);
+        let home_path = snap.home_dir.join(&l.rel);
+        let table = decide::decide(decide::Inputs {
             rel: &l.rel,
             me: ctx.me,
             home_name,
@@ -42,6 +45,22 @@ pub(super) fn decide_all(
                 .find(|m| m.host != ctx.me && m.covers(&l.rel))
                 .or_else(|| snap.markers.iter().find(|m| m.rel == l.rel)),
         });
+        let decision = decide::hold_rolled_back(
+            table,
+            decide::Held {
+                rel: &l.rel,
+                home_name,
+                leaf: &l.state,
+                home: home_state,
+                leaf_path: &leaf_path,
+                home_path: &home_path,
+                rolled_back: snap.rolled_back.iter().find(|r| r.unit == l.rel),
+                accepted: ctx
+                    .accept_rollback
+                    .iter()
+                    .any(|e| names(e, &l.rel, &leaf_path, ctx.home_dir)),
+            },
+        );
         out.push(PlannedUnit {
             rel: l.rel.clone(),
             kind: l.kind,
@@ -50,8 +69,8 @@ pub(super) fn decide_all(
             home: home_state.clone(),
             leaf_head: l.head.clone(),
             home_head: h.and_then(|h| h.head.clone()),
-            leaf_path: ctx.cfg.local_path(&l.rel, ctx.home_dir),
-            home_path: snap.home_dir.join(&l.rel),
+            leaf_path,
+            home_path,
             diff: None,
             refusals: vec![],
             leaf_files: l.files,

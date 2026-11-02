@@ -7,7 +7,7 @@
 
 use super::fleet::FleetState;
 use crate::baseline::Baseline;
-use crate::decide::{Decision, UnservedReason};
+use crate::decide::{Decision, RolledBackPush, UnservedReason};
 use crate::guard::Refusal;
 use crate::marker::{Direction, Marker};
 use crate::state::UnitState;
@@ -19,7 +19,8 @@ use std::path::PathBuf;
 /// 2: per-host certificates. Home derives the caller from its certificate,
 /// and a leaf collects its own with [`HomeRequest::CollectCert`].
 /// 3: apply ([`HomeRequest::BeginPush`] and the rest of `sync`'s writes).
-pub const WIRE_VERSION: u32 = 3;
+/// 4: [`HomeSnapshot::rolled_back`] (review A2), and `--accept-rollback`.
+pub const WIRE_VERSION: u32 = 4;
 
 // ---------------------------------------------------------------- leaf → home
 
@@ -279,6 +280,10 @@ pub struct HomeSnapshot {
     /// from an older home: none.
     #[serde(default)]
     pub unserved: Vec<Unserved>,
+    /// This host's pushes home rolled back that it has not settled (review
+    /// A2): the newest per unit. Such a unit holds rather than pulls.
+    #[serde(default)]
+    pub rolled_back: Vec<RolledBackPush>,
 }
 
 /// A path a leaf has a baseline for and home no longer serves.

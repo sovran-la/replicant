@@ -58,6 +58,21 @@ fn parses_the_plan_examples() {
         Cmd::Sync { yes: true, non_interactive: true, ref confirm_delete, .. }
             if confirm_delete == &["work/a", "~/work/b"]
     ));
+    let c = Cli::try_parse_from([
+        "replicant",
+        "sync",
+        "--yes",
+        "--accept-rollback",
+        "work",
+        "--accept-rollback",
+        "~/work/b",
+    ])
+    .unwrap();
+    assert!(matches!(
+        c.cmd,
+        Cmd::Sync { yes: true, ref accept_rollback, ref confirm_delete, .. }
+            if accept_rollback == &["work", "~/work/b"] && confirm_delete.is_empty()
+    ));
     let c = Cli::try_parse_from(["replicant", "rollback", "leaf/20261101T000000Z"]).unwrap();
     assert!(matches!(c.cmd, Cmd::Rollback { push: Some(ref p) } if p == "leaf/20261101T000000Z"));
     let c = Cli::try_parse_from(["replicant", "rollback"]).unwrap();

@@ -32,6 +32,7 @@ pub(crate) fn ctx<'a>(
         state_dir: &dirs.0,
         scratch_dir: &dirs.1,
         rsync,
+        accept_rollback: &[],
     }
 }
 

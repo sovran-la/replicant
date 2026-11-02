@@ -47,6 +47,9 @@ pub struct LeafCtx<'a> {
     pub scratch_dir: &'a Path,
     /// The rsync program: [`RSYNC`] in production; tests stand a script in.
     pub rsync: &'a str,
+    /// `--accept-rollback`: units (by unit path or this leaf's path) whose
+    /// rolled-back push this host takes home's copy for (review A2).
+    pub accept_rollback: &'a [String],
 }
 
 /// The rsync a leaf runs: whatever `rsync` is on `PATH`.

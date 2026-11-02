@@ -31,6 +31,8 @@ pub struct Args {
     /// False with `--non-interactive` or without a terminal.
     pub interactive: bool,
     pub confirm_delete: Vec<String>,
+    /// `--accept-rollback`: sent with the dry run and the sync alike.
+    pub accept_rollback: Vec<String>,
     pub no_wait: bool,
     pub json: bool,
     pub verbose: bool,
@@ -110,7 +112,10 @@ pub fn run(a: &Args, t: &mut Term<'_>, call: Call<'_>) -> Result<i32> {
 }
 
 fn plan(a: &Args, call: Call<'_>) -> Result<Plan> {
-    match call(LocalRequest::DryRun { no_wait: a.no_wait })? {
+    match call(LocalRequest::DryRun {
+        no_wait: a.no_wait,
+        accept_rollback: a.accept_rollback.clone(),
+    })? {
         LocalReply::Plan(p) => Ok(*p),
         _ => Err(super::unexpected_reply()),
     }
@@ -156,6 +161,7 @@ fn send(
         no_wait: a.no_wait,
         confirm_delete,
         expect,
+        accept_rollback: a.accept_rollback.clone(),
     };
     let LocalReply::Synced(r) = call(LocalRequest::Sync { opts })? else {
         return Err(super::unexpected_reply());

@@ -93,6 +93,7 @@ fn a_lost_lease_kills_the_running_rsync_and_fails_the_plan() {
         state_dir: &state,
         scratch_dir: &scratch,
         rsync: &fake,
+        accept_rollback: &[],
     };
     let started = Instant::now();
     let err = std::thread::scope(|s| {

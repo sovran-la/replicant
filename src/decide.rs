@@ -45,6 +45,10 @@
 //! - **home marker from another leaf** → quarantined (PLAN.md, "Interrupted
 //!   sync": pulls of that path by any other leaf are refused).
 //!
+//! After the table, a push of this host's that home rolled back holds its
+//! unit as a conflict wherever the table would write the leaf, until the
+//! host passes `--accept-rollback` (review A2, [`hold_rolled_back`]).
+//!
 //! Marker rows come first: an interrupted sync of exactly this unit is never
 //! a conflict, unless its source vanished since (resuming would then delete
 //! the unit, which needs a confirmation the marker does not carry).
@@ -54,7 +58,9 @@ use crate::marker::{Direction, Marker};
 use crate::state::UnitState;
 use serde::{Deserialize, Serialize};
 
+mod rollback;
 mod unserved;
+pub use rollback::{Held, RolledBackPush, hold_rolled_back};
 pub use unserved::{UnservedInputs, UnservedReason, decide_unserved, files_here};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

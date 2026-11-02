@@ -116,6 +116,9 @@ impl Home {
                     }),
                     None => store.delete(&rel),
                 }?;
+                // Agreeing again settles any rollback of this host's push
+                // of the unit (review A2).
+                self.settle_rollbacks(host, &rel)?;
                 Ok(HomeReply::Done)
             }
             HomeRequest::Settle {

@@ -180,6 +180,7 @@ fn pushes_list_their_state_and_backups() {
         }],
         finished_at: finished,
         rolled_back_at: rolled,
+        rollback_settled_at: None,
     };
     let s = pushes(
         &[

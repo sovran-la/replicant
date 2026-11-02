@@ -80,6 +80,12 @@ pub enum Cmd {
         /// Repeatable. Required even with --yes.
         #[arg(long = "confirm-delete", value_name = "PATH")]
         confirm_delete: Vec<String>,
+        /// Take home's copy of a unit whose push from here home rolled back
+        /// (`replicant rollback`): until then sync holds it as a conflict
+        /// rather than pull over what this machine pushed. Named like
+        /// --confirm-delete. Repeatable. Required even with --yes.
+        #[arg(long = "accept-rollback", value_name = "PATH")]
+        accept_rollback: Vec<String>,
         /// Fail instead of waiting behind another sync.
         #[arg(long)]
         no_wait: bool,

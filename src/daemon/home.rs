@@ -281,6 +281,12 @@ pub use backup::{Push, Run, pushes};
 #[path = "home_rollback.rs"]
 mod rollback;
 
+#[path = "home_rolled_back.rs"]
+mod rolled_back;
+
+#[path = "home_sweep.rs"]
+mod sweep;
+
 #[cfg(test)]
 #[path = "home_tests.rs"]
 mod tests;

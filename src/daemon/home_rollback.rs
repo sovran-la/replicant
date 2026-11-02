@@ -259,3 +259,7 @@ impl Home {
 #[cfg(test)]
 #[path = "home_rollback_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "home_rollback_hold_tests.rs"]
+mod hold_tests;

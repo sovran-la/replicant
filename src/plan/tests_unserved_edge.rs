@@ -93,6 +93,7 @@ fn a_baseline_an_older_home_says_nothing_about_is_not_served() {
         state_dir: &state,
         scratch_dir: &scratch,
         rsync: crate::plan::RSYNC,
+        accept_rollback: &[],
     };
     let p = plan(&link, ctx, false, false).unwrap();
     assert_eq!(

@@ -14,7 +14,7 @@
 
 use super::{HomeLink, LeafCtx, Mode, Plan, PlannedUnit, run};
 use crate::Result;
-use crate::decide::Decision;
+use crate::decide::{Decision, RolledBackPush};
 use crate::units::UnitKind;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -34,6 +34,10 @@ pub struct SyncOpts {
     /// [`Plan::digest`] of the plan the person confirmed. `None` (`--yes`):
     /// whatever this sync plans is what it applies.
     pub expect: Option<String>,
+    /// Units whose push home rolled back, for which this host takes home's
+    /// copy (review A2): named like `confirm_delete`. `--yes` never does.
+    #[serde(default)]
+    pub accept_rollback: Vec<String>,
 }
 
 /// How a sync ended.
@@ -109,9 +113,13 @@ pub(super) struct Stash {
 /// every outcome once apply began is in the report.
 pub fn sync(link: &dyn HomeLink, ctx: LeafCtx<'_>, opts: &SyncOpts) -> Result<SyncReport> {
     let stash: Mutex<Stash> = Mutex::default();
+    let ctx = LeafCtx {
+        accept_rollback: &opts.accept_rollback,
+        ..ctx
+    };
     let result = run(link, ctx, Mode::Sync, opts.no_wait, |watch, p| {
         stash.lock().unwrap_or_else(|e| e.into_inner()).plan = Some(p.plan.clone());
-        let outcome = match gate(p.plan, opts, ctx.home_dir) {
+        let outcome = match gate(p.plan, opts, ctx.home_dir, &p.snap.rolled_back) {
             Some(o) => o,
             None => unit::apply_all(link, ctx, watch, &p, &stash),
         };
@@ -147,7 +155,12 @@ pub fn sync(link: &dyn HomeLink, ctx: LeafCtx<'_>, opts: &SyncOpts) -> Result<Sy
 }
 
 /// Why this plan may not be applied as it stands, if it may not.
-fn gate(plan: &Plan, opts: &SyncOpts, home_dir: &Path) -> Option<Outcome> {
+fn gate(
+    plan: &Plan,
+    opts: &SyncOpts,
+    home_dir: &Path,
+    rolled_back: &[RolledBackPush],
+) -> Option<Outcome> {
     let mut why: Vec<String> = plan.refused.iter().map(|r| r.headline()).collect();
     for u in &plan.units {
         why.extend(u.refusals.iter().map(|r| r.headline()));
@@ -175,6 +188,16 @@ fn gate(plan: &Plan, opts: &SyncOpts, home_dir: &Path) -> Option<Outcome> {
             ));
         }
     }
+    for a in &opts.accept_rollback {
+        let named = plan.units.iter().any(|u| {
+            rolled_back.iter().any(|r| r.unit == u.rel) && names(a, &u.rel, &u.leaf_path, home_dir)
+        });
+        if !named {
+            why.push(format!(
+                "--accept-rollback {a}: home rolled back no push of this host's under that path"
+            ));
+        }
+    }
     if !why.is_empty() {
         return Some(Outcome::Blocked { why });
     }
@@ -187,15 +210,21 @@ fn gate(plan: &Plan, opts: &SyncOpts, home_dir: &Path) -> Option<Outcome> {
 /// Whether `entry` (from `--confirm-delete`, or a unit the person said y
 /// to) names `u`: its unit path, or this leaf's path for it.
 pub fn confirms(entry: &str, u: &PlannedUnit, home_dir: &Path) -> bool {
+    names(entry, &u.rel, &u.leaf_path, home_dir)
+}
+
+/// Whether a command-line `entry` names the unit `rel`: its unit path, or
+/// its path here (`leaf_path`; absolute or `~/`), component by component.
+pub fn names(entry: &str, rel: &str, leaf_path: &Path, home_dir: &Path) -> bool {
     let entry = entry.trim_end_matches('/');
-    if entry == u.rel {
+    if entry == rel {
         return true;
     }
     let local = match entry.strip_prefix("~/") {
         Some(rest) => home_dir.join(rest),
         None => Path::new(entry).to_path_buf(),
     };
-    local.is_absolute() && local == u.leaf_path
+    local.is_absolute() && local == leaf_path
 }
 
 fn summary(outcome: &Outcome, applied: &[AppliedUnit]) -> String {

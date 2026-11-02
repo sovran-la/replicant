@@ -42,6 +42,7 @@ fn undo_follows_the_first_run_that_touched_each_path() {
         ],
         finished_at: None,
         rolled_back_at: None,
+        rollback_settled_at: None,
     };
     let u = undo(&p);
     assert_eq!(u.restore, vec![vec!["a", "gone"], vec!["b"], vec!["c"]]);
@@ -76,6 +77,7 @@ fn old_backups_are_swept_unless_their_push_is_still_open() {
                 runs: vec![],
                 finished_at: None,
                 rolled_back_at: None,
+                rollback_settled_at: None,
             })
             .unwrap();
     };

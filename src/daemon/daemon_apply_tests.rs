@@ -143,7 +143,13 @@ fn an_interrupted_pull_shows_in_status_resumes_and_clears() {
     assert_eq!(row(st.plan.as_ref().unwrap()), resume);
 
     let before = testutil::fingerprint(&bed.leaf_hd);
-    let LocalReply::Plan(p) = local(&bed.leaf_dirs, LocalRequest::DryRun { no_wait: true }) else {
+    let LocalReply::Plan(p) = local(
+        &bed.leaf_dirs,
+        LocalRequest::DryRun {
+            no_wait: true,
+            accept_rollback: vec![],
+        },
+    ) else {
         panic!()
     };
     assert_eq!(row(&p), resume);

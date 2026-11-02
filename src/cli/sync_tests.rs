@@ -67,20 +67,35 @@ fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) ->
         state_dir: &state,
         scratch_dir: &scratch,
         rsync: RSYNC,
+        accept_rollback: &[],
     };
     let call = |req: LocalRequest| -> Result<LocalReply> {
         match req {
-            LocalRequest::DryRun { no_wait } => {
-                sent.borrow_mut().push("dry-run".into());
+            LocalRequest::DryRun {
+                no_wait,
+                accept_rollback,
+            } => {
+                sent.borrow_mut().push(match accept_rollback.is_empty() {
+                    true => "dry-run".into(),
+                    false => format!("dry-run accept:{accept_rollback:?}"),
+                });
+                let ctx = LeafCtx {
+                    accept_rollback: &accept_rollback,
+                    ..ctx
+                };
                 Ok(LocalReply::Plan(Box::new(crate::plan::plan(
                     &link, ctx, true, no_wait,
                 )?)))
             }
             LocalRequest::Sync { opts } => {
                 sent.borrow_mut().push(format!(
-                    "sync expect:{} confirm:{:?}",
+                    "sync expect:{} confirm:{:?}{}",
                     opts.expect.is_some(),
-                    opts.confirm_delete
+                    opts.confirm_delete,
+                    match opts.accept_rollback.is_empty() {
+                        true => String::new(),
+                        false => format!(" accept:{:?}", opts.accept_rollback),
+                    }
                 ));
                 Ok(LocalReply::Synced(Box::new(crate::plan::apply::sync(
                     &link, ctx, &opts,
@@ -293,3 +308,6 @@ fn dry_run_only_plans_and_json_needs_an_answerless_mode() {
         .to_string();
     assert!(e.contains("--json needs --dry-run or --yes"), "{e}");
 }
+
+#[path = "sync_rollback_tests.rs"]
+mod rollback;

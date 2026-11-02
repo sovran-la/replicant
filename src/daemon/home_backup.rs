@@ -15,11 +15,9 @@
 //! file the first run already replaced keeps its original copy in run 1.
 //!
 //! Backups older than fleet.toml's `[daemon] backup_days` (default 14) are
-//! swept when home starts and once a day after, except any whose push still
-//! has its marker open.
+//! swept when home starts and once a day after (`home_sweep.rs`).
 
 use super::Home;
-use crate::daemon::journal::Line;
 use crate::marker::{self, Marker};
 use crate::record::{RECORD_VERSION, Record, Store};
 use crate::rsync::{self, Client, Runner};
@@ -50,6 +48,11 @@ pub struct Push {
     pub finished_at: Option<u64>,
     #[serde(default)]
     pub rolled_back_at: Option<u64>,
+    /// When the pushing host and home agreed on the unit again after the
+    /// rollback (review A2). Until then home reports the rollback to that
+    /// host, whose sync holds the unit, and the sweep keeps the backup.
+    #[serde(default)]
+    pub rollback_settled_at: Option<u64>,
 }
 
 /// One rsync of a push: the first, or a resume.
@@ -170,6 +173,7 @@ impl Home {
                 runs: vec![],
                 finished_at: None,
                 rolled_back_at: None,
+                rollback_settled_at: None,
             },
         };
         let run_dir = self
@@ -243,57 +247,5 @@ impl Home {
         }
         store.put(&push)?;
         Ok(Some(id))
-    }
-
-    /// Delete backups older than fleet.toml's `backup_days`, except those
-    /// whose push still has a marker open. Returns how many went.
-    pub fn sweep_backups(&self, now: u64) -> Result<usize> {
-        let keep = self.fleet()?.backup_keep.as_secs();
-        let open: Vec<String> = marker::store(&self.dirs.state())
-            .all::<Marker>()?
-            .into_iter()
-            .filter_map(|m| m.push)
-            .collect();
-        let store = pushes(&self.dirs.state());
-        let mut gone = 0;
-        let hosts = match std::fs::read_dir(self.dirs.backup()) {
-            Ok(h) => h,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-            Err(e) => return Err(e.into()),
-        };
-        for h in hosts {
-            let h = h?;
-            let Some(host) = h.file_name().to_str().map(String::from) else {
-                continue;
-            };
-            if !h.file_type()?.is_dir() {
-                continue;
-            }
-            for d in std::fs::read_dir(h.path())? {
-                let d = d?;
-                let Some(name) = d.file_name().to_str().map(String::from) else {
-                    continue;
-                };
-                let id = format!("{host}/{name}");
-                let Some(at) = timefmt::parse_compact(name.split('-').next().unwrap_or("")) else {
-                    continue;
-                };
-                if check_id(&id).is_err() || now.saturating_sub(at) < keep || open.contains(&id) {
-                    continue;
-                }
-                std::fs::remove_dir_all(d.path())?;
-                store.delete(&id)?;
-                gone += 1;
-            }
-        }
-        if gone > 0 {
-            let mut j = Vec::new();
-            let detail = format!(
-                "removed {gone} push backups older than {} days",
-                keep / 86_400
-            );
-            self.journal(&mut j, Line::new("backup-sweep", &self.name()?, "", detail));
-        }
-        Ok(gone)
     }
 }

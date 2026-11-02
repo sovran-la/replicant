@@ -244,8 +244,8 @@ pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
     (
         "daemon/home_backup.rs",
         "remove_dir_all(",
-        2,
-        "a failed run's backup dir, and swept backups: backup/",
+        1,
+        "a failed run's backup dir: backup/",
     ),
     (
         "daemon/home_backup.rs",
@@ -254,10 +254,22 @@ pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
         "push manifests: state dir",
     ),
     (
-        "daemon/home_backup.rs",
+        "daemon/home_sweep.rs",
+        "remove_dir_all(",
+        1,
+        "swept backups: backup/",
+    ),
+    (
+        "daemon/home_sweep.rs",
         ".delete(",
         1,
         "a swept push's manifest: state dir",
+    ),
+    (
+        "daemon/home_rolled_back.rs",
+        ".put(",
+        1,
+        "a rollback settled, on its push's manifest: state dir",
     ),
     (
         "daemon/home_rollback.rs",

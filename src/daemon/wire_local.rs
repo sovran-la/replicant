@@ -34,6 +34,9 @@ pub enum LocalRequest {
     Fleet,
     DryRun {
         no_wait: bool,
+        /// `--accept-rollback`, so the plan shown is the one `Sync` makes.
+        #[serde(default)]
+        accept_rollback: Vec<String>,
     },
     /// `sync` without `--dry-run`: plan, and apply what may be applied.
     Sync {

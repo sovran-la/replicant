@@ -138,6 +138,7 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
             yes,
             non_interactive,
             confirm_delete,
+            accept_rollback,
             no_wait,
             json,
             verbose,
@@ -147,6 +148,10 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
                 yes,
                 interactive: !non_interactive && std::io::stdin().is_terminal(),
                 confirm_delete: confirm_delete
+                    .iter()
+                    .map(|p| confirm_path(p, &cwd))
+                    .collect(),
+                accept_rollback: accept_rollback
                     .iter()
                     .map(|p| confirm_path(p, &cwd))
                     .collect(),
