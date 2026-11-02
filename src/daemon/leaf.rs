@@ -4,7 +4,7 @@
 use super::journal::{Journal, Line};
 use super::wire::*;
 use crate::config::{Dirs, HomeEntry, LeafConfig, leaf::check_local, short_hostname, with_port};
-use crate::plan::apply::Outcome;
+use crate::plan::apply::{Outcome, Progress};
 use crate::plan::{self, HomeLink, LeafCtx};
 use crate::{Error, Result, paths};
 use link::Link;
@@ -40,12 +40,13 @@ impl Leaf {
     /// or revoked), ask over the bootstrap for a reissued certificate and,
     /// given one, try once more: home refuses an unknown certificate before
     /// acting on anything, so the retry repeats nothing.
-    pub fn handle(&self, req: LocalRequest) -> LocalAnswer {
-        let first = self.dispatch(req.clone());
+    /// A sync announces its units to `progress`.
+    pub fn handle(&self, req: LocalRequest, progress: &Progress<'_>) -> LocalAnswer {
+        let first = self.dispatch(req.clone(), progress);
         match first {
             Err(e) if e.to_string().contains(super::home::UNKNOWN_CERT) => {
                 match self.cfg().and_then(|cfg| self.recollect(&cfg)) {
-                    Ok(true) => self.dispatch(req),
+                    Ok(true) => self.dispatch(req, progress),
                     Ok(false) => Err(e),
                     Err(c) => Err(Error::Remote(format!("{e}\nasking for a new one: {c}"))),
                 }
@@ -55,7 +56,7 @@ impl Leaf {
         .map_err(|e| e.to_string())
     }
 
-    fn dispatch(&self, req: LocalRequest) -> Result<LocalReply> {
+    fn dispatch(&self, req: LocalRequest, progress: &Progress<'_>) -> Result<LocalReply> {
         match req {
             LocalRequest::Ping => Ok(LocalReply::Pong {
                 role: "leaf".into(),
@@ -102,7 +103,8 @@ impl Leaf {
             }),
             LocalRequest::Sync { opts } => {
                 let (me, report) = self.planning(&opts.accept_rollback, |link, ctx| {
-                    Ok((ctx.me.to_string(), plan::apply::sync(link, ctx, &opts)?))
+                    let report = plan::apply::sync_with(link, ctx, &opts, progress)?;
+                    Ok((ctx.me.to_string(), report))
                 })?;
                 journal_unheard(&self.journal, &me, &report.outcome);
                 Ok(LocalReply::Synced(Box::new(report)))

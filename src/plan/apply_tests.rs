@@ -21,6 +21,8 @@ pub(crate) mod fail;
 pub(crate) mod marker_tests;
 #[path = "apply_more_tests.rs"]
 mod more;
+#[path = "apply_progress_tests.rs"]
+mod progress_tests;
 #[path = "apply_resume_tests.rs"]
 mod resume_tests;
 

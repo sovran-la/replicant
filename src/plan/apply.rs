@@ -18,6 +18,8 @@ use crate::units::UnitKind;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
+pub use super::progress::{Progress, ProgressEvent, UnitOutcome};
+
 #[path = "apply_gate.rs"]
 mod gate;
 #[path = "apply_unit.rs"]
@@ -115,6 +117,16 @@ pub(super) struct Stash {
 /// written (home unreachable, a refused queue entry, a plan that failed);
 /// every outcome once apply began is in the report.
 pub fn sync(link: &dyn HomeLink, ctx: LeafCtx<'_>, opts: &SyncOpts) -> Result<SyncReport> {
+    sync_with(link, ctx, opts, &Progress::silent())
+}
+
+/// [`sync`], announcing each unit to `progress` as it starts and ends.
+pub fn sync_with(
+    link: &dyn HomeLink,
+    ctx: LeafCtx<'_>,
+    opts: &SyncOpts,
+    progress: &Progress<'_>,
+) -> Result<SyncReport> {
     let stash: Mutex<Stash> = Mutex::default();
     let ctx = LeafCtx {
         accept_rollback: &opts.accept_rollback,
@@ -124,7 +136,7 @@ pub fn sync(link: &dyn HomeLink, ctx: LeafCtx<'_>, opts: &SyncOpts) -> Result<Sy
         stash.lock().unwrap_or_else(|e| e.into_inner()).plan = Some(p.plan.clone());
         let outcome = match gate(p.plan, opts, ctx.home_dir, &p.snap.rolled_back) {
             Some(o) => o,
-            None => unit::apply_all(link, ctx, watch, &p, &stash),
+            None => unit::apply_all(link, ctx, watch, &p, &stash, progress),
         };
         stash.lock().unwrap_or_else(|e| e.into_inner()).outcome = Some(outcome);
         Ok(())
