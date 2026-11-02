@@ -26,6 +26,7 @@ mod plan_step;
 #[path = "apply_each.rs"]
 mod each;
 pub(super) use each::apply_all;
+use each::stopped_before;
 
 fn failed(u: &PlannedUnit, e: Error) -> Outcome {
     Outcome::Failed {
@@ -75,6 +76,11 @@ fn transfer(
             "note",
         )?;
     }
+    // Nothing of a unit is written once the abort is raised, not even its
+    // marker; the confirm-delete note above is a round-trip to home.
+    if watch.abort().raised() {
+        return Ok(Done::Stopped(stopped_before(u, watch)));
+    }
     // The marker: before the rsync, on the target.
     let source_state = match (deleting, t.direction) {
         (true, _) => UnitState::Empty,
@@ -116,6 +122,10 @@ fn transfer(
                 .filter(|c| !c.is_dir && c.kind != ChangeKind::Create)
                 .map(|c| c.path.clone())
                 .collect();
+            // Home's marker and backup are the push's first writes.
+            if watch.abort().raised() {
+                return Ok(Done::Stopped(stopped_before(u, watch)));
+            }
             let reply = link.call(HomeRequest::BeginPush {
                 lease,
                 rel: u.rel.clone(),
@@ -156,7 +166,9 @@ fn transfer(
         }));
     }
     // A lease lost while rsync ran means another entry may have run beside
-    // it: what arrived is not known to be whole. The marker stays.
+    // it: what arrived is not known to be whole. The marker stays. The
+    // lease only, not the abort: a hangup after exit 0 lost no exclusivity
+    // and the rsync finished whole, so the unit finishes (review P2).
     if let Err(e) = watch.check() {
         let why = e.to_string();
         let journaled = link

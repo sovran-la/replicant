@@ -13,8 +13,12 @@ use crate::testutil::{self, Bed, InProcess};
 use std::collections::{BTreeMap, BTreeSet};
 pub(crate) use std::path::Path;
 
+#[path = "apply_abort_tests.rs"]
+mod abort_tests;
 #[path = "apply_block_tests.rs"]
 mod block;
+#[path = "apply_digest_tests.rs"]
+mod digest_tests;
 #[path = "apply_fail_tests.rs"]
 pub(crate) mod fail;
 #[path = "apply_hangup_tests.rs"]
@@ -24,7 +28,7 @@ pub(crate) mod marker_tests;
 #[path = "apply_more_tests.rs"]
 mod more;
 #[path = "apply_progress_tests.rs"]
-mod progress_tests;
+pub(crate) mod progress_tests;
 #[path = "apply_resume_tests.rs"]
 mod resume_tests;
 

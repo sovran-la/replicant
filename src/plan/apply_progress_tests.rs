@@ -9,7 +9,7 @@ use std::cell::RefCell;
 
 /// `sync` as `leaf` with the system rsync, collecting every event; `on`
 /// sees each as it is announced, with the sync's abort.
-fn sync_watched(
+pub(super) fn sync_watched(
     bed: &Bed,
     home: &Home,
     on: &dyn Fn(&ProgressEvent, &crate::rsync::Abort),

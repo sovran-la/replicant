@@ -7,7 +7,7 @@ use crate::daemon::wire::{HomeReply, HomeRequest};
 use crate::plan::HomeLink;
 
 /// Nothing changed anywhere: both trees, markers, baselines on both sides.
-fn untouched(bed: &Bed, run: impl FnOnce() -> SyncReport) -> SyncReport {
+pub(super) fn untouched(bed: &Bed, run: impl FnOnce() -> SyncReport) -> SyncReport {
     let before = (
         testutil::fingerprint(&bed.home_hd),
         testutil::fingerprint(&bed.leaf_hd),
@@ -171,10 +171,9 @@ fn a_plan_that_changed_since_it_was_confirmed_writes_nothing() {
     tree(&bed.home_hd.join("work"));
     let home = bed.home();
     let seen = plan_of(&bed, &home, true);
-    testutil::write(
-        &bed.home_hd.join("work/notes.txt"),
-        "edited after the prompt\n",
-    );
+    // A unit more than was shown. (An edit to what is already shown is not
+    // a change of plan: see `apply_digest_tests.rs`.)
+    testutil::repo(&bed.home_hd.join("work/added"));
     let opts = SyncOpts {
         expect: Some(seen.digest()),
         ..Default::default()
