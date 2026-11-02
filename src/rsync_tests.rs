@@ -234,3 +234,22 @@ fn rsync_failure_is_an_error_naming_the_command() {
     let err = x.dry_run(&testutil::runner()).unwrap_err().to_string();
     assert!(err.contains("rsync") && err.contains("--dry-run"), "{err}");
 }
+
+#[test]
+fn a_stopped_rsync_says_why_it_was_stopped() {
+    let x = t(
+        Direction::Pull,
+        Path::new("/nonexistent/leaf"),
+        Path::new("/nonexistent/home"),
+    );
+    let lease = testutil::runner();
+    lease.abort.raise();
+    let err = x.dry_run(&lease).unwrap_err().to_string();
+    assert!(err.contains("lease on home's queue was lost"), "{err}");
+
+    let hangup = testutil::runner();
+    hangup.abort.raise_because("the CLI hung up");
+    let err = x.dry_run(&hangup).unwrap_err().to_string();
+    assert!(err.contains("was stopped: the CLI hung up"), "{err}");
+    assert!(!err.contains("lease"), "{err}");
+}

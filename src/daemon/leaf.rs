@@ -4,8 +4,8 @@
 use super::journal::{Journal, Line};
 use super::wire::*;
 use crate::config::{Dirs, HomeEntry, LeafConfig, leaf::check_local, short_hostname, with_port};
-use crate::plan::apply::Outcome;
-use crate::plan::{self, HomeLink, LeafCtx, LeafStatus};
+use crate::plan::apply::{Outcome, Progress};
+use crate::plan::{self, HomeLink, LeafCtx};
 use crate::{Error, Result, paths};
 use link::Link;
 use std::path::PathBuf;
@@ -17,6 +17,8 @@ pub struct Leaf {
 
 #[path = "leaf_link.rs"]
 mod link;
+#[path = "leaf_status.rs"]
+mod status;
 
 impl Leaf {
     pub fn open(dirs: Dirs) -> Self {
@@ -38,12 +40,14 @@ impl Leaf {
     /// or revoked), ask over the bootstrap for a reissued certificate and,
     /// given one, try once more: home refuses an unknown certificate before
     /// acting on anything, so the retry repeats nothing.
-    pub fn handle(&self, req: LocalRequest) -> LocalAnswer {
-        let first = self.dispatch(req.clone());
+    /// A sync announces its units to `progress`, and stops once its abort
+    /// is raised (the CLI hung up).
+    pub fn handle(&self, req: LocalRequest, progress: &Progress<'_>) -> LocalAnswer {
+        let first = self.dispatch(req.clone(), progress);
         match first {
             Err(e) if e.to_string().contains(super::home::UNKNOWN_CERT) => {
                 match self.cfg().and_then(|cfg| self.recollect(&cfg)) {
-                    Ok(true) => self.dispatch(req),
+                    Ok(true) => self.dispatch(req, progress),
                     Ok(false) => Err(e),
                     Err(c) => Err(Error::Remote(format!("{e}\nasking for a new one: {c}"))),
                 }
@@ -53,7 +57,7 @@ impl Leaf {
         .map_err(|e| e.to_string())
     }
 
-    fn dispatch(&self, req: LocalRequest) -> Result<LocalReply> {
+    fn dispatch(&self, req: LocalRequest, progress: &Progress<'_>) -> Result<LocalReply> {
         match req {
             LocalRequest::Ping => Ok(LocalReply::Pong {
                 role: "leaf".into(),
@@ -100,7 +104,8 @@ impl Leaf {
             }),
             LocalRequest::Sync { opts } => {
                 let (me, report) = self.planning(&opts.accept_rollback, |link, ctx| {
-                    Ok((ctx.me.to_string(), plan::apply::sync(link, ctx, &opts)?))
+                    let report = plan::apply::sync_with(link, ctx, &opts, progress)?;
+                    Ok((ctx.me.to_string(), report))
                 })?;
                 journal_unheard(&self.journal, &me, &report.outcome);
                 Ok(LocalReply::Synced(Box::new(report)))
@@ -204,81 +209,6 @@ impl Leaf {
             cfg.save(&self.dirs.leaf())?;
         }
         Ok(LocalReply::Subscribed(out))
-    }
-
-    fn status(&self) -> Result<LeafStatus> {
-        let cfg = self.cfg()?;
-        let me = cfg.name()?;
-        let link = match self.link(&cfg)? {
-            Link::Host(r) => r,
-            // Not enrolled yet: what home said about it is the whole status.
-            Link::Bootstrap(_, state) => {
-                let (home, enrollment, pending_paths) = match state {
-                    Collected::Pending { home, paths } => (home, Enrollment::Pending, paths),
-                    Collected::Unknown { home } => (home, Enrollment::Unknown, vec![]),
-                    Collected::Issued { .. } => unreachable!("link() keeps an issued bundle"),
-                };
-                return Ok(LeafStatus {
-                    me,
-                    home,
-                    enrollment,
-                    cap: None,
-                    paths: vec![],
-                    except: vec![],
-                    as_local: cfg.as_local,
-                    pending_paths,
-                    plan: None,
-                    queue: vec![],
-                    markers: vec![],
-                });
-            }
-        };
-        let view = plan::subscriptions(&link)?;
-        let (hd, state, scratch) = (cfg.home_dir()?, self.dirs.state(), self.dirs.scratch());
-        let planned = match view.enrollment {
-            Enrollment::Enrolled => Some(plan::plan(
-                &link,
-                LeafCtx {
-                    me: &me,
-                    home_dir: &hd,
-                    cfg: &cfg,
-                    state_dir: &state,
-                    scratch_dir: &scratch,
-                    rsync: plan::RSYNC,
-                    accept_rollback: &[],
-                },
-                false,
-                false,
-            )?),
-            _ => None,
-        };
-        let (queue, home_markers) = match link.call(HomeRequest::FleetState)? {
-            HomeReply::Fleet(f) => (f.queue, f.markers),
-            _ => (vec![], vec![]),
-        };
-        let markers = plan::open_markers(
-            &me,
-            &view.home,
-            crate::marker::store(&state).all()?,
-            &home_markers,
-            &view.specs,
-            view.marker_alert_secs,
-            crate::now_secs(),
-        );
-        let except = view.specs.iter().flat_map(|s| s.except.clone()).collect();
-        Ok(LeafStatus {
-            me,
-            home: view.home,
-            enrollment: view.enrollment,
-            cap: view.cap,
-            paths: view.specs.into_iter().map(|s| s.rel).collect(),
-            except,
-            as_local: cfg.as_local,
-            pending_paths: view.pending_paths,
-            plan: planned,
-            queue,
-            markers,
-        })
     }
 }
 

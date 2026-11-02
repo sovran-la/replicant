@@ -6,18 +6,25 @@
 use super::*;
 use crate::baseline::Baseline;
 use crate::daemon::home::{Home, leaf_baselines};
+pub(crate) use crate::decide::Decision;
 use crate::marker::Marker;
+pub(crate) use crate::plan::PlannedUnit;
 use crate::testutil::{self, Bed, InProcess};
 use std::collections::{BTreeMap, BTreeSet};
+pub(crate) use std::path::Path;
 
 #[path = "apply_block_tests.rs"]
 mod block;
 #[path = "apply_fail_tests.rs"]
 pub(crate) mod fail;
+#[path = "apply_hangup_tests.rs"]
+mod hangup_tests;
 #[path = "apply_marker_tests.rs"]
 pub(crate) mod marker_tests;
 #[path = "apply_more_tests.rs"]
 mod more;
+#[path = "apply_progress_tests.rs"]
+mod progress_tests;
 #[path = "apply_resume_tests.rs"]
 mod resume_tests;
 

@@ -70,13 +70,25 @@ impl Runner {
         let out = child::run(&self.program, args, self.timeout, &self.abort)?;
         match out.stopped {
             None => Ok(out),
-            Some(why) => Err(stopped_error(&self.program, args, self.timeout, why)),
+            Some(why) => Err(stopped_error(
+                &self.program,
+                args,
+                self.timeout,
+                why,
+                self.abort.why(),
+            )),
         }
     }
 }
 
 /// What a stopped rsync is reported as.
-fn stopped_error(program: &str, args: &[String], timeout: Duration, why: Stopped) -> Error {
+fn stopped_error(
+    program: &str,
+    args: &[String],
+    timeout: Duration,
+    why: Stopped,
+    aborted_because: Option<String>,
+) -> Error {
     match why {
         Stopped::TimedOut => Error::Rsync(format!(
             "{program} {} did not finish within {}s; killed it",
@@ -84,8 +96,9 @@ fn stopped_error(program: &str, args: &[String], timeout: Duration, why: Stopped
             timeout.as_secs()
         )),
         Stopped::Aborted => Error::Rsync(format!(
-            "{program} {} was stopped: this run's lease on home's queue was lost",
-            args.join(" ")
+            "{program} {} was stopped: {}",
+            args.join(" "),
+            aborted_because.unwrap_or_else(|| "this run's lease on home's queue was lost".into())
         )),
     }
 }

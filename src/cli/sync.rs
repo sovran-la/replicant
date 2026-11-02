@@ -14,6 +14,12 @@
 //! `--non-interactive`, or no terminal, never asks: without `--yes` it
 //! shows the plan and stops (exit 2); every report that is not a clean
 //! finish goes to stderr, the one channel the agents daemon keeps.
+//!
+//! While the daemon applies, each unit is shown as it starts and ends: on
+//! stdout at a terminal, on stderr without one (stdout then carries only the
+//! report, as before). With `--json`, one object per line: each event, then
+//! the report. Ctrl-C here hangs up on the daemon, which stops the running
+//! rsync and leaves its unit interrupted, its marker kept.
 
 use super::render::{self, Style};
 use crate::Result;
@@ -21,7 +27,7 @@ use crate::daemon::wire::{LocalReply, LocalRequest};
 use crate::decide::Decision;
 use crate::guard::Guard;
 use crate::plan::Plan;
-use crate::plan::apply::{SyncOpts, confirms};
+use crate::plan::apply::{ProgressEvent, SyncOpts, confirms};
 use std::io::{BufRead, Write};
 
 /// What `sync` was asked for, paths already absolutized.
@@ -50,7 +56,8 @@ pub struct Term<'a> {
     pub style: Style,
 }
 
-type Call<'c> = &'c dyn Fn(LocalRequest) -> Result<LocalReply>;
+/// Ask the daemon; a sync's progress goes to the sink as it arrives.
+pub type Call<'c> = &'c dyn Fn(LocalRequest, &mut dyn FnMut(ProgressEvent)) -> Result<LocalReply>;
 
 /// Run `sync`; the return value is the exit code.
 pub fn run(a: &Args, t: &mut Term<'_>, call: Call<'_>) -> Result<i32> {
@@ -58,7 +65,7 @@ pub fn run(a: &Args, t: &mut Term<'_>, call: Call<'_>) -> Result<i32> {
         let p = plan(a, call)?;
         let code = if p.blocked() { 2 } else { 0 };
         let text = render::plan(&p, a.verbose, t.style);
-        return show(a, t, code, text, &p);
+        return show(a, t, code, text, &p, false);
     }
     if a.yes {
         return send(a, t, a.confirm_delete.clone(), None, true, call);
@@ -113,10 +120,11 @@ pub fn run(a: &Args, t: &mut Term<'_>, call: Call<'_>) -> Result<i32> {
 }
 
 fn plan(a: &Args, call: Call<'_>) -> Result<Plan> {
-    match call(LocalRequest::DryRun {
+    let req = LocalRequest::DryRun {
         no_wait: a.no_wait,
         accept_rollback: a.accept_rollback.clone(),
-    })? {
+    };
+    match call(req, &mut |_| {})? {
         LocalReply::Plan(p) => Ok(*p),
         _ => Err(super::unexpected_reply()),
     }
@@ -168,26 +176,56 @@ fn send(
         expect,
         accept_rollback: a.accept_rollback.clone(),
     };
-    let LocalReply::Synced(r) = call(LocalRequest::Sync { opts })? else {
+    let mut streamed = 0;
+    let reply = {
+        let (json, style) = (a.json, t.style);
+        let w: &mut dyn Write = if a.interactive {
+            &mut *t.out
+        } else {
+            &mut *t.err
+        };
+        let mut on = |e: ProgressEvent| {
+            streamed += 1;
+            let line = match json {
+                true => serde_json::to_string(&e)
+                    .map(|j| j + "\n")
+                    .unwrap_or_default(),
+                false => render::progress(&e, style),
+            };
+            // Best effort: a terminal gone away loses the progress, not the
+            // sync; the report's own write reports it.
+            let _ = w.write_all(line.as_bytes()).and_then(|()| w.flush());
+        };
+        call(LocalRequest::Sync { opts }, &mut on)?
+    };
+    let LocalReply::Synced(r) = reply else {
         return Err(super::unexpected_reply());
     };
     let code = r.outcome.exit_code();
+    // Where the units already went by as they ran (stdout at a terminal;
+    // stderr otherwise, which is where a report that is not a clean finish
+    // goes too), the report does not list them again, nor the plan, unless
+    // asked to (--verbose) or nothing ran (the plan says why).
+    let seen = streamed > 0 && (a.interactive || code != 0);
+    let list = a.verbose || !seen;
     let mut text = String::new();
-    if with_plan {
+    if with_plan && list {
         text.push_str(&render::plan(&r.plan, a.verbose, t.style));
     }
-    text.push_str(&render::synced(&r, t.style));
-    show(a, t, code, text, &*r)
+    text.push_str(&render::synced(&r, list, t.style));
+    show(a, t, code, text, &*r, true)
 }
 
-/// Print `text` (or `json`): to stdout, unless this is a non-interactive
-/// run that did not finish cleanly, which reports on stderr.
+/// Print `text` (or `json`; on one line when it ends a stream of events):
+/// to stdout, unless this is a non-interactive run that did not finish
+/// cleanly, which reports on stderr.
 fn show(
     a: &Args,
     t: &mut Term<'_>,
     code: i32,
     text: String,
     json: &dyn erased_json::Json,
+    one_line: bool,
 ) -> Result<i32> {
     let w: &mut dyn Write = if !a.interactive && code != 0 {
         &mut *t.err
@@ -195,7 +233,7 @@ fn show(
         &mut *t.out
     };
     if a.json {
-        writeln!(w, "{}", json.json()?)?;
+        writeln!(w, "{}", json.json(one_line)?)?;
     } else {
         write!(w, "{text}")?;
     }
@@ -204,11 +242,15 @@ fn show(
 
 mod erased_json {
     pub trait Json {
-        fn json(&self) -> crate::Result<String>;
+        fn json(&self, one_line: bool) -> crate::Result<String>;
     }
     impl<T: serde::Serialize> Json for T {
-        fn json(&self) -> crate::Result<String> {
-            serde_json::to_string_pretty(self).map_err(|e| crate::Error::Daemon(e.to_string()))
+        fn json(&self, one_line: bool) -> crate::Result<String> {
+            match one_line {
+                true => serde_json::to_string(self),
+                false => serde_json::to_string_pretty(self),
+            }
+            .map_err(|e| crate::Error::Daemon(e.to_string()))
         }
     }
 }

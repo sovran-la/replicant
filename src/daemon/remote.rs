@@ -33,8 +33,14 @@ pub fn send<W: Write, T: Serialize>(w: &mut W, v: &T) -> Result<()> {
 
 /// Read one line as one message.
 pub fn recv<R: Read, T: DeserializeOwned>(r: R) -> Result<T> {
+    recv_buffered(&mut BufReader::new(r))
+}
+
+/// [`recv`] from a reader kept across messages: whatever it buffered past
+/// this line is the next message's, not lost with a throwaway buffer.
+pub fn recv_buffered<R: BufRead, T: DeserializeOwned>(r: &mut R) -> Result<T> {
     let mut line = Vec::new();
-    BufReader::new(r.take(MAX_MESSAGE)).read_until(b'\n', &mut line)?;
+    r.take(MAX_MESSAGE).read_until(b'\n', &mut line)?;
     if line.is_empty() {
         return Err(Error::Remote(
             "the peer closed the connection without answering".into(),

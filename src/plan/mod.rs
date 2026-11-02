@@ -13,17 +13,18 @@ mod decide_all;
 mod diff;
 mod lease;
 mod open;
+pub mod progress;
+mod report;
 mod types;
 mod unserved;
 
 pub use open::{OpenMarker, open_markers};
+pub(crate) use report::report;
 pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings, Tone};
 
 use crate::baseline::{self, Baseline};
 use crate::config::LeafConfig;
-use crate::daemon::wire::{
-    Enrollment, HomeReply, HomeRequest, HomeSnapshot, ReportedUnit, SubscriptionsView,
-};
+use crate::daemon::wire::{Enrollment, HomeReply, HomeRequest, HomeSnapshot, SubscriptionsView};
 use crate::marker::{self, Marker};
 use crate::units::{self, Discovered};
 use crate::{Error, Result};
@@ -102,7 +103,7 @@ pub(crate) struct Planned<'a> {
 /// Plan every unit. `dry_run` adds the queue entry, rsync diffs and guards.
 pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool) -> Result<Plan> {
     let mode = if dry_run { Mode::DryRun } else { Mode::Status };
-    let (plan, ()) = run(link, ctx, mode, no_wait, |_, _| Ok(()))?;
+    let (plan, ()) = run(link, ctx, mode, no_wait, Default::default(), |_, _| Ok(()))?;
     report(
         link,
         ctx,
@@ -114,44 +115,16 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
     Ok(plan)
 }
 
-/// Tell home what was decided (and, for a sync, whether it finished), with
-/// this leaf's open markers, for the fleet view and the journal. The work
-/// is done either way; only home's line is missing if this fails.
-pub(crate) fn report(
-    link: &dyn HomeLink,
-    ctx: LeafCtx<'_>,
-    event: &str,
-    plan: &Plan,
-    summary: String,
-    sync_ok: Option<bool>,
-) {
-    let markers = marker::store(ctx.state_dir).all().unwrap_or_default();
-    let reported = plan
-        .units
-        .iter()
-        .map(|u| ReportedUnit {
-            rel: u.rel.clone(),
-            decision: u.decision.clone(),
-        })
-        .collect();
-    if let Err(e) = link.call(HomeRequest::Report {
-        event: event.into(),
-        units: reported,
-        summary,
-        markers,
-        sync_ok,
-    }) {
-        eprintln!("replicant: the {event} finished, but home did not journal it: {e}");
-    }
-}
-
 /// Plan, and then run `then` under the same queue entry, its lease still
 /// heartbeated. A lost lease fails the result whatever `then` returned.
+/// `abort` stops every rsync the plan runs once raised, by a lost lease or
+/// by whoever else holds it.
 pub(crate) fn run<T>(
     link: &dyn HomeLink,
     ctx: LeafCtx<'_>,
     mode: Mode,
     no_wait: bool,
+    abort: crate::rsync::Abort,
     then: impl FnOnce(&lease::Watch, Planned<'_>) -> Result<T>,
 ) -> Result<(Plan, T)> {
     let total = Instant::now();
@@ -204,7 +177,7 @@ pub(crate) fn run<T>(
     leaf_repos.sort();
     leaf_repos.dedup();
 
-    let result = lease::with_heartbeat(link, lease, |watch| {
+    let result = lease::with_heartbeat(link, lease, abort, |watch| {
         let started = Instant::now();
         let snap = match link.call(HomeRequest::State {
             leaf_repos: leaf_repos.clone(),

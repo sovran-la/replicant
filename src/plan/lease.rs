@@ -93,19 +93,26 @@ fn heartbeat(link: &dyn HomeLink, watch: &Watch, window: Duration, stopped: mpsc
 }
 
 /// Run `f` while a thread heartbeats `lease` (`(id, secs)`), if there is one.
-/// A lost lease fails the result whatever `f` returned.
+/// A lost lease fails the result whatever `f` returned. `abort` is the
+/// watch's: a lost lease raises it, and so may whoever else holds a clone
+/// (the CLI hanging up), which stops the running rsync without voiding the
+/// plan.
 pub(super) fn with_heartbeat<T>(
     link: &dyn HomeLink,
     lease: Option<(u64, u64)>,
+    abort: Abort,
     f: impl FnOnce(&Watch) -> Result<T>,
 ) -> Result<T> {
     let Some((id, secs)) = lease else {
-        return f(&Watch::default());
+        return f(&Watch {
+            abort,
+            ..Watch::default()
+        });
     };
     let watch = Watch {
         id,
         lost: Mutex::new(None),
-        abort: Abort::default(),
+        abort,
     };
     let window = Duration::from_secs(secs.max(1));
     let (stop, stopped) = mpsc::channel::<()>();

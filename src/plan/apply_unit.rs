@@ -8,82 +8,24 @@
 //! the source (a change since is then still a change), and hashed again
 //! after the rsync for the target.
 
-use super::{AppliedUnit, Outcome, Stash};
-use crate::baseline::{self, Baseline};
+use super::{AppliedUnit, Outcome};
+use crate::baseline;
 use crate::daemon::wire::{HomeReply, HomeRequest};
 use crate::marker::{self, Direction, Marker};
 use crate::plan::lease::Watch;
 use crate::plan::{HomeLink, LeafCtx, Planned, PlannedUnit, diff};
 use crate::record::RECORD_VERSION;
-use crate::rsync::{ChangeKind, Client, Runner, Transfer};
+use crate::rsync::{ChangeKind, Runner, Stopped, Transfer};
 use crate::state::UnitState;
 use crate::{Error, Result};
-use std::sync::Mutex;
+use std::time::Instant;
 
 #[path = "apply_step.rs"]
 mod plan_step;
-use plan_step::{Step, step};
 
-/// Apply every unit of the plan in order, stopping at the first that does
-/// not finish. Records each finished unit in `stash` as it goes.
-pub(super) fn apply_all(
-    link: &dyn HomeLink,
-    ctx: LeafCtx<'_>,
-    watch: &Watch,
-    p: &Planned<'_>,
-    stash: &Mutex<Stash>,
-) -> Outcome {
-    let runner = match Client::detect() {
-        Ok(client) => Runner {
-            program: ctx.rsync.into(),
-            abort: watch.abort().clone(),
-            ..Runner::new(
-                ctx.cfg.rsync_timeout(),
-                client,
-                ctx.scratch_dir.to_path_buf(),
-            )
-        },
-        Err(e) => {
-            return Outcome::Failed {
-                rel: "-".into(),
-                why: e.to_string(),
-            };
-        }
-    };
-    let store = baseline::store(ctx.state_dir);
-    for (i, u) in p.plan.units.iter().enumerate() {
-        let b = match store.get::<Baseline>(&u.rel) {
-            Ok(b) => b,
-            Err(e) => return failed(u, e),
-        };
-        let r = match step(ctx, u, p.transfers[i].as_ref(), b.as_ref()) {
-            Step::Skip => continue,
-            Step::Adopt => adopt(link, ctx, watch, u, false),
-            Step::Forget => adopt(link, ctx, watch, u, true),
-            Step::Transfer {
-                t,
-                action,
-                resumed,
-                deleting,
-            } => match transfer(
-                link, ctx, watch, p, &runner, u, t, deleting, action, resumed,
-            ) {
-                Ok(Done::Ran(applied)) => Ok(applied),
-                Ok(Done::Stopped(o)) => return o,
-                Err(e) => Err(e),
-            },
-        };
-        match r {
-            Ok(a) => stash
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .applied
-                .push(a),
-            Err(e) => return failed(u, e),
-        }
-    }
-    Outcome::Done
-}
+#[path = "apply_each.rs"]
+mod each;
+pub(super) use each::apply_all;
 
 fn failed(u: &PlannedUnit, e: Error) -> Outcome {
     Outcome::Failed {
@@ -119,6 +61,7 @@ fn transfer(
     deleting: bool,
     action: &'static str,
     resumed: bool,
+    started: Instant,
 ) -> Result<Done> {
     let lease = watch.id();
     let markers = marker::store(ctx.state_dir);
@@ -192,7 +135,12 @@ fn transfer(
     let ran = t.apply(runner)?;
     let changes = diff::summarize(&ran.itemized).changes;
     if !ran.ok() {
-        let why = ran.why();
+        // Stopped by whoever raised the abort and said why (the CLI hung
+        // up); without a reason, a lost lease.
+        let why = match (ran.stopped, watch.abort().why()) {
+            (Some(Stopped::Aborted), Some(w)) => format!("{w}; rsync stopped"),
+            _ => ran.why(),
+        };
         let journaled = link
             .call(HomeRequest::Interrupted {
                 rel: u.rel.clone(),
@@ -250,10 +198,11 @@ fn transfer(
     let mut applied = applied(u, action, resumed, &ran);
     applied.push = push;
     let detail = format!(
-        "{action} {} files {} del {}",
+        "{action} {} files {} del {} {}",
         applied.files_changed,
         applied.deleted,
-        if resumed { "resumed → ok" } else { "ok" }
+        crate::timefmt::elapsed(crate::plan::ms(started)),
+        if resumed { "resumed → ok" } else { "ok" },
     );
     expect_done(
         link.call(HomeRequest::Settle {

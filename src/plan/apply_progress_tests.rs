@@ -1,0 +1,212 @@
+//! What a sync announces while it applies: one start and one end per unit
+//! that does something, in plan order, with how long each took; nothing for
+//! a plan that may not go. And an abort raised between units (the CLI gone
+//! after one finished) begins no other.
+
+use super::*;
+use crate::marker::Direction;
+use std::cell::RefCell;
+
+/// `sync` as `leaf` with the system rsync, collecting every event; `on`
+/// sees each as it is announced, with the sync's abort.
+fn sync_watched(
+    bed: &Bed,
+    home: &Home,
+    on: &dyn Fn(&ProgressEvent, &crate::rsync::Abort),
+) -> (SyncReport, Vec<ProgressEvent>) {
+    let link = InProcess {
+        home,
+        host: "leaf".into(),
+        home_dir: bed.leaf_hd.clone(),
+    };
+    let cfg = bed.leaf_cfg();
+    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let seen = RefCell::new(Vec::new());
+    let abort = crate::rsync::Abort::default();
+    let emit = |e: ProgressEvent| {
+        on(&e, &abort);
+        seen.borrow_mut().push(e);
+    };
+    let progress = Progress::new(&emit, abort.clone());
+    let ctx = ctx(bed, &cfg, &dirs, crate::plan::RSYNC);
+    let r = sync_with_progress(&link, ctx, &SyncOpts::default(), &progress).unwrap();
+    (r, seen.into_inner())
+}
+
+use crate::plan::apply::sync_with as sync_with_progress;
+
+/// The events pair up, start then end, one pair per applied unit in the
+/// report's order (which is plan order), numbered 1.. of `total`.
+fn pairs_match(r: &SyncReport, events: &[ProgressEvent], total: usize) {
+    assert_eq!(events.len(), 2 * r.applied.len(), "{events:#?}");
+    for (i, (pair, a)) in events.chunks(2).zip(&r.applied).enumerate() {
+        let ProgressEvent::UnitStarted {
+            rel,
+            action,
+            index,
+            total: t,
+            ..
+        } = &pair[0]
+        else {
+            panic!("not a start: {:?}", pair[0])
+        };
+        assert_eq!((rel, action, *index, *t), (&a.rel, &a.action, i + 1, total));
+        let ProgressEvent::UnitDone {
+            rel,
+            action,
+            files_changed,
+            deleted,
+            elapsed_ms,
+            push,
+            outcome,
+            ..
+        } = &pair[1]
+        else {
+            panic!("not an end: {:?}", pair[1])
+        };
+        assert_eq!(
+            (rel, action, *files_changed, *deleted, push, outcome),
+            (
+                &a.rel,
+                &a.action,
+                a.files_changed,
+                a.deleted,
+                &a.push,
+                &UnitOutcome::Applied
+            )
+        );
+        assert_eq!(
+            *elapsed_ms, a.elapsed_ms,
+            "the report's time is the event's"
+        );
+    }
+    let units: u64 = r.applied.iter().map(|a| a.elapsed_ms).sum();
+    assert!(units <= r.elapsed_ms, "{units} > {}", r.elapsed_ms);
+    assert!(
+        r.elapsed_ms > 0 && r.elapsed_ms < 120_000,
+        "{}",
+        r.elapsed_ms
+    );
+}
+
+#[test]
+fn each_unit_is_announced_as_it_starts_and_ends_in_plan_order() {
+    let bed = Bed::enrolled();
+    tree(&bed.home_hd.join("work"));
+    let home = bed.home();
+    let (r, events) = sync_watched(&bed, &home, &|_, _| {});
+    assert_eq!(r.outcome, Outcome::Done);
+    let rels: Vec<&str> = r.applied.iter().map(|a| a.rel.as_str()).collect();
+    // Plan order: by path, a repo after the loose unit holding it.
+    assert_eq!(
+        rels,
+        ["work", "work/alpha", "work/beta", "work/nested/gamma"]
+    );
+    pairs_match(&r, &events, 4);
+    assert!(events.iter().all(|e| match e {
+        ProgressEvent::UnitStarted { direction, .. }
+        | ProgressEvent::UnitDone { direction, .. } => *direction == Some(Direction::Pull),
+    }));
+    assert!(r.applied.iter().any(|a| a.files_changed > 0));
+
+    // The journal's line for each unit says how long it took.
+    let log = home.log(&Default::default()).unwrap();
+    let alpha = log
+        .iter()
+        .find(|l| l.event == "sync" && l.path == "work/alpha")
+        .unwrap();
+    let words: Vec<&str> = alpha.detail.split(' ').collect();
+    assert_eq!(
+        words[..2],
+        ["pull", &r.applied[1].files_changed.to_string()]
+    );
+    assert!(
+        words[5].ends_with('s') && words[6] == "ok",
+        "{}",
+        alpha.detail
+    );
+    assert!(
+        log.iter().any(|l| l.event == "sync"
+            && l.detail.contains(" units, ")
+            && l.detail.contains(" del in ")),
+        "{log:#?}"
+    );
+
+    // Nothing left to do: nothing announced.
+    let (r, events) = sync_watched(&bed, &home, &|_, _| {});
+    assert!(r.applied.is_empty() && events.is_empty(), "{events:?}");
+}
+
+#[test]
+fn an_adoption_is_announced_too() {
+    let bed = Bed::enrolled();
+    testutil::repo(&bed.home_hd.join("work/r"));
+    let copy = std::process::Command::new("cp")
+        .arg("-Rp")
+        .arg(bed.home_hd.join("work/r"))
+        .arg(bed.leaf_hd.join("work/r"))
+        .status()
+        .unwrap();
+    assert!(copy.success());
+    let home = bed.home();
+    let (r, events) = sync_watched(&bed, &home, &|_, _| {});
+    assert_eq!(r.applied[0].action, "adopt");
+    pairs_match(&r, &events, 1);
+    assert!(matches!(
+        &events[0],
+        ProgressEvent::UnitStarted {
+            direction: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_plan_that_may_not_go_announces_nothing() {
+    let bed = Bed::enrolled();
+    testutil::repo(&bed.home_hd.join("work/r"));
+    let l = testutil::repo(&bed.leaf_hd.join("work/r"));
+    testutil::git(&l, &["commit", "-q", "--allow-empty", "-m", "leaf only"]);
+    let home = bed.home();
+    let (r, events) = sync_watched(&bed, &home, &|e, _| panic!("announced {e:?}"));
+    assert!(
+        matches!(r.outcome, Outcome::Blocked { .. }),
+        "{:?}",
+        r.outcome
+    );
+    assert!(events.is_empty());
+}
+
+#[test]
+fn an_abort_between_units_begins_no_other_and_writes_nothing_of_it() {
+    let bed = Bed::enrolled();
+    tree(&bed.home_hd.join("work"));
+    let home = bed.home();
+    let (r, events) = sync_watched(&bed, &home, &|e, abort| {
+        if let ProgressEvent::UnitDone { rel, .. } = e
+            && rel == "work/alpha"
+        {
+            abort.raise_because(crate::daemon::local::HANGUP);
+        }
+    });
+    match &r.outcome {
+        Outcome::Failed { rel, why } => {
+            assert_eq!(rel, "work/beta");
+            assert!(why.contains("the CLI hung up"), "{why}");
+            assert!(why.contains("nothing of it written"), "{why}");
+        }
+        o => panic!("{o:?}"),
+    }
+    let rels: Vec<&str> = r.applied.iter().map(|a| a.rel.as_str()).collect();
+    assert_eq!(rels, ["work", "work/alpha"]);
+    pairs_match(&r, &events, 4);
+    let markers: Vec<Marker> = crate::marker::store(&bed.leaf_dirs.state()).all().unwrap();
+    assert!(markers.is_empty(), "not even a marker: {markers:?}");
+    assert!(!bed.leaf_hd.join("work/beta").exists());
+    assert!(!bed.leaf_hd.join("work/nested/gamma").exists());
+    assert!(home.queue.view().is_empty(), "the entry was given back");
+    // The next sync carries on from there.
+    let r = yes(&bed, &home);
+    assert_eq!(r.outcome, Outcome::Done);
+    assert!(bed.leaf_hd.join("work/nested/gamma/README").exists());
+}

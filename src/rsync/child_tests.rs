@@ -153,3 +153,24 @@ fn an_abort_raised_before_the_start_stops_at_once() {
     let f = run(&s, &[], Duration::from_secs(60), &abort).unwrap();
     assert_eq!(f.stopped, Some(Stopped::Aborted));
 }
+
+#[test]
+fn an_abort_keeps_the_first_raiser_s_reason() {
+    let a = Abort::default();
+    assert!(!a.raised() && a.why().is_none());
+    a.raise_because("the CLI hung up");
+    a.raise_because("something later");
+    a.raise();
+    assert!(a.raised());
+    assert_eq!(a.why().as_deref(), Some("the CLI hung up"), "first wins");
+    assert_eq!(a.clone().why(), a.why(), "clones share it");
+
+    let lease = Abort::default();
+    lease.raise();
+    lease.raise_because("the CLI hung up");
+    assert_eq!(
+        lease.why(),
+        None,
+        "a reasonless first raise is not relabeled"
+    );
+}

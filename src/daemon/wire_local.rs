@@ -1,13 +1,22 @@
-//! CLI → local daemon, over the Unix socket. Same binary on both ends, same
-//! [`super::WIRE_VERSION`] envelope.
+//! CLI → local daemon, over the Unix socket. Same binary on both ends; its
+//! own version ([`LOCAL_WIRE_VERSION`]), so a change here does not make
+//! home and its leaves upgrade together.
+//!
+//! One [`LocalCall`] goes in; [`LocalFrame`]s come back, one per line: any
+//! number of [`LocalFrame::Progress`] (only a `sync` that applies sends
+//! them), then exactly one answer, `Ok` or `Err`.
 
 use super::{SubscribeOutcome, UnsubscribeOutcome};
 use crate::daemon::fleet::{FleetState, PendingView};
 use crate::daemon::journal::{Filter, Line};
-use crate::plan::apply::{SyncOpts, SyncReport};
+use crate::plan::apply::{ProgressEvent, SyncOpts, SyncReport};
 use crate::plan::{LeafStatus, Plan};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+/// 4: the shared [`super::WIRE_VERSION`], before the CLI had its own.
+/// 5: the answer is a stream of [`LocalFrame`]s (a sync's progress).
+pub const LOCAL_WIRE_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalCall {
@@ -67,6 +76,25 @@ pub enum LocalRequest {
 }
 
 pub type LocalAnswer = Result<LocalReply, String>;
+
+/// One line from the daemon. `Ok` and `Err` are spelled as a
+/// [`LocalAnswer`] is (`{"Ok":…}`, `{"Err":"…"}`), so an older daemon's
+/// refusal of this CLI's version still reads as the refusal it is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LocalFrame {
+    Progress(ProgressEvent),
+    Ok(LocalReply),
+    Err(String),
+}
+
+impl From<LocalAnswer> for LocalFrame {
+    fn from(a: LocalAnswer) -> Self {
+        match a {
+            Ok(r) => LocalFrame::Ok(r),
+            Err(e) => LocalFrame::Err(e),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "reply", rename_all = "snake_case")]

@@ -12,17 +12,22 @@
 //! finish stops the sync; its marker stays, so the next `sync` resumes it,
 //! and the units after it are untouched.
 
-use super::{HomeLink, LeafCtx, Mode, Plan, PlannedUnit, run};
+use super::{HomeLink, LeafCtx, Mode, Plan, ms, run};
 use crate::Result;
-use crate::decide::{Decision, RolledBackPush};
-use crate::guard::Guard;
 use crate::units::UnitKind;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::sync::Mutex;
+use std::time::Instant;
 
+pub use super::progress::{Progress, ProgressEvent, UnitOutcome};
+
+#[path = "apply_gate.rs"]
+mod gate;
 #[path = "apply_unit.rs"]
 mod unit;
+pub(super) use gate::accepts_rollback;
+use gate::gate;
+pub use gate::{confirmable, confirms, names};
 
 /// What `sync` was told.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +96,10 @@ pub struct AppliedUnit {
     /// A push's id on home: its backup, for `replicant rollback`.
     #[serde(default)]
     pub push: Option<String>,
+    /// From the unit's start (its marker, or a push's dry run) to its
+    /// journal line.
+    #[serde(default)]
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +107,9 @@ pub struct SyncReport {
     pub plan: Plan,
     pub outcome: Outcome,
     pub applied: Vec<AppliedUnit>,
+    /// The whole sync: planning again, then applying.
+    #[serde(default)]
+    pub elapsed_ms: u64,
 }
 
 /// What the apply closure leaves behind, so it survives a lost lease
@@ -113,16 +125,31 @@ pub(super) struct Stash {
 /// written (home unreachable, a refused queue entry, a plan that failed);
 /// every outcome once apply began is in the report.
 pub fn sync(link: &dyn HomeLink, ctx: LeafCtx<'_>, opts: &SyncOpts) -> Result<SyncReport> {
+    sync_with(link, ctx, opts, &Progress::silent())
+}
+
+/// [`sync`], announcing each unit to `progress` as it starts and ends. Its
+/// abort, once raised, stops the plan's rsyncs (planning fails, nothing
+/// written) or the unit's (interrupted, its marker kept), and no later
+/// unit begins.
+pub fn sync_with(
+    link: &dyn HomeLink,
+    ctx: LeafCtx<'_>,
+    opts: &SyncOpts,
+    progress: &Progress<'_>,
+) -> Result<SyncReport> {
+    let began = Instant::now();
     let stash: Mutex<Stash> = Mutex::default();
     let ctx = LeafCtx {
         accept_rollback: &opts.accept_rollback,
         ..ctx
     };
-    let result = run(link, ctx, Mode::Sync, opts.no_wait, |watch, p| {
+    let abort = progress.abort().clone();
+    let result = run(link, ctx, Mode::Sync, opts.no_wait, abort, |watch, p| {
         stash.lock().unwrap_or_else(|e| e.into_inner()).plan = Some(p.plan.clone());
         let outcome = match gate(p.plan, opts, ctx.home_dir, &p.snap.rolled_back) {
             Some(o) => o,
-            None => unit::apply_all(link, ctx, watch, &p, &stash),
+            None => unit::apply_all(link, ctx, watch, &p, &stash, progress),
         };
         stash.lock().unwrap_or_else(|e| e.into_inner()).outcome = Some(outcome);
         Ok(())
@@ -145,123 +172,26 @@ pub fn sync(link: &dyn HomeLink, ctx: LeafCtx<'_>, opts: &SyncOpts) -> Result<Sy
         (Ok(_), _, None) => unreachable!("run's closure always records an outcome"),
     };
     let applied = st.applied;
-    let summary = summary(&outcome, &applied);
+    let elapsed_ms = ms(began);
+    let summary = summary(&outcome, &applied, elapsed_ms);
     let ok = outcome == Outcome::Done;
     super::report(link, ctx, "sync", &plan, summary, Some(ok));
     Ok(SyncReport {
         plan,
         outcome,
         applied,
+        elapsed_ms,
     })
 }
 
-/// Why this plan may not be applied as it stands, if it may not.
-fn gate(
-    plan: &Plan,
-    opts: &SyncOpts,
-    home_dir: &Path,
-    rolled_back: &[RolledBackPush],
-) -> Option<Outcome> {
-    let mut why: Vec<String> = plan.refused.iter().map(|r| r.headline()).collect();
-    for u in &plan.units {
-        let confirmed = opts.confirm_delete.iter().any(|c| confirms(c, u, home_dir));
-        why.extend(
-            u.refusals
-                .iter()
-                .filter(|r| !(confirmed && r.guard == Guard::ChangedSinceInterrupted))
-                .map(|r| match r.guard {
-                    Guard::ChangedSinceInterrupted => format!(
-                        "{}; pass --confirm-delete {} to let the resume replace or delete them",
-                        r.headline(),
-                        u.rel
-                    ),
-                    _ => r.headline(),
-                }),
-        );
-        match &u.decision {
-            Decision::DeletedOn { .. } if confirmed => {}
-            Decision::DeletedOn { .. } => why.push(format!(
-                "{}: {}; pass --confirm-delete {} or answer y when asked",
-                u.rel,
-                u.decision.label(),
-                u.rel
-            )),
-            d if d.is_blocking() => why.push(format!("{}: {}", u.rel, d.label())),
-            _ => {}
-        }
-    }
-    for c in &opts.confirm_delete {
-        let named = plan
-            .units
-            .iter()
-            .any(|u| confirmable(u) && confirms(c, u, home_dir));
-        if !named {
-            why.push(format!(
-                "--confirm-delete {c}: no unit in this plan is deleted on one side, or would \
-                 have a resume replace what changed here since, under that path"
-            ));
-        }
-    }
-    for a in &opts.accept_rollback {
-        let named = plan.units.iter().any(|u| {
-            rolled_back.iter().any(|r| r.unit == u.rel) && names(a, &u.rel, &u.leaf_path, home_dir)
-        });
-        if !named {
-            why.push(format!(
-                "--accept-rollback {a}: home rolled back no push of this host's under that path"
-            ));
-        }
-    }
-    if !why.is_empty() {
-        return Some(Outcome::Blocked { why });
-    }
-    match &opts.expect {
-        Some(d) if *d != plan.digest() => Some(Outcome::Changed),
-        _ => None,
-    }
-}
-
-/// Whether `--confirm-delete` has anything to confirm on `u`: a deletion
-/// on one side, or a resume that would replace or delete what the leaf
-/// changed since it was interrupted (guardrail 6, review A3).
-pub fn confirmable(u: &PlannedUnit) -> bool {
-    matches!(u.decision, Decision::DeletedOn { .. })
-        || u.refusals
-            .iter()
-            .any(|r| r.guard == Guard::ChangedSinceInterrupted)
-}
-
-/// Whether `entry` (from `--confirm-delete`, or a unit the person said y
-/// to) names `u`: its unit path, or this leaf's path for it.
-pub fn confirms(entry: &str, u: &PlannedUnit, home_dir: &Path) -> bool {
-    names(entry, &u.rel, &u.leaf_path, home_dir)
-}
-
-/// Whether a command-line `entry` names the unit `rel`: its unit path, or
-/// its path here (`leaf_path`; absolute or `~/`), component by component.
-pub fn names(entry: &str, rel: &str, leaf_path: &Path, home_dir: &Path) -> bool {
-    let entry = entry.trim_end_matches('/');
-    if entry == rel {
-        return true;
-    }
-    let local = match entry.strip_prefix("~/") {
-        Some(rest) => home_dir.join(rest),
-        None => Path::new(entry).to_path_buf(),
-    };
-    local.is_absolute() && local == leaf_path
-}
-
-/// Whether this sync's `--accept-rollback` names the unit `rel`.
-pub(super) fn accepts_rollback(ctx: LeafCtx<'_>, rel: &str, leaf_path: &Path) -> bool {
-    ctx.accept_rollback
-        .iter()
-        .any(|e| names(e, rel, leaf_path, ctx.home_dir))
-}
-
-fn summary(outcome: &Outcome, applied: &[AppliedUnit]) -> String {
+fn summary(outcome: &Outcome, applied: &[AppliedUnit], elapsed_ms: u64) -> String {
     let files: usize = applied.iter().map(|a| a.files_changed).sum();
     let del: usize = applied.iter().map(|a| a.deleted).sum();
-    let head = format!("{} units, {files} files, {del} del", applied.len());
+    let head = format!(
+        "{} units, {files} files, {del} del in {}",
+        applied.len(),
+        crate::timefmt::elapsed(elapsed_ms)
+    );
     match outcome {
         Outcome::Done => format!("{head}; ok"),
         Outcome::Blocked { why } => format!("blocked, nothing written: {}", why.join("; ")),

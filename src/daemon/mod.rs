@@ -119,7 +119,9 @@ impl Daemon {
                 }
                 let Ok(conn) = conn else { continue };
                 let role = role.clone();
-                std::thread::spawn(move || local::serve(conn, &|req| handle_local(&role, req)));
+                std::thread::spawn(move || {
+                    local::serve(conn, &|req, progress| handle_local(&role, req, progress))
+                });
             }
         }));
         Ok(Self {
@@ -221,9 +223,13 @@ fn spawn_reaper(home: Arc<home::Home>, stop: Arc<AtomicBool>) -> JoinHandle<()> 
     })
 }
 
-fn handle_local(role: &Role, req: LocalRequest) -> wire::LocalAnswer {
+fn handle_local(
+    role: &Role,
+    req: LocalRequest,
+    progress: &crate::plan::apply::Progress<'_>,
+) -> wire::LocalAnswer {
     match role {
-        Role::Leaf(l) => l.handle(req),
+        Role::Leaf(l) => l.handle(req, progress),
         Role::Home(h) => home_local(h, req).map_err(|e| e.to_string()),
     }
 }
@@ -281,6 +287,10 @@ mod identity_tests;
 #[cfg(test)]
 #[path = "daemon_apply_tests.rs"]
 mod apply_tests;
+
+#[cfg(test)]
+#[path = "daemon_progress_tests.rs"]
+mod progress_tests;
 
 #[cfg(test)]
 #[path = "test_certs.rs"]
