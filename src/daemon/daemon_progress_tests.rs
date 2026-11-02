@@ -54,8 +54,10 @@ fn a_sync_streams_each_unit_before_its_report() {
         };
         assert_eq!((rel, *files_changed), (&a.rel, a.files_changed));
         assert_eq!(*outcome, UnitOutcome::Applied);
-        assert!(*elapsed_ms < 120_000);
+        assert_eq!(*elapsed_ms, a.elapsed_ms);
+        assert!(*elapsed_ms <= r.elapsed_ms);
     }
+    assert!(r.elapsed_ms > 0);
 
     // A dry run and a status announce nothing.
     for req in [

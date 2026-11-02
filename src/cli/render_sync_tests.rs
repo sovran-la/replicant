@@ -25,6 +25,7 @@ fn report(outcome: Outcome, applied: Vec<AppliedUnit>) -> SyncReport {
         },
         outcome,
         applied,
+        elapsed_ms: 842_000,
     }
 }
 
@@ -38,20 +39,27 @@ fn unit(rel: &str, action: &str, resumed: bool) -> AppliedUnit {
         files_changed: 3,
         deleted: 1,
         push: None,
+        elapsed_ms: 1_400,
     }
 }
 
 #[test]
 fn each_outcome_says_what_was_written_and_what_comes_next() {
     let r = report(Outcome::Done, vec![unit("work/a", "pull", false)]);
-    let s = synced(&r, plain());
+    // The units went by as they ran: only --verbose lists them again,
+    // each with how long it took.
+    let s = synced(&r, true, plain());
     assert!(
-        s.contains("pull            work/a  3 files changed, 1 deleted"),
+        s.contains("pull            work/a  3 files changed, 1 deleted, 1.4s"),
         "{s}"
     );
-    assert!(s.ends_with("done: 1 unit applied\n"), "{s}");
+    assert!(s.ends_with("done: 1 unit applied in 14m 02s\n"), "{s}");
     assert_eq!(
-        synced(&report(Outcome::Done, vec![]), plain()),
+        synced(&r, false, plain()),
+        "done: 1 unit applied in 14m 02s\n"
+    );
+    assert_eq!(
+        synced(&report(Outcome::Done, vec![]), false, plain()),
         "nothing to apply\n"
     );
 
@@ -62,13 +70,14 @@ fn each_outcome_says_what_was_written_and_what_comes_next() {
             },
             vec![],
         ),
+        false,
         plain(),
     );
     assert!(
         s.contains("blocked; nothing written:\n  work/r: conflict (x)"),
         "{s}"
     );
-    assert!(synced(&report(Outcome::Changed, vec![]), plain()).contains("nothing written"));
+    assert!(synced(&report(Outcome::Changed, vec![]), false, plain()).contains("nothing written"));
 
     let s = synced(
         &report(
@@ -79,6 +88,7 @@ fn each_outcome_says_what_was_written_and_what_comes_next() {
             },
             vec![unit("work/a", "push", true)],
         ),
+        true,
         plain(),
     );
     assert!(s.contains(", resumed"), "{s}");
@@ -95,10 +105,15 @@ fn each_outcome_says_what_was_written_and_what_comes_next() {
             },
             vec![],
         ),
+        false,
         plain(),
     );
     assert!(s.contains("failed at work/b: home unreachable"), "{s}");
-    let red = synced(&report(Outcome::Changed, vec![]), Style { color: true });
+    let red = synced(
+        &report(Outcome::Changed, vec![]),
+        false,
+        Style { color: true },
+    );
     assert!(red.contains("\x1b[31m"), "red when coloured");
 }
 
@@ -203,3 +218,6 @@ fn pushes_list_their_state_and_backups() {
         "{s}"
     );
 }
+
+#[path = "render_progress_tests.rs"]
+mod progress_view;

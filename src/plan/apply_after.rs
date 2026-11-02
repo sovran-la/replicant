@@ -126,6 +126,7 @@ pub(super) fn adopt(
         files_changed: 0,
         deleted: 0,
         push: None,
+        elapsed_ms: 0,
     })
 }
 
@@ -140,5 +141,6 @@ pub(super) fn applied(u: &PlannedUnit, action: &str, resumed: bool, ran: &Ran) -
         files_changed: d.files_changed,
         deleted: d.deleted,
         push: None,
+        elapsed_ms: 0,
     }
 }

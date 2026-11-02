@@ -1,5 +1,5 @@
 //! What a sync announces while it applies: one start and one end per unit
-//! that does something, in plan order; nothing for
+//! that does something, in plan order, with how long each took; nothing for
 //! a plan that may not go.
 
 use super::*;
@@ -73,8 +73,18 @@ fn pairs_match(r: &SyncReport, events: &[ProgressEvent], total: usize) {
                 &UnitOutcome::Applied
             )
         );
-        assert!(*elapsed_ms < 120_000, "{elapsed_ms}");
+        assert_eq!(
+            *elapsed_ms, a.elapsed_ms,
+            "the report's time is the event's"
+        );
     }
+    let units: u64 = r.applied.iter().map(|a| a.elapsed_ms).sum();
+    assert!(units <= r.elapsed_ms, "{units} > {}", r.elapsed_ms);
+    assert!(
+        r.elapsed_ms > 0 && r.elapsed_ms < 120_000,
+        "{}",
+        r.elapsed_ms
+    );
 }
 
 #[test]
@@ -96,6 +106,29 @@ fn each_unit_is_announced_as_it_starts_and_ends_in_plan_order() {
         | ProgressEvent::UnitDone { direction, .. } => *direction == Some(Direction::Pull),
     }));
     assert!(r.applied.iter().any(|a| a.files_changed > 0));
+
+    // The journal's line for each unit says how long it took.
+    let log = home.log(&Default::default()).unwrap();
+    let alpha = log
+        .iter()
+        .find(|l| l.event == "sync" && l.path == "work/alpha")
+        .unwrap();
+    let words: Vec<&str> = alpha.detail.split(' ').collect();
+    assert_eq!(
+        words[..2],
+        ["pull", &r.applied[1].files_changed.to_string()]
+    );
+    assert!(
+        words[5].ends_with('s') && words[6] == "ok",
+        "{}",
+        alpha.detail
+    );
+    assert!(
+        log.iter().any(|l| l.event == "sync"
+            && l.detail.contains(" units, ")
+            && l.detail.contains(" del in ")),
+        "{log:#?}"
+    );
 
     // Nothing left to do: nothing announced.
     let (r, events) = sync_watched(&bed, &home, &|_| {});

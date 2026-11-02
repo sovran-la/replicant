@@ -120,6 +120,23 @@ pub fn ago(secs: u64) -> String {
     }
 }
 
+/// `0.4s`, `1.4s`, `14m 02s`, `2h 05m 09s`: how long something took, from
+/// milliseconds. Tenths below a minute (truncated, so 59.99s is `59.9s`,
+/// never `60.0s`); whole seconds above.
+pub fn elapsed(ms: u64) -> String {
+    let secs = ms / 1000;
+    match secs {
+        0..60 => format!("{secs}.{}s", ms % 1000 / 100),
+        60..3600 => format!("{}m {:02}s", secs / 60, secs % 60),
+        _ => format!(
+            "{}h {:02}m {:02}s",
+            secs / 3600,
+            secs % 3600 / 60,
+            secs % 60
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +200,22 @@ mod tests {
         assert_eq!(parse_since("99999d", now), Some(0), "saturates");
         assert_eq!(parse_since("3w", now), None);
         assert_eq!(parse_since("", now), None);
+    }
+
+    #[test]
+    fn elapsed_tenths_then_minutes_then_hours() {
+        assert_eq!(elapsed(0), "0.0s");
+        assert_eq!(elapsed(99), "0.0s");
+        assert_eq!(elapsed(400), "0.4s");
+        assert_eq!(elapsed(1_400), "1.4s");
+        assert_eq!(elapsed(59_999), "59.9s", "never rounds up to 60.0s");
+        assert_eq!(elapsed(60_000), "1m 00s");
+        assert_eq!(elapsed(842_000), "14m 02s");
+        assert_eq!(elapsed(3_599_999), "59m 59s");
+        assert_eq!(elapsed(3_600_000), "1h 00m 00s");
+        assert_eq!(elapsed(7_509_000), "2h 05m 09s");
+        assert_eq!(elapsed(100 * 3_600_000), "100h 00m 00s");
+        assert!(!elapsed(u64::MAX).is_empty(), "no overflow");
     }
 
     #[test]

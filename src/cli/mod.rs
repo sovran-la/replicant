@@ -169,7 +169,7 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
                 err: &mut stderr,
                 style,
             };
-            sync::run(&a, &mut t, &call)
+            sync::run(&a, &mut t, &|req, on| local::call_streaming(dirs, req, on))
         }
         Cmd::Rollback { push } => match call(LocalRequest::Rollback { push })? {
             LocalReply::RolledBack(r) => {

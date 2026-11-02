@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::daemon::home::Home;
+use crate::plan::apply::Progress;
 use crate::plan::{LeafCtx, RSYNC};
 use crate::testutil::{self, Bed, InProcess};
 use std::cell::RefCell;
@@ -38,7 +39,7 @@ fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) ->
         rsync: RSYNC,
         accept_rollback: &[],
     };
-    let call = |req: LocalRequest| -> Result<LocalReply> {
+    let call = |req: LocalRequest, on: &mut dyn FnMut(ProgressEvent)| -> Result<LocalReply> {
         match req {
             LocalRequest::DryRun {
                 no_wait,
@@ -66,8 +67,12 @@ fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) ->
                         false => format!(" accept:{:?}", opts.accept_rollback),
                     }
                 ));
-                Ok(LocalReply::Synced(Box::new(crate::plan::apply::sync(
-                    &link, ctx, &opts,
+                // As the daemon does: each event handed over as it happens.
+                let on = RefCell::new(on);
+                let emit = |e: ProgressEvent| (on.borrow_mut())(e);
+                let progress = Progress::new(&emit);
+                Ok(LocalReply::Synced(Box::new(crate::plan::apply::sync_with(
+                    &link, ctx, &opts, &progress,
                 )?)))
             }
             other => panic!("unexpected {other:?}"),
@@ -272,7 +277,7 @@ fn dry_run_only_plans_and_json_needs_an_answerless_mode() {
         err: &mut Vec::new(),
         style: Style { color: false },
     };
-    let e = run(&j, &mut t, &|_| panic!("nothing is asked of the daemon"))
+    let e = run(&j, &mut t, &|_, _| panic!("nothing is asked of the daemon"))
         .unwrap_err()
         .to_string();
     assert!(e.contains("--json needs --dry-run or --yes"), "{e}");
@@ -283,3 +288,6 @@ mod rollback;
 
 #[path = "sync_resume_tests.rs"]
 mod resume;
+
+#[path = "sync_progress_tests.rs"]
+mod progress;

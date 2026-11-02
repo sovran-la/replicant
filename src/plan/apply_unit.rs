@@ -18,6 +18,7 @@ use crate::record::RECORD_VERSION;
 use crate::rsync::{ChangeKind, Runner, Transfer};
 use crate::state::UnitState;
 use crate::{Error, Result};
+use std::time::Instant;
 
 #[path = "apply_step.rs"]
 mod plan_step;
@@ -60,6 +61,7 @@ fn transfer(
     deleting: bool,
     action: &'static str,
     resumed: bool,
+    started: Instant,
 ) -> Result<Done> {
     let lease = watch.id();
     let markers = marker::store(ctx.state_dir);
@@ -191,10 +193,11 @@ fn transfer(
     let mut applied = applied(u, action, resumed, &ran);
     applied.push = push;
     let detail = format!(
-        "{action} {} files {} del {}",
+        "{action} {} files {} del {} {}",
         applied.files_changed,
         applied.deleted,
-        if resumed { "resumed → ok" } else { "ok" }
+        crate::timefmt::elapsed(crate::plan::ms(started)),
+        if resumed { "resumed → ok" } else { "ok" },
     );
     expect_done(
         link.call(HomeRequest::Settle {

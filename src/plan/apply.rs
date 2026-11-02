@@ -12,11 +12,12 @@
 //! finish stops the sync; its marker stays, so the next `sync` resumes it,
 //! and the units after it are untouched.
 
-use super::{HomeLink, LeafCtx, Mode, Plan, run};
+use super::{HomeLink, LeafCtx, Mode, Plan, ms, run};
 use crate::Result;
 use crate::units::UnitKind;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use std::time::Instant;
 
 pub use super::progress::{Progress, ProgressEvent, UnitOutcome};
 
@@ -95,6 +96,10 @@ pub struct AppliedUnit {
     /// A push's id on home: its backup, for `replicant rollback`.
     #[serde(default)]
     pub push: Option<String>,
+    /// From the unit's start (its marker, or a push's dry run) to its
+    /// journal line.
+    #[serde(default)]
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +107,9 @@ pub struct SyncReport {
     pub plan: Plan,
     pub outcome: Outcome,
     pub applied: Vec<AppliedUnit>,
+    /// The whole sync: planning again, then applying.
+    #[serde(default)]
+    pub elapsed_ms: u64,
 }
 
 /// What the apply closure leaves behind, so it survives a lost lease
@@ -127,6 +135,7 @@ pub fn sync_with(
     opts: &SyncOpts,
     progress: &Progress<'_>,
 ) -> Result<SyncReport> {
+    let began = Instant::now();
     let stash: Mutex<Stash> = Mutex::default();
     let ctx = LeafCtx {
         accept_rollback: &opts.accept_rollback,
@@ -159,20 +168,26 @@ pub fn sync_with(
         (Ok(_), _, None) => unreachable!("run's closure always records an outcome"),
     };
     let applied = st.applied;
-    let summary = summary(&outcome, &applied);
+    let elapsed_ms = ms(began);
+    let summary = summary(&outcome, &applied, elapsed_ms);
     let ok = outcome == Outcome::Done;
     super::report(link, ctx, "sync", &plan, summary, Some(ok));
     Ok(SyncReport {
         plan,
         outcome,
         applied,
+        elapsed_ms,
     })
 }
 
-fn summary(outcome: &Outcome, applied: &[AppliedUnit]) -> String {
+fn summary(outcome: &Outcome, applied: &[AppliedUnit], elapsed_ms: u64) -> String {
     let files: usize = applied.iter().map(|a| a.files_changed).sum();
     let del: usize = applied.iter().map(|a| a.deleted).sum();
-    let head = format!("{} units, {files} files, {del} del", applied.len());
+    let head = format!(
+        "{} units, {files} files, {del} del in {}",
+        applied.len(),
+        crate::timefmt::elapsed(elapsed_ms)
+    );
     match outcome {
         Outcome::Done => format!("{head}; ok"),
         Outcome::Blocked { why } => format!("blocked, nothing written: {}", why.join("; ")),

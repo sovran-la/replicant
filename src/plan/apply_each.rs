@@ -83,7 +83,7 @@ pub(in crate::plan) fn apply_all(
                 resumed,
                 deleting,
             } => transfer(
-                link, ctx, watch, p, &runner, u, t, deleting, action, resumed,
+                link, ctx, watch, p, &runner, u, t, deleting, action, resumed, started,
             ),
             Step::Skip => unreachable!("skipped units are not in the work"),
         };
@@ -94,7 +94,8 @@ pub(in crate::plan) fn apply_all(
             elapsed_ms: ms(started),
         };
         match r {
-            Ok(Done::Ran(a)) => {
+            Ok(Done::Ran(mut a)) => {
+                a.elapsed_ms = done.elapsed_ms;
                 progress.emit(done.event(Some(&a), UnitOutcome::Applied));
                 stash
                     .lock()

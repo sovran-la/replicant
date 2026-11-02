@@ -1,12 +1,12 @@
-//! What `sync` did: one line per unit applied, then how it ended. Red for
+//! What `sync` does: one line per unit as it runs, then how it ended. Red for
 //! anything that needs a human; the end line always says whether anything
 //! was written and what the next `sync` will do. And the open markers
 //! `status` lists.
 
 use super::Style;
 use crate::plan::OpenMarker;
-use crate::plan::apply::{Outcome, SyncReport};
-use crate::timefmt::ago;
+use crate::plan::apply::{Outcome, ProgressEvent, SyncReport, UnitOutcome};
+use crate::timefmt::{ago, elapsed};
 use std::fmt::Write;
 
 /// `status`'s open markers: each with its age; red once it is older than
@@ -98,29 +98,36 @@ pub fn pushes(list: &[crate::daemon::home::Push], now: u64) -> String {
     s
 }
 
-pub fn synced(r: &SyncReport, st: Style) -> String {
+/// How the sync ended, and with `list` every unit applied and how long it
+/// took (`--verbose`, or wherever the units were not already shown as they
+/// ran by [`progress`]).
+pub fn synced(r: &SyncReport, list: bool, st: Style) -> String {
     let mut s = String::new();
-    if !r.applied.is_empty() {
+    if list && !r.applied.is_empty() {
         s.push_str("applied:\n");
-    }
-    for a in &r.applied {
-        let resumed = if a.resumed { ", resumed" } else { "" };
-        let backup = match &a.push {
-            Some(id) => format!(", backup {id}"),
-            None => String::new(),
-        };
-        let _ = writeln!(
-            s,
-            "  {:<15} {}  {} files changed, {} deleted{resumed}{backup}",
-            a.action, a.rel, a.files_changed, a.deleted
-        );
+        for a in &r.applied {
+            let resumed = if a.resumed { ", resumed" } else { "" };
+            let backup = match &a.push {
+                Some(id) => format!(", backup {id}"),
+                None => String::new(),
+            };
+            let _ = writeln!(
+                s,
+                "  {:<15} {}  {} files changed, {} deleted{resumed}{backup}, {}",
+                a.action,
+                a.rel,
+                a.files_changed,
+                a.deleted,
+                elapsed(a.elapsed_ms)
+            );
+        }
     }
     let n = r.applied.len();
     let units = if n == 1 { "unit" } else { "units" };
     match &r.outcome {
         Outcome::Done if n == 0 => s.push_str("nothing to apply\n"),
         Outcome::Done => {
-            let _ = writeln!(s, "done: {n} {units} applied");
+            let _ = writeln!(s, "done: {n} {units} applied in {}", elapsed(r.elapsed_ms));
         }
         Outcome::Blocked { why } => {
             let _ = writeln!(s, "{}", st.red("blocked; nothing written:"));
@@ -160,6 +167,61 @@ pub fn synced(r: &SyncReport, st: Style) -> String {
         }
     }
     s
+}
+
+/// One event of a running sync: a started unit's line without its end
+/// (`  [12/155] push  work/x … `), then what a finished one adds to it
+/// (`220 files  1.4s`, or why, in red).
+pub fn progress(e: &ProgressEvent, st: Style) -> String {
+    match e {
+        ProgressEvent::UnitStarted {
+            rel,
+            action,
+            index,
+            total,
+            ..
+        } => {
+            format!("  [{index}/{total}] {action}  {rel} … ")
+        }
+        ProgressEvent::UnitDone {
+            action,
+            files_changed,
+            deleted,
+            elapsed_ms,
+            push,
+            outcome,
+            ..
+        } => {
+            let t = elapsed(*elapsed_ms);
+            match outcome {
+                UnitOutcome::Applied => {
+                    let what = match action.as_str() {
+                        "adopt" => "baseline recorded".to_string(),
+                        "forget" => "baseline dropped".to_string(),
+                        _ => {
+                            let files = if *files_changed == 1 { "file" } else { "files" };
+                            let mut w = format!("{files_changed} {files}");
+                            if *deleted > 0 {
+                                let _ = write!(w, ", {deleted} deleted");
+                            }
+                            w
+                        }
+                    };
+                    let backup = match push {
+                        Some(id) => format!("  backup {id}"),
+                        None => String::new(),
+                    };
+                    format!("{what}  {t}{backup}\n")
+                }
+                UnitOutcome::Interrupted { why } => {
+                    format!("{}\n", st.red(&format!("interrupted after {t}: {why}")))
+                }
+                UnitOutcome::Failed { why } => {
+                    format!("{}\n", st.red(&format!("failed after {t}: {why}")))
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
