@@ -129,26 +129,34 @@ impl Plan {
                 .any(|u| u.decision.is_blocking() || !u.refusals.is_empty())
     }
 
-    /// What a person confirms: every unit's decision, both sides' states,
-    /// its dry run's changes and its refusals, and the refused
-    /// subscriptions, hashed. A `sync` that was confirmed against a plan
-    /// applies only if its own plan has the same digest, so a file edited
-    /// while the person read the plan (the same change list, other bytes)
-    /// stops it too. Timings do not count.
+    /// What a person confirms, hashed: per unit its path, kind, decision
+    /// (direction, deletion, removal, conflict, resume…), refusals, and the
+    /// set of paths its dry run would delete on the target; and the refused
+    /// subscriptions. A `sync` confirmed against a plan applies only if its
+    /// own plan, made again at apply time, has the same digest.
+    ///
+    /// Neither side's [`UnitState`] nor the dry run's creates and updates
+    /// count. The person confirmed what each unit will do, not the bytes it
+    /// will carry: a push or pull copies whatever is there when it runs, and
+    /// on a live tree something (an editor's autosave, `.DS_Store`, a `git
+    /// status` rewriting an index) touches a file in the seconds between the
+    /// plan shown and the `y`. Deletions are different: what would be lost
+    /// is what the person agreed to lose, so one path more or fewer stops
+    /// the sync. Timings do not count.
     pub fn digest(&self) -> String {
         use sha2::{Digest, Sha256};
         let shape: Vec<_> = self
             .units
             .iter()
             .map(|u| {
-                (
-                    &u.rel,
-                    u.kind,
-                    &u.decision,
-                    (&u.leaf, &u.home),
-                    u.diff.as_ref().map(|d| &d.changes),
-                    &u.refusals,
-                )
+                let mut deletes: Vec<&str> = u
+                    .diff
+                    .iter()
+                    .flat_map(|d| &d.changes)
+                    .filter_map(|c| c.strip_prefix("- "))
+                    .collect();
+                deletes.sort_unstable();
+                (&u.rel, u.kind, &u.decision, &u.refusals, deletes)
             })
             .collect();
         let text = serde_json::to_string(&(shape, &self.refused)).unwrap_or_default();
@@ -227,3 +235,7 @@ pub struct LeafStatus {
     #[serde(default)]
     pub markers: Vec<super::OpenMarker>,
 }
+
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;

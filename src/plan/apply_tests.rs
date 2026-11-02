@@ -15,6 +15,8 @@ pub(crate) use std::path::Path;
 
 #[path = "apply_block_tests.rs"]
 mod block;
+#[path = "apply_digest_tests.rs"]
+mod digest_tests;
 #[path = "apply_fail_tests.rs"]
 pub(crate) mod fail;
 #[path = "apply_hangup_tests.rs"]
