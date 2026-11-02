@@ -47,17 +47,22 @@ pub enum Cmd {
     },
     /// On home: review pending hosts and decide their caps.
     Approve { host: Option<String> },
-    /// The decision table without acting (on home: the whole fleet).
+    /// The decision table and open markers, without acting (on home: the
+    /// whole fleet).
     Status {
         #[arg(long)]
         fleet: bool,
         #[arg(long)]
         json: bool,
     },
-    /// Decide the direction per unit, show it, and (after `y`, or with
-    /// --yes) carry it out: pull, push, remove. Nothing is written while
-    /// anything needs a human (exit 2); an rsync that does not finish
-    /// stops the sync and the next one resumes it (exit 1).
+    /// Decide each unit's direction, show it, and carry it out.
+    ///
+    /// On a terminal the plan is shown and `y` asked for (each deletion
+    /// first, by itself); --yes skips the question. Nothing is written
+    /// while anything needs a human: a conflict, a quarantine, a guardrail
+    /// refusal, an unconfirmed deletion (exit 2). An rsync that does not
+    /// finish stops the sync at its unit; its marker stays and the next
+    /// sync resumes it (exit 1). Pushes are backed up on home first.
     Sync {
         /// Show the decision and the itemized rsync diff; write nothing.
         #[arg(long)]
@@ -78,15 +83,22 @@ pub enum Cmd {
         /// Fail instead of waiting behind another sync.
         #[arg(long)]
         no_wait: bool,
+        /// Print the plan (--dry-run) or the report (--yes) as JSON.
         #[arg(long)]
         json: bool,
+        /// Show every line of each unit's rsync diff.
         #[arg(short, long)]
         verbose: bool,
     },
-    /// On home: undo one push (`<host>/<YYYYMMDDTHHMMSSZ>`, as `log` and
-    /// `sync` print it): files it replaced or deleted come back from its
-    /// backup, files it created are removed. Without an id, list the pushes.
+    /// On home: undo one push, or list the pushes.
+    ///
+    /// Files the push replaced or deleted come back from its backup; files
+    /// it created are removed; what it wrote is kept in the push's backup
+    /// directory first. Its marker (a quarantine) is cleared; baselines are
+    /// not touched, so the pushing leaf's next sync pulls the result.
     Rollback {
+        /// `<host>/<YYYYMMDDTHHMMSSZ>`, as `sync` and `log` print it
+        /// (`backup:...`). Without it, every push home still has a backup of.
         #[arg(value_name = "PUSH-ID")]
         push: Option<String>,
     },

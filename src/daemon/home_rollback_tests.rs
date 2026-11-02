@@ -149,9 +149,10 @@ fn an_interrupted_push_is_rolled_back_and_its_quarantine_ends() {
     );
     let p = plan_of(&bed, &home, false);
     let d = &p.units.iter().find(|u| u.rel == "work").unwrap().decision;
-    assert!(
-        !matches!(d, crate::decide::Decision::Resume { .. }),
-        "{d:?}"
+    assert_eq!(
+        d,
+        &crate::decide::Decision::Push,
+        "home is back at its baseline; the leaf still has its change, so it pushes again"
     );
 }
 
