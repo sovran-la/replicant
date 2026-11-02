@@ -93,6 +93,7 @@ fn an_interrupted_pull_shows_in_status_resumes_and_clears() {
             host: "leaf".into(),
             source_state: UnitState::Present("home-then".into()),
             started_at: crate::now_secs() - 7200,
+            push: None,
         })
         .unwrap();
     let st = status(&bed);
@@ -140,6 +141,55 @@ fn an_interrupted_pull_shows_in_status_resumes_and_clears() {
         Decision::Nothing {
             why: "unchanged".into()
         }
+    );
+    leaf.stop();
+    home.stop();
+}
+
+#[test]
+fn a_push_over_mtls_is_listed_and_rolled_back_from_home_s_cli() {
+    let bed = Bed::enrolled();
+    testutil::write(&bed.home_hd.join("work/notes.txt"), "home's\n");
+    let (home, leaf) = pair(&bed);
+    assert_eq!(sync(&bed).outcome, Outcome::Done);
+    testutil::write(&bed.leaf_hd.join("work/notes.txt"), "the leaf's, longer\n");
+    let r = sync(&bed);
+    assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
+    let id = r.applied[0].push.clone().expect("a push has a backup");
+    let LocalReply::Pushes { pushes } =
+        local(&bed.home_dirs, LocalRequest::Rollback { push: None })
+    else {
+        panic!()
+    };
+    assert_eq!(pushes[0].id, id);
+    let err = local::call(
+        &bed.leaf_dirs,
+        LocalRequest::Rollback {
+            push: Some(id.clone()),
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("rollback runs on home"), "{err}");
+    let LocalReply::RolledBack(rb) = local(
+        &bed.home_dirs,
+        LocalRequest::Rollback {
+            push: Some(id.clone()),
+        },
+    ) else {
+        panic!()
+    };
+    assert_eq!((rb.id.as_str(), rb.restored), (id.as_str(), 1));
+    assert_eq!(
+        std::fs::read_to_string(bed.home_hd.join("work/notes.txt")).unwrap(),
+        "home's\n"
+    );
+    let text = crate::cli::render::rolled_back(&rb);
+    assert!(
+        text.contains(&format!(
+            "Rolled back {id} (work by leaf): restored 1 files"
+        )),
+        "{text}"
     );
     leaf.stop();
     home.stop();

@@ -45,6 +45,8 @@ pub enum EntryKind {
     Sync,
     /// An agent on home holding paths (v0.4).
     Hold,
+    /// `replicant rollback` on home, writing a unit back.
+    Rollback,
 }
 
 #[derive(Debug, Clone)]
@@ -262,6 +264,7 @@ pub fn describe(v: &QueueView) -> String {
         EntryKind::DryRun => "dry-run",
         EntryKind::Sync => "sync",
         EntryKind::Hold => "hold",
+        EntryKind::Rollback => "rollback",
     };
     let age = match v.started_at {
         Some(s) => format!(

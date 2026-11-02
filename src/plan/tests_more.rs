@@ -12,6 +12,7 @@ fn put_marker(dir: &Path, host: &str, direction: Direction) {
             host: host.into(),
             source_state: UnitState::Present("s".into()),
             started_at: 7,
+            push: None,
         })
         .unwrap();
 }

@@ -11,73 +11,18 @@
 use super::{AppliedUnit, Outcome, Stash};
 use crate::baseline::{self, Baseline};
 use crate::daemon::wire::{HomeReply, HomeRequest};
-use crate::decide::Decision;
 use crate::marker::{self, Direction, Marker};
 use crate::plan::lease::Watch;
-use crate::plan::{HomeLink, LeafCtx, Planned, PlannedUnit};
+use crate::plan::{HomeLink, LeafCtx, Planned, PlannedUnit, diff};
 use crate::record::RECORD_VERSION;
-use crate::rsync::{Client, Runner, Transfer};
+use crate::rsync::{ChangeKind, Client, Runner, Transfer};
 use crate::state::UnitState;
 use crate::{Error, Result};
 use std::sync::Mutex;
 
-/// What to do with one planned unit.
-enum Step<'p> {
-    /// Run its transfer. `deleting`: the source is gone, so afterwards the
-    /// baseline is removed rather than written.
-    Transfer {
-        t: &'p Transfer,
-        action: &'static str,
-        resumed: bool,
-        deleting: bool,
-    },
-    /// Both sides already agree: record it as the baseline.
-    Adopt,
-    /// Gone on both sides: the baseline goes too.
-    Forget,
-    Skip,
-}
-
-fn step<'p>(
-    ctx: LeafCtx<'_>,
-    u: &PlannedUnit,
-    t: Option<&'p Transfer>,
-    b: Option<&Baseline>,
-) -> Step<'p> {
-    let Some(t) = t else {
-        let agreed = b.is_some_and(|b| b.leaf == u.leaf && b.home == u.home);
-        return match &u.decision {
-            Decision::Nothing { .. } if !u.leaf.is_empty() && !u.home.is_empty() && !agreed => {
-                Step::Adopt
-            }
-            Decision::Nothing { .. } if u.leaf.is_empty() && u.home.is_empty() && b.is_some() => {
-                Step::Forget
-            }
-            _ => Step::Skip,
-        };
-    };
-    let (action, resumed) = match &u.decision {
-        Decision::Pull => ("pull", false),
-        Decision::Push => ("push", false),
-        Decision::Remove => ("remove", false),
-        Decision::DeletedOn { host } if host == ctx.me => ("delete on home", false),
-        Decision::DeletedOn { .. } => ("delete here", false),
-        Decision::Resume { direction } => (
-            match direction {
-                Direction::Pull => "pull",
-                Direction::Push => "push",
-            },
-            true,
-        ),
-        _ => return Step::Skip,
-    };
-    Step::Transfer {
-        t,
-        action,
-        resumed,
-        deleting: t.source_absent,
-    }
-}
+#[path = "apply_step.rs"]
+mod plan_step;
+use plan_step::{Step, step};
 
 /// Apply every unit of the plan in order, stopping at the first that does
 /// not finish. Records each finished unit in `stash` as it goes.
@@ -124,7 +69,7 @@ pub(super) fn apply_all(
                 link, ctx, watch, p, &runner, u, t, deleting, action, resumed,
             ) {
                 Ok(Done::Ran(applied)) => Ok(applied),
-                Ok(Done::Interrupted(o)) => return o,
+                Ok(Done::Stopped(o)) => return o,
                 Err(e) => Err(e),
             },
         };
@@ -149,7 +94,8 @@ fn failed(u: &PlannedUnit, e: Error) -> Outcome {
 
 enum Done {
     Ran(AppliedUnit),
-    Interrupted(Outcome),
+    /// The sync stops here, with this outcome.
+    Stopped(Outcome),
 }
 
 fn expect_done(r: HomeReply, what: &str) -> Result<()> {
@@ -192,6 +138,7 @@ fn transfer(
         (false, Direction::Pull) => u.home.clone(),
         (false, Direction::Push) => u.leaf.clone(),
     };
+    let mut push = None;
     match t.direction {
         Direction::Pull => {
             // A resumed pull keeps the marker it is resuming.
@@ -203,20 +150,47 @@ fn transfer(
                     host: ctx.me.into(),
                     source_state,
                     started_at: crate::now_secs(),
+                    push: None,
                 })?;
             }
         }
-        Direction::Push => expect_done(
-            link.call(HomeRequest::BeginPush {
+        Direction::Push => {
+            // Home backs up what this push will replace or delete, so it
+            // needs the list as of now, and it must be what was planned.
+            let fresh = t.dry_run(runner)?;
+            let planned = u.diff.as_ref().map(|d| &d.changes);
+            if planned != Some(&diff::summarize(&fresh).changes) {
+                return Ok(Done::Stopped(Outcome::Failed {
+                    rel: u.rel.clone(),
+                    why: "it changed since the plan was made; nothing of it was written. Run \
+                          `replicant sync` again"
+                        .into(),
+                }));
+            }
+            let backup: Vec<String> = fresh
+                .changes
+                .iter()
+                .filter(|c| !c.is_dir && c.kind != ChangeKind::Create)
+                .map(|c| c.path.clone())
+                .collect();
+            let reply = link.call(HomeRequest::BeginPush {
                 lease,
                 rel: u.rel.clone(),
                 source_state,
-            })?,
-            "begin-push",
-        )?,
+                backup,
+                is_file: t.is_file,
+            })?;
+            let HomeReply::Begun { push: id } = reply else {
+                return Err(Error::Remote(format!(
+                    "unexpected reply to begin-push: {reply:?}"
+                )));
+            };
+            push = Some(id);
+        }
     }
 
     let ran = t.apply(runner)?;
+    let changes = diff::summarize(&ran.itemized).changes;
     if !ran.ok() {
         let why = ran.why();
         let journaled = link
@@ -224,9 +198,10 @@ fn transfer(
                 rel: u.rel.clone(),
                 direction: t.direction,
                 why: why.clone(),
+                changes: changes.clone(),
             })
             .is_ok();
-        return Ok(Done::Interrupted(Outcome::Interrupted {
+        return Ok(Done::Stopped(Outcome::Interrupted {
             rel: u.rel.clone(),
             why,
             journaled,
@@ -241,9 +216,10 @@ fn transfer(
                 rel: u.rel.clone(),
                 direction: t.direction,
                 why: why.clone(),
+                changes: changes.clone(),
             })
             .is_ok();
-        return Ok(Done::Interrupted(Outcome::Interrupted {
+        return Ok(Done::Stopped(Outcome::Interrupted {
             rel: u.rel.clone(),
             why,
             journaled,
@@ -270,7 +246,8 @@ fn transfer(
     if t.direction == Direction::Pull {
         markers.delete(&u.rel)?;
     }
-    let applied = applied(u, action, resumed, &ran);
+    let mut applied = applied(u, action, resumed, &ran);
+    applied.push = push;
     let detail = format!(
         "{action} {} files {} del {}",
         applied.files_changed,
@@ -283,6 +260,7 @@ fn transfer(
             rel: u.rel.clone(),
             direction: Some(t.direction),
             detail,
+            changes,
         })?,
         "settle",
     )?;

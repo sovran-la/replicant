@@ -84,6 +84,14 @@ pub enum HomeRequest {
         lease: u64,
         rel: String,
         source_state: UnitState,
+        /// The files (unit-relative) the push will replace or delete, from
+        /// its dry run just before: home copies them to the push's backup
+        /// before it answers.
+        #[serde(default)]
+        backup: Vec<String>,
+        /// The unit is a single file.
+        #[serde(default)]
+        is_file: bool,
     },
     /// Apply, after a push's rsync exited 0: home's state of the unit now,
     /// hashed as the plan hashed it. `union` is the plan's repos within the
@@ -108,6 +116,9 @@ pub enum HomeRequest {
         rel: String,
         direction: Option<Direction>,
         detail: String,
+        /// What rsync reported writing (a push's manifest keeps it).
+        #[serde(default)]
+        changes: Vec<String>,
     },
     /// Apply: a unit's rsync failed or was stopped. Journaled; every marker
     /// stays. No lease needed: it is evidence, also after the lease is lost.
@@ -115,6 +126,9 @@ pub enum HomeRequest {
         rel: String,
         direction: Direction,
         why: String,
+        /// What rsync reported writing before it stopped.
+        #[serde(default)]
+        changes: Vec<String>,
     },
     /// Apply: a journal line about this host that is not an rsync:
     /// [`NOTE_EVENTS`] only.
@@ -155,6 +169,11 @@ pub enum HomeReply {
     /// [`HomeRequest::Rehash`]'s answer.
     Rehashed {
         state: UnitState,
+    },
+    /// [`HomeRequest::BeginPush`]'s answer: the push's id on home, which
+    /// names its backup.
+    Begun {
+        push: String,
     },
 }
 

@@ -13,11 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 #[path = "apply_block_tests.rs"]
 mod block;
 #[path = "apply_fail_tests.rs"]
-mod fail;
+pub(crate) mod fail;
 #[path = "apply_more_tests.rs"]
 mod more;
 
-pub(super) fn ctx<'a>(
+pub(crate) fn ctx<'a>(
     bed: &'a Bed,
     cfg: &'a crate::config::LeafConfig,
     dirs: &'a (std::path::PathBuf, std::path::PathBuf),
@@ -34,7 +34,7 @@ pub(super) fn ctx<'a>(
 }
 
 /// `sync` as `leaf`, with `rsync` as the program.
-pub(super) fn sync_with(
+pub(crate) fn sync_with(
     bed: &Bed,
     home: &Home,
     opts: &SyncOpts,
@@ -50,11 +50,11 @@ pub(super) fn sync_with(
     sync(&link, ctx(bed, &cfg, &dirs, rsync), opts)
 }
 
-pub(super) fn yes(bed: &Bed, home: &Home) -> SyncReport {
+pub(crate) fn yes(bed: &Bed, home: &Home) -> SyncReport {
     sync_with(bed, home, &SyncOpts::default(), crate::plan::RSYNC).unwrap()
 }
 
-pub(super) fn plan_of(bed: &Bed, home: &Home, dry: bool) -> Plan {
+pub(crate) fn plan_of(bed: &Bed, home: &Home, dry: bool) -> Plan {
     let link = InProcess {
         home,
         host: "leaf".into(),
@@ -65,7 +65,7 @@ pub(super) fn plan_of(bed: &Bed, home: &Home, dry: bool) -> Plan {
     crate::plan::plan(&link, ctx(bed, &cfg, &dirs, crate::plan::RSYNC), dry, false).unwrap()
 }
 
-pub(super) fn unit<'p>(p: &'p Plan, rel: &str, kind: UnitKind) -> &'p PlannedUnit {
+pub(crate) fn unit<'p>(p: &'p Plan, rel: &str, kind: UnitKind) -> &'p PlannedUnit {
     p.units
         .iter()
         .find(|u| u.rel == rel && u.kind == kind)
@@ -74,7 +74,7 @@ pub(super) fn unit<'p>(p: &'p Plan, rel: &str, kind: UnitKind) -> &'p PlannedUni
 
 /// The tree under `base`: two clean repos, one dirty, loose files, and a
 /// build directory the root excludes.
-pub(super) fn tree(base: &Path) {
+pub(crate) fn tree(base: &Path) {
     testutil::repo(&base.join("alpha"));
     let beta = testutil::repo(&base.join("beta"));
     testutil::write(&beta.join("README"), "changed, uncommitted\n");
@@ -85,12 +85,12 @@ pub(super) fn tree(base: &Path) {
     testutil::write(&base.join("target/junk"), "build output");
 }
 
-pub(super) type Print = BTreeMap<String, (Vec<u8>, u32, std::time::SystemTime)>;
+pub(crate) type Print = BTreeMap<String, (Vec<u8>, u32, std::time::SystemTime)>;
 
 /// Paths whose file content, mode or mtime changed, or that appeared or
 /// disappeared (files, and directories by existence only: a directory's
 /// mtime moves whenever its contents do).
-pub(super) fn changed(before: &Print, after: &Print) -> BTreeSet<String> {
+pub(crate) fn changed(before: &Print, after: &Print) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for k in before.keys().chain(after.keys()) {
         let (b, a) = (before.get(k), after.get(k));
@@ -110,7 +110,7 @@ pub(super) fn changed(before: &Print, after: &Print) -> BTreeSet<String> {
 /// directory is the one exception: rsync reports creating the transfer
 /// root as `./`, which the parser drops, so a unit root may appear (or
 /// vanish) without an itemized line of its own.
-pub(super) fn wrote_exactly(before: &Print, after: &Print, r: &SyncReport) {
+pub(crate) fn wrote_exactly(before: &Print, after: &Print, r: &SyncReport) {
     let roots: BTreeSet<String> = r.applied.iter().map(|a| a.rel.clone()).collect();
     let got: BTreeSet<String> = changed(before, after).difference(&roots).cloned().collect();
     assert_eq!(got, itemized(r));
@@ -118,7 +118,7 @@ pub(super) fn wrote_exactly(before: &Print, after: &Print, r: &SyncReport) {
 
 /// What the report says rsync changed, as paths under the tree root
 /// (`work/alpha/README`), attribute changes of directories left out.
-pub(super) fn itemized(r: &SyncReport) -> BTreeSet<String> {
+pub(crate) fn itemized(r: &SyncReport) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for a in &r.applied {
         for c in &a.changes {

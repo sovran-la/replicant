@@ -62,6 +62,7 @@ mod tests {
             host: host.into(),
             source_state: UnitState::Empty,
             started_at: at,
+            push: None,
         }
     }
 

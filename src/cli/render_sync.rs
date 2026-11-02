@@ -43,6 +43,61 @@ pub fn open_markers(markers: &[OpenMarker], me: &str, home: &str, st: Style) -> 
     s
 }
 
+/// `rollback <id>`: what was put back, and what could not be.
+pub fn rolled_back(r: &crate::daemon::wire::RolledBack) -> String {
+    let mut s = format!(
+        "Rolled back {} ({} by {}): restored {} files, removed {} it created.\n",
+        r.id, r.unit, r.host, r.restored, r.removed
+    );
+    if !r.unbacked.is_empty() {
+        let _ = writeln!(
+            s,
+            "Not backed up, left as pushed: {}",
+            r.unbacked.join(", ")
+        );
+    }
+    if !r.unreported.is_empty() {
+        let _ = writeln!(
+            s,
+            "rsync never reported on run {:?}: files it created (if any) are still there.",
+            r.unreported
+        );
+    }
+    let _ = writeln!(
+        s,
+        "What the push had written is kept in {}. Baselines are unchanged: {}'s next sync \
+         sees home changed and pulls this.",
+        r.kept.display(),
+        r.host
+    );
+    s
+}
+
+/// `rollback` without an id: every push home still has, newest first.
+pub fn pushes(list: &[crate::daemon::home::Push], now: u64) -> String {
+    if list.is_empty() {
+        return "no pushes recorded\n".into();
+    }
+    let mut s = String::new();
+    for p in list {
+        let state = match (p.rolled_back_at, p.finished_at) {
+            (Some(_), _) => "rolled back",
+            (None, Some(_)) => "finished",
+            (None, None) => "interrupted",
+        };
+        let files: usize = p.runs.iter().map(|r| r.backed_up.len()).sum();
+        let _ = writeln!(
+            s,
+            "{}  {}  {} ago  {state}, {} run(s), {files} files backed up",
+            p.id,
+            p.unit,
+            ago(now.saturating_sub(p.started_at)),
+            p.runs.len()
+        );
+    }
+    s
+}
+
 pub fn synced(r: &SyncReport, st: Style) -> String {
     let mut s = String::new();
     if !r.applied.is_empty() {
@@ -50,9 +105,13 @@ pub fn synced(r: &SyncReport, st: Style) -> String {
     }
     for a in &r.applied {
         let resumed = if a.resumed { ", resumed" } else { "" };
+        let backup = match &a.push {
+            Some(id) => format!(", backup {id}"),
+            None => String::new(),
+        };
         let _ = writeln!(
             s,
-            "  {:<15} {}  {} files changed, {} deleted{resumed}",
+            "  {:<15} {}  {} files changed, {} deleted{resumed}{backup}",
             a.action, a.rel, a.files_changed, a.deleted
         );
     }

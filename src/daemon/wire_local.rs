@@ -57,6 +57,10 @@ pub enum LocalRequest {
     Revoke {
         host: String,
     },
+    /// On home: undo one push, or (`None`) list the pushes.
+    Rollback {
+        push: Option<String>,
+    },
 }
 
 pub type LocalAnswer = Result<LocalReply, String>;
@@ -64,19 +68,50 @@ pub type LocalAnswer = Result<LocalReply, String>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "reply", rename_all = "snake_case")]
 pub enum LocalReply {
-    Pong { role: String, name: String },
+    Pong {
+        role: String,
+        name: String,
+    },
     Subscribed(SubscribeOutcome),
     Unsubscribed(UnsubscribeOutcome),
     LeafStatus(Box<LeafStatus>),
     Fleet(FleetState),
     Plan(Box<Plan>),
     Synced(Box<SyncReport>),
-    Log { lines: Vec<Line> },
-    Pending { hosts: Vec<PendingView> },
+    Log {
+        lines: Vec<Line>,
+    },
+    Pending {
+        hosts: Vec<PendingView>,
+    },
     AllowPreview(AllowPreview),
     Approved(Approved),
     Reissued(Reissued),
     Revoked(Revoked),
+    RolledBack(RolledBack),
+    Pushes {
+        pushes: Vec<crate::daemon::home::Push>,
+    },
+}
+
+/// `rollback <push-id>`: what was put back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RolledBack {
+    pub id: String,
+    pub unit: String,
+    /// The leaf that pushed.
+    pub host: String,
+    /// Files restored from the backup.
+    pub restored: usize,
+    /// Paths the push had created, deleted.
+    pub removed: usize,
+    /// Files the push changed that were not backed up (it wrote more than
+    /// its dry run said): left as pushed.
+    pub unbacked: Vec<String>,
+    /// Runs rsync never reported on; what they created stays.
+    pub unreported: Vec<usize>,
+    /// Where what the push had written was kept before it was undone.
+    pub kept: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

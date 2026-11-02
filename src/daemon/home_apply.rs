@@ -72,11 +72,15 @@ impl Home {
                 lease,
                 rel,
                 source_state,
+                backup,
+                is_file,
             } => {
                 self.at_head(lease, host)?;
-                self.spec_of(host, &rel)?;
-                self.begin_push(host, &rel, source_state)?;
-                Ok(HomeReply::Done)
+                let (_, _) = self.spec_of(host, &rel)?;
+                let unit_path = self.fleet()?.home_dir.join(&rel);
+                let push =
+                    self.begin_push(host, &rel, &unit_path, is_file, source_state, &backup)?;
+                Ok(HomeReply::Begun { push })
             }
             HomeRequest::Rehash {
                 lease,
@@ -119,9 +123,14 @@ impl Home {
                 rel,
                 direction,
                 detail,
+                changes,
             } => {
                 self.at_head(lease, host)?;
+                let mut detail = detail;
                 if direction == Some(Direction::Push) {
+                    if let Some(id) = self.record_run(host, &rel, &changes, true)? {
+                        detail.push_str(&format!(" backup:{id}"));
+                    }
                     self.clear_push_marker(host, &rel)?;
                 }
                 self.journal(j, Line::new("sync", host, &rel, detail));
@@ -131,8 +140,14 @@ impl Home {
                 rel,
                 direction,
                 why,
+                changes,
             } => {
-                let detail = format!("{direction} interrupted ({why}); marker kept");
+                let mut detail = format!("{direction} interrupted ({why}); marker kept");
+                if direction == Direction::Push
+                    && let Some(id) = self.record_run(host, &rel, &changes, false)?
+                {
+                    detail.push_str(&format!(" backup:{id}"));
+                }
                 self.journal(j, Line::new("sync", host, &rel, detail));
                 Ok(HomeReply::Done)
             }
@@ -150,12 +165,21 @@ impl Home {
         }
     }
 
-    /// Mark `rel` as being pushed by `host`. Any marker of someone else's
-    /// over it, above or below, is a quarantine. `host`'s own push markers
-    /// are not: it is resuming (a loose unit holding its own interrupted
-    /// repo push resumes with it), and an existing marker for exactly `rel`
-    /// keeps its start.
-    fn begin_push(&self, host: &str, rel: &str, source_state: UnitState) -> Result<()> {
+    /// Mark `rel` as being pushed by `host`, after backing up what the push
+    /// will replace or delete. Any marker of someone else's over it, above
+    /// or below, is a quarantine. `host`'s own push markers are not: it is
+    /// resuming (a loose unit holding its own interrupted repo push resumes
+    /// with it), and its marker for exactly `rel` keeps its start and its
+    /// push, which gains a run. Returns the push id.
+    fn begin_push(
+        &self,
+        host: &str,
+        rel: &str,
+        unit_path: &std::path::Path,
+        is_file: bool,
+        source_state: UnitState,
+        backup: &[String],
+    ) -> Result<String> {
         let store = marker::store(&self.dirs.state());
         let all: Vec<Marker> = store.all()?;
         let fenced = all
@@ -167,17 +191,26 @@ impl Home {
                 m.direction, m.rel, m.host
             )));
         }
-        if all.iter().any(|m| m.rel == rel) {
-            return Ok(());
-        }
+        let own = all.into_iter().find(|m| m.rel == rel);
+        // The backup first: if it fails, nothing is marked.
+        let push = self.back_up(host, rel, unit_path, is_file, backup, own.as_ref())?;
         store.put(&Marker {
             version: RECORD_VERSION,
             rel: rel.into(),
             direction: Direction::Push,
             host: host.into(),
-            source_state,
-            started_at: crate::now_secs(),
-        })
+            push: Some(push.clone()),
+            ..own.unwrap_or(Marker {
+                version: RECORD_VERSION,
+                rel: rel.into(),
+                direction: Direction::Push,
+                host: host.into(),
+                source_state,
+                started_at: crate::now_secs(),
+                push: None,
+            })
+        })?;
+        Ok(push)
     }
 
     /// The push finished: its marker goes. Only `host`'s own.

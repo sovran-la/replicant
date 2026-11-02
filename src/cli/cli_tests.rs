@@ -42,6 +42,26 @@ fn parses_the_plan_examples() {
     let c = Cli::try_parse_from(["replicant", "status", "--fleet"]).unwrap();
     assert!(matches!(c.cmd, Cmd::Status { fleet: true, .. }));
     assert!(Cli::try_parse_from(["replicant", "log", "--since", "2h", "--host", "x"]).is_ok());
+    let c = Cli::try_parse_from([
+        "replicant",
+        "sync",
+        "--yes",
+        "--non-interactive",
+        "--confirm-delete",
+        "work/a",
+        "--confirm-delete",
+        "~/work/b",
+    ])
+    .unwrap();
+    assert!(matches!(
+        c.cmd,
+        Cmd::Sync { yes: true, non_interactive: true, ref confirm_delete, .. }
+            if confirm_delete == &["work/a", "~/work/b"]
+    ));
+    let c = Cli::try_parse_from(["replicant", "rollback", "leaf/20261101T000000Z"]).unwrap();
+    assert!(matches!(c.cmd, Cmd::Rollback { push: Some(ref p) } if p == "leaf/20261101T000000Z"));
+    let c = Cli::try_parse_from(["replicant", "rollback"]).unwrap();
+    assert!(matches!(c.cmd, Cmd::Rollback { push: None }));
 }
 
 #[test]

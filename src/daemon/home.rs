@@ -265,6 +265,13 @@ mod serve;
 mod apply;
 pub use apply::leaf_baselines;
 
+#[path = "home_backup.rs"]
+mod backup;
+pub use backup::{Push, Run, pushes};
+
+#[path = "home_rollback.rs"]
+mod rollback;
+
 #[cfg(test)]
 #[path = "home_tests.rs"]
 mod tests;

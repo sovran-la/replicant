@@ -49,6 +49,8 @@ fn begin(lease: u64, rel: &str) -> HomeRequest {
         lease,
         rel: rel.into(),
         source_state: UnitState::Present("s".into()),
+        backup: vec![],
+        is_file: false,
     }
 }
 
@@ -87,6 +89,7 @@ fn every_write_needs_the_callers_own_lease_at_the_head() {
                 rel: "work".into(),
                 direction: Some(Direction::Push),
                 detail: "x".into(),
+                changes: vec![],
             },
         ]
     };
@@ -131,16 +134,33 @@ fn a_push_marker_is_kept_on_resume_and_cleared_only_by_its_host() {
     let bed = two();
     let home = bed.home();
     let l = lease(&home, &bed, "leaf");
-    as_host(&home, &bed, "leaf", begin(l, "work/r")).unwrap();
+    let begun = as_host(&home, &bed, "leaf", begin(l, "work/r")).unwrap();
+    let HomeReply::Begun { push } = begun else {
+        panic!("{begun:?}")
+    };
     let first = markers(&bed);
+    assert_eq!(first[0].push.as_deref(), Some(push.as_str()));
     assert_eq!(first.len(), 1);
     assert_eq!(
         (first[0].host.as_str(), first[0].direction),
         ("leaf", Direction::Push)
     );
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    as_host(&home, &bed, "leaf", begin(l, "work/r")).unwrap();
+    let again = as_host(&home, &bed, "leaf", begin(l, "work/r")).unwrap();
+    assert!(
+        matches!(again, HomeReply::Begun { push: ref p } if *p == push),
+        "one push"
+    );
     assert_eq!(markers(&bed), first, "a resume keeps the marker it resumes");
+    let m: crate::daemon::home::Push = crate::daemon::home::pushes(&bed.home_dirs.state())
+        .get(&push)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        m.runs.len(),
+        2,
+        "the resume is a second run of the same push"
+    );
     // The loose unit above the leaf's own marker may go too, with its own.
     as_host(&home, &bed, "leaf", begin(l, "work")).unwrap();
     assert_eq!(markers(&bed).len(), 2);
@@ -161,6 +181,7 @@ fn a_push_marker_is_kept_on_resume_and_cleared_only_by_its_host() {
             rel: "work/r".into(),
             direction: Some(Direction::Push),
             detail: "x".into(),
+            changes: vec![],
         },
     )
     .unwrap_err();
@@ -178,6 +199,7 @@ fn a_push_marker_is_kept_on_resume_and_cleared_only_by_its_host() {
                 rel: rel.into(),
                 direction: Some(Direction::Push),
                 detail: "push 1 files 0 del ok".into(),
+                changes: vec![],
             },
         )
         .unwrap();
@@ -237,79 +259,5 @@ fn agree_writes_and_drops_home_s_copy_of_the_baseline() {
     assert_eq!(store.get::<Baseline>("work/r").unwrap(), None);
 }
 
-#[test]
-fn notes_are_limited_and_interruptions_need_no_lease() {
-    let bed = two();
-    let home = bed.home();
-    let note = |event: &str| HomeRequest::Note {
-        event: event.into(),
-        rel: "work/r".into(),
-        detail: "d".into(),
-    };
-    for forged in ["approve", "sync", "expired", "rollback"] {
-        let e = as_host(&home, &bed, "leaf", note(forged)).unwrap_err();
-        assert!(e.contains("may not journal"), "{forged}: {e}");
-    }
-    as_host(&home, &bed, "leaf", note("adopt")).unwrap();
-    // No lease at all: the evidence still lands.
-    let a = call(
-        &home,
-        "leaf",
-        &bed.leaf_hd,
-        HomeRequest::Interrupted {
-            rel: "work/r".into(),
-            direction: Direction::Push,
-            why: "rsync exit 23".into(),
-        },
-    );
-    assert!(a.result.is_ok());
-    assert!(a.journal[0].contains("push interrupted (rsync exit 23); marker kept"));
-    let log = home.log(&Filter::default()).unwrap();
-    let events: Vec<&str> = log.iter().map(|l| l.event.as_str()).collect();
-    assert!(events.ends_with(&["adopt", "sync"]), "{events:?}");
-}
-
-#[test]
-fn rehash_answers_the_state_home_s_snapshot_has() {
-    let bed = two();
-    testutil::repo(&bed.home_hd.join("work/r"));
-    testutil::write(&bed.home_hd.join("work/notes.txt"), "loose\n");
-    let home = bed.home();
-    let l = lease(&home, &bed, "leaf");
-    let HomeReply::State(snap) = ok(call(
-        &home,
-        "leaf",
-        &bed.leaf_hd,
-        HomeRequest::State {
-            leaf_repos: vec![],
-            case_check: false,
-            baselines: vec![],
-        },
-    )) else {
-        panic!()
-    };
-    for (rel, kind) in [("work/r", UnitKind::Repo), ("work", UnitKind::Loose)] {
-        let want = &snap
-            .units
-            .iter()
-            .find(|u| u.rel == rel && u.kind == kind)
-            .unwrap()
-            .state;
-        let got = as_host(
-            &home,
-            &bed,
-            "leaf",
-            HomeRequest::Rehash {
-                lease: l,
-                rel: rel.into(),
-                kind,
-                union: vec!["work/r".into(), "../escape".into()],
-            },
-        )
-        .unwrap();
-        let HomeReply::Rehashed { state } = got else {
-            panic!("{got:?}")
-        };
-        assert_eq!(&state, want, "{rel}");
-    }
-}
+#[path = "home_apply_more_tests.rs"]
+mod more;

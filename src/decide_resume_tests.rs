@@ -19,6 +19,7 @@ fn marker(host: &str, direction: Direction, source: UnitState) -> Marker {
         host: host.into(),
         source_state: source,
         started_at: 99,
+        push: None,
     }
 }
 

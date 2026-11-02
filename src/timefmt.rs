@@ -66,6 +66,32 @@ pub fn parse_iso(s: &str) -> Option<u64> {
     u64::try_from(secs).ok()
 }
 
+/// `20261031T190411Z`: [`iso`] without separators, for a directory name.
+pub fn compact(secs: u64) -> String {
+    iso(secs).replace(['-', ':'], "")
+}
+
+/// Parse what [`compact`] writes (and nothing looser).
+pub fn parse_compact(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.len() != 16 || b[8] != b'T' || b[15] != b'Z' {
+        return None;
+    }
+    let digits = |r: std::ops::Range<usize>| s[r].bytes().all(|c| c.is_ascii_digit());
+    if !digits(0..8) || !digits(9..15) {
+        return None;
+    }
+    parse_iso(&format!(
+        "{}-{}-{}T{}:{}:{}Z",
+        &s[0..4],
+        &s[4..6],
+        &s[6..8],
+        &s[9..11],
+        &s[11..13],
+        &s[13..15]
+    ))
+}
+
 /// `--since`: an ISO timestamp, a date, or a relative age (`45s`, `90m`, `2h`,
 /// `3d`) counted back from `now`.
 pub fn parse_since(s: &str, now: u64) -> Option<u64> {
@@ -97,6 +123,25 @@ pub fn ago(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_round_trips_and_refuses_anything_else() {
+        assert_eq!(compact(0), "19700101T000000Z");
+        for t in [0, 1_793_592_042, 4_102_444_799] {
+            assert_eq!(parse_compact(&compact(t)), Some(t));
+        }
+        for bad in [
+            "",
+            "19700101T000000",
+            "1970-01-01T00:00:00Z",
+            "19701301T000000Z",
+            "1970010aT000000Z",
+            "19700101T000000Z-2",
+            "../../etc",
+        ] {
+            assert_eq!(parse_compact(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn iso_round_trip_and_known_values() {

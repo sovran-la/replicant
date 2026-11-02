@@ -19,6 +19,8 @@ pub const DEFAULT_LEASE_SECS: u64 = 30;
 /// An in-progress marker older than this is reported as interrupted
 /// rather than possibly still running (`[daemon] marker_alert_mins`).
 pub const DEFAULT_MARKER_ALERT_MINS: u64 = 60;
+/// How long home keeps a push's backup (`[daemon] backup_days`).
+pub const DEFAULT_BACKUP_DAYS: u64 = 14;
 
 /// A directory home serves, with its excludes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +78,7 @@ pub struct Fleet {
     pub stale_after: Duration,
     pub lease: Duration,
     pub marker_alert: Duration,
+    pub backup_keep: Duration,
     /// Sorted by `rel`.
     pub roots: Vec<Root>,
     pub hosts: BTreeMap<String, HostEntry>,
@@ -216,6 +219,9 @@ impl Fleet {
                     * 3600,
             ),
             lease: Duration::from_secs(raw.daemon.lease_secs.unwrap_or(DEFAULT_LEASE_SECS).max(1)),
+            backup_keep: Duration::from_secs(
+                raw.daemon.backup_days.unwrap_or(DEFAULT_BACKUP_DAYS) * 86_400,
+            ),
             marker_alert: Duration::from_secs(
                 raw.daemon
                     .marker_alert_mins

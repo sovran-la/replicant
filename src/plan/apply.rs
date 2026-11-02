@@ -83,6 +83,9 @@ pub struct AppliedUnit {
     pub changes: Vec<String>,
     pub files_changed: usize,
     pub deleted: usize,
+    /// A push's id on home: its backup, for `replicant rollback`.
+    #[serde(default)]
+    pub push: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,4 +212,4 @@ fn summary(outcome: &Outcome, applied: &[AppliedUnit]) -> String {
 
 #[cfg(test)]
 #[path = "apply_tests.rs"]
-mod tests;
+pub(crate) mod tests;

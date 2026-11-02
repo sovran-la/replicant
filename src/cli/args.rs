@@ -1,7 +1,7 @@
 //! The command line as clap sees it. PLAN.md, "Implementation sketch":
-//! subscribe | unsubscribe | approve | sync | status | log | daemon | config
-//! | host.
-//! (`hold`, `release`, `rollback` arrive with the phases that need them.)
+//! subscribe | unsubscribe | approve | sync | status | rollback | log |
+//! daemon | config | host.
+//! (`hold` and `release` arrive with the phase that needs them.)
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -82,6 +82,13 @@ pub enum Cmd {
         json: bool,
         #[arg(short, long)]
         verbose: bool,
+    },
+    /// On home: undo one push (`<host>/<YYYYMMDDTHHMMSSZ>`, as `log` and
+    /// `sync` print it): files it replaced or deleted come back from its
+    /// backup, files it created are removed. Without an id, list the pushes.
+    Rollback {
+        #[arg(value_name = "PUSH-ID")]
+        push: Option<String>,
     },
     /// Read the journal.
     Log {

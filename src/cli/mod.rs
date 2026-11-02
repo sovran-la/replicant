@@ -166,6 +166,17 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
             };
             sync::run(&a, &mut t, &call)
         }
+        Cmd::Rollback { push } => match call(LocalRequest::Rollback { push })? {
+            LocalReply::RolledBack(r) => {
+                print!("{}", render::rolled_back(&r));
+                Ok(0)
+            }
+            LocalReply::Pushes { pushes } => {
+                print!("{}", render::pushes(&pushes, crate::now_secs()));
+                Ok(0)
+            }
+            _ => unexpected(),
+        },
         Cmd::Log { host, path, since } => {
             let since = match since {
                 Some(s) => Some(timefmt::parse_since(&s, crate::now_secs()).ok_or_else(|| {

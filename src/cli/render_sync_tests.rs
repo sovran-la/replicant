@@ -37,6 +37,7 @@ fn unit(rel: &str, action: &str, resumed: bool) -> AppliedUnit {
         changes: vec![],
         files_changed: 3,
         deleted: 1,
+        push: None,
     }
 }
 
@@ -110,6 +111,7 @@ fn open(rel: &str, host: &str, on: &str, age: u64, alert: bool) -> OpenMarker {
             host: host.into(),
             source_state: UnitState::Empty,
             started_at: 1,
+            push: None,
         },
         on: on.into(),
         age_secs: age,
@@ -156,4 +158,47 @@ fn open_markers_show_age_owner_and_what_happens_next() {
         Style { color: true },
     );
     assert!(c.contains("\x1b[2m"), "a young one is dim");
+}
+
+#[test]
+fn pushes_list_their_state_and_backups() {
+    use crate::daemon::home::{Push, Run};
+    assert_eq!(pushes(&[], 0), "no pushes recorded\n");
+    let p = |id: &str, finished: Option<u64>, rolled: Option<u64>| Push {
+        version: 1,
+        id: id.into(),
+        host: "leaf".into(),
+        unit: "work".into(),
+        is_file: false,
+        started_at: 100,
+        runs: vec![Run {
+            started_at: 100,
+            backed_up: vec!["a".into(), "b".into()],
+            absent: vec![],
+            changes: vec![],
+            reported: true,
+        }],
+        finished_at: finished,
+        rolled_back_at: rolled,
+    };
+    let s = pushes(
+        &[
+            p("leaf/20261101T000000Z", Some(1), None),
+            p("leaf/20261101T000001Z", None, None),
+            p("leaf/20261101T000002Z", Some(1), Some(2)),
+        ],
+        3700,
+    );
+    assert!(
+        s.contains("leaf/20261101T000000Z  work  1h ago  finished, 1 run(s), 2 files backed up"),
+        "{s}"
+    );
+    assert!(
+        s.contains("leaf/20261101T000001Z  work  1h ago  interrupted"),
+        "{s}"
+    );
+    assert!(
+        s.contains("leaf/20261101T000002Z  work  1h ago  rolled back"),
+        "{s}"
+    );
 }

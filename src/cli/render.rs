@@ -15,7 +15,7 @@ mod fleet_view;
 mod sync_view;
 use fleet_view::queue;
 pub use fleet_view::{fleet, log, revoked};
-pub use sync_view::{open_markers, synced};
+pub use sync_view::{open_markers, pushes, rolled_back, synced};
 
 /// How many diff lines a unit shows without `--verbose`.
 pub const DIFF_PREVIEW: usize = 12;

@@ -220,6 +220,7 @@ fn state_unions_leaf_repos_inside_bounds_and_reports_markers() {
         host: "other".into(),
         source_state: crate::state::UnitState::Empty,
         started_at: 1,
+        push: None,
     };
     crate::marker::store(&bed.home_dirs.state())
         .put(&m)

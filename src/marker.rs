@@ -7,8 +7,8 @@
 //! **quarantines** the path: the pushing leaf resumes it; everyone else's pulls
 //! of it are refused.
 //!
-//! v0.1 reads markers (and the table honours them) but never writes one; the
-//! tests write them directly.
+//! `sync`'s apply writes them (`plan/apply_unit.rs` on the leaf,
+//! `daemon/home_apply.rs` on home).
 
 use crate::paths;
 use crate::record::{Record, Store};
@@ -43,6 +43,10 @@ pub struct Marker {
     /// The source side's state when it started.
     pub source_state: UnitState,
     pub started_at: u64,
+    /// A push's id on home (`<host>/<YYYYMMDDTHHMMSSZ>`): its backup and
+    /// manifest. Absent on a pull, and on a marker from before backups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push: Option<String>,
 }
 
 impl Record for Marker {
@@ -86,6 +90,7 @@ mod tests {
             host: "birchbook".into(),
             source_state: UnitState::Present("ab".into()),
             started_at: 1,
+            push: None,
         }
     }
 

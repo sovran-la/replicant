@@ -14,7 +14,8 @@
 //! | `host.pem` | leaf | the daemon, collected from home after `approve` |
 //! | `replicant.sock`, `daemon.lock` | both | the daemon |
 //! | `journal.log` | both | the daemon (home: everything; leaf: its own lines) |
-//! | `state/` | both | the daemon: contacts, markers, baselines |
+//! | `state/` | both | the daemon: contacts, markers, baselines, push manifests |
+//! | `backup/` | home | the daemon: what each push replaced or deleted |
 
 pub mod edit;
 pub mod fleet;
@@ -69,6 +70,10 @@ impl Dirs {
     }
     pub fn state(&self) -> PathBuf {
         self.root.join("state")
+    }
+    /// Home's push backups: `backup/<host>/<YYYYMMDDTHHMMSSZ>/`.
+    pub fn backup(&self) -> PathBuf {
+        self.root.join("backup")
     }
     /// Private scratch space: the empty directory an absent source stands in
     /// with. Never the shared temp dir, where whatever is planted becomes an

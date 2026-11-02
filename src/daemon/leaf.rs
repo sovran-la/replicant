@@ -124,6 +124,9 @@ impl Leaf {
             | LocalRequest::Revoke { .. } => Err(Error::Refused(
                 "approve runs on home, and this machine is a leaf".into(),
             )),
+            LocalRequest::Rollback { .. } => Err(Error::Refused(
+                "rollback runs on home, where the backups are; this machine is a leaf".into(),
+            )),
         }
     }
 

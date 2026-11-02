@@ -234,4 +234,47 @@ pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
         1,
         "a delete skeleton: scratch",
     ),
+    // Home's push backups (backup/) and their manifests (state/pushes/).
+    (
+        "daemon/home_backup.rs",
+        "create_dir_all(",
+        1,
+        "a push run's backup dir: backup/",
+    ),
+    (
+        "daemon/home_backup.rs",
+        "remove_dir_all(",
+        2,
+        "a failed run's backup dir, and swept backups: backup/",
+    ),
+    (
+        "daemon/home_backup.rs",
+        ".put(",
+        2,
+        "push manifests: state dir",
+    ),
+    (
+        "daemon/home_backup.rs",
+        ".delete(",
+        1,
+        "a swept push's manifest: state dir",
+    ),
+    (
+        "daemon/home_rollback.rs",
+        "create_dir_all(",
+        1,
+        "a rollback's copy of what it undoes: backup/",
+    ),
+    (
+        "daemon/home_rollback.rs",
+        ".put(",
+        1,
+        "the rolled-back push's manifest: state dir",
+    ),
+    (
+        "daemon/home_rollback.rs",
+        ".delete(",
+        1,
+        "the rolled-back push's marker: state dir",
+    ),
 ];
