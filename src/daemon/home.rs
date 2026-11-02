@@ -25,11 +25,14 @@ pub struct Home {
     pub queue: Queue,
     pub journal: Journal,
     contacts: Store,
+    /// The bootstrap bundle's fingerprint, when home has one.
+    bootstrap: Option<String>,
 }
 
 impl Home {
     pub fn open(dirs: Dirs) -> Result<Self> {
         Ok(Self {
+            bootstrap: super::certs::bootstrap_fingerprint(&dirs.credentials())?,
             journal: Journal::at(dirs.journal()),
             contacts: fleet::contacts(&dirs.state()),
             fleet: cache::FleetCache::open(dirs.fleet())?,
@@ -59,17 +62,34 @@ impl Home {
         }
     }
 
-    /// Handle one leaf request from a caller that is always connected.
+    /// Handle one request in-process, as the host it names, from a caller
+    /// that is always connected. Tests only: nothing in-process is a leaf.
+    #[cfg(test)]
     pub fn handle(&self, call: HomeCall) -> HomeAnswer {
-        self.handle_from(call, &|| true)
+        self.answer(call, &Caller::Trusted, &|| true)
     }
 
-    /// Handle one leaf request. `connected` says whether the leaf is still on
-    /// the line; a queue wait refreshes its lease only while it is.
-    pub fn handle_from(&self, call: HomeCall, connected: &dyn Fn() -> bool) -> HomeAnswer {
+    /// Handle one leaf request from the TLS peer whose certificate has
+    /// fingerprint `peer`. `connected` says whether the leaf is still on the
+    /// line; a queue wait refreshes its lease only while it is.
+    pub fn handle_from(
+        &self,
+        call: HomeCall,
+        peer: &str,
+        connected: &dyn Fn() -> bool,
+    ) -> HomeAnswer {
+        self.answer(call, &Caller::Cert(peer.into()), connected)
+    }
+
+    pub(super) fn answer(
+        &self,
+        call: HomeCall,
+        caller: &Caller,
+        connected: &dyn Fn() -> bool,
+    ) -> HomeAnswer {
         let mut journal = Vec::new();
         let result = self
-            .dispatch(call, connected, &mut journal)
+            .dispatch(call, caller, connected, &mut journal)
             .map_err(|e| e.to_string());
         HomeAnswer { result, journal }
     }
@@ -77,6 +97,7 @@ impl Home {
     fn dispatch(
         &self,
         call: HomeCall,
+        caller: &Caller,
         connected: &dyn Fn() -> bool,
         j: &mut Vec<String>,
     ) -> Result<HomeReply> {
@@ -86,17 +107,21 @@ impl Home {
                 call.version
             )));
         }
-        let host = short_hostname(&call.host)
+        let claimed = short_hostname(&call.host)
             .filter(|h| *h == call.host)
             .ok_or_else(|| Error::Refused(format!("{:?} is not a valid host name", call.host)))?;
         if !call.home_dir.is_absolute() {
             return Err(Error::Refused("home_dir must be absolute".into()));
         }
+        let Admitted { host, bootstrap } = self.admit(caller, &claimed, &call.request)?;
         fleet::touch(&self.contacts, &host, None)?;
         let file = self.dirs.fleet();
         match call.request {
             HomeRequest::Subscribe { paths } => {
                 let mut f = self.fleet()?;
+                if bootstrap {
+                    self.bootstrap_may_subscribe(&f, &host)?;
+                }
                 let out = subscribe::subscribe(&f, &file, &host, &call.home_dir, &paths)?;
                 self.reload(&mut f)?;
                 let (event, detail) = if out.enrolled {
@@ -254,6 +279,11 @@ impl Home {
 
 #[path = "home_fleet.rs"]
 mod cache;
+
+#[path = "home_trust.rs"]
+mod trust;
+use trust::Admitted;
+pub use trust::{BOOTSTRAP_ONLY, Caller};
 
 #[path = "home_serve.rs"]
 mod serve;

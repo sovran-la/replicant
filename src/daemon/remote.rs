@@ -155,6 +155,7 @@ impl MtlsListener {
 }
 
 /// Dialing out to home.
+#[derive(Clone)]
 pub struct Dialer {
     config: Arc<ClientConfig>,
     connect_timeout: Duration,

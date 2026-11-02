@@ -175,9 +175,22 @@ fn spawn_tcp(
                     Ok(s) => s,
                     Err(e) => return eprintln!("replicant: refused a connection: {e}"),
                 };
-                let answer = match remote::recv::<_, wire::HomeCall>(&mut s) {
-                    Ok(call) => home.handle_from(call, &|| remote::connected(&s.sock)),
-                    Err(e) => wire::HomeAnswer {
+                // Mandatory client auth: a finished handshake has a peer
+                // certificate, and home decides who it is by its fingerprint.
+                let peer = s
+                    .conn
+                    .peer_certificates()
+                    .and_then(|c| c.first())
+                    .map(|c| certs::fingerprint(c));
+                let answer = match (remote::recv::<_, wire::HomeCall>(&mut s), peer) {
+                    (Ok(call), Some(peer)) => {
+                        home.handle_from(call, &peer, &|| remote::connected(&s.sock))
+                    }
+                    (Ok(_), None) => wire::HomeAnswer {
+                        result: Err("no client certificate".into()),
+                        journal: vec![],
+                    },
+                    (Err(e), _) => wire::HomeAnswer {
                         result: Err(e.to_string()),
                         journal: vec![],
                     },
@@ -240,3 +253,11 @@ mod tests;
 #[cfg(test)]
 #[path = "daemon_queue_tests.rs"]
 mod queue_wire_tests;
+
+#[cfg(test)]
+#[path = "daemon_trust_tests.rs"]
+mod trust_tests;
+
+#[cfg(test)]
+#[path = "test_certs.rs"]
+pub(crate) mod test_certs;

@@ -24,11 +24,12 @@ fn leaf_toml(bed: &Bed, address: &str) {
     .unwrap();
 }
 
-/// Home and leaf daemons, with home's bundle copied to the leaf.
+/// Home and leaf daemons, the leaf holding a client identity of its own.
 fn pair(bed: &Bed) -> (Daemon, Daemon) {
     let home = Daemon::start(bed.home_dirs.clone()).unwrap();
     let addr = home.tcp_addr().unwrap().to_string();
-    std::fs::copy(bed.home_dirs.credentials(), bed.leaf_dirs.home_bundle()).unwrap();
+    let id = super::test_certs::leaf_identity(bed, "leaf");
+    std::fs::copy(id, bed.leaf_dirs.home_bundle()).unwrap();
     leaf_toml(bed, &addr);
     let leaf = Daemon::start(bed.leaf_dirs.clone()).unwrap();
     (home, leaf)
