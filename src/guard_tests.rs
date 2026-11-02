@@ -18,6 +18,7 @@ fn unit(rel: &str) -> SideUnit {
         collisions: vec![],
         is_file: false,
         files: 0,
+        ignored: vec![],
     }
 }
 

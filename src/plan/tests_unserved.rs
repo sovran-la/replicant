@@ -11,14 +11,19 @@ use crate::decide::UnservedReason;
 
 /// `leaf` subscribed to `work/a` and `work/b`, a repo in each on both sides,
 /// identical, plus a loose file in `work/b` on both.
+///
+/// The leaf's copies are `cp -p`'d, as rsync `-a` would land them: the loose
+/// manifest hashes mtime in whole seconds, so writing the file twice made the
+/// two sides differ whenever the writes straddled a second boundary.
 fn two_subs() -> Bed {
     let bed = Bed::enrolled();
     for sub in ["work/a", "work/b"] {
         let h = testutil::repo(&bed.home_hd.join(sub).join("r"));
         copy(&h, &bed.leaf_hd.join(sub).join("r"));
     }
-    testutil::write(&bed.home_hd.join("work/b/notes.txt"), "n\n");
-    testutil::write(&bed.leaf_hd.join("work/b/notes.txt"), "n\n");
+    let notes = bed.home_hd.join("work/b/notes.txt");
+    testutil::write(&notes, "n\n");
+    copy(&notes, &bed.leaf_hd.join("work/b/notes.txt"));
     let fleet = bed.home_dirs.fleet();
     let text = std::fs::read_to_string(&fleet)
         .unwrap()

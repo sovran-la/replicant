@@ -302,6 +302,9 @@ mod deleted;
 #[path = "tests_except.rs"]
 mod except;
 
+#[path = "tests_ignored.rs"]
+mod ignored;
+
 #[path = "tests_unserved.rs"]
 mod unserved;
 

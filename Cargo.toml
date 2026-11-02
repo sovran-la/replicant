@@ -56,7 +56,9 @@ rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"]
 globset = "0.4"
 
 # Parallel discovery walk, as sovran.la/filesystem uses it (0.4.33), with every
-# ignore source turned off: replicant must see what rsync moves.
+# ignore source turned off: replicant must see what rsync moves. Its gitignore
+# matcher also decides what a repo's own .gitignore files ignore
+# (repos::ignored), which does not sync.
 ignore = "0.4"
 
 [dev-dependencies]

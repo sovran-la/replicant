@@ -7,6 +7,14 @@
 //! and `GIT_OPTIONAL_LOCKS=0`, which turns that refresh off, and with
 //! `core.fsmonitor=false`: a repo with fsmonitor enabled would otherwise have
 //! `git status` start a daemon (or run a hook) that writes into `.git/`.
+//!
+//! **Only the repo's own `.gitignore` files decide what is ignored** (PLAN.md
+//! rev 7). Every call runs with `core.excludesFile=/dev/null`: the user's
+//! global gitignore differs per machine, and a file it hides is still synced
+//! (`repos::ignored` does not read it), so the hash must see it as untracked
+//! work. `.git/info/exclude` cannot be switched off for `git status`; a file
+//! ignored only there still syncs but is invisible to the hash (pinned in
+//! `state_ignored_tests.rs`).
 
 use crate::{Error, Result};
 use std::path::Path;
@@ -43,6 +51,7 @@ fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out = Command::new("git")
         .arg("--no-optional-locks")
         .args(["-c", "core.fsmonitor=false"])
+        .args(["-c", "core.excludesFile=/dev/null"])
         .args(args)
         .current_dir(repo)
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -170,6 +179,19 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Result<Vec<StatusEntry>> {
         }
     }
     Ok(entries)
+}
+
+/// Every path the repo's index tracks, sorted as git sorts them. A tracked
+/// path is never ignored, whatever a `.gitignore` says (`repos::ignored`).
+/// A name that is not UTF-8 is left out: no path in this crate can hold it,
+/// and the ignored list, which skips such names too, can never name it.
+pub fn tracked(repo: &Path) -> Result<Vec<String>> {
+    let out = run(repo, &["ls-files", "-z", "--cached"])?;
+    Ok(out
+        .split(|b| *b == 0)
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| std::str::from_utf8(t).ok().map(str::to_string))
+        .collect())
 }
 
 /// How many entries the repo's index holds: its tracked files. Read from the
