@@ -76,8 +76,10 @@ pub enum Cmd {
         non_interactive: bool,
         /// Carry out the deletion of a unit that vanished on one side since
         /// it was last synced: its path here (starting with /, ~ or .) or
-        /// its home-relative path as `status` prints it (work/r).
-        /// Repeatable. Required even with --yes.
+        /// its home-relative path as `status` prints it (work/r). Also lets
+        /// an interrupted sync's resume replace or delete what changed here
+        /// since it was interrupted (guardrail 6). Repeatable. Required
+        /// even with --yes.
         #[arg(long = "confirm-delete", value_name = "PATH")]
         confirm_delete: Vec<String>,
         /// Take home's copy of a unit whose push from here home rolled back

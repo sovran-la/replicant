@@ -15,6 +15,7 @@
 use super::{HomeLink, LeafCtx, Mode, Plan, PlannedUnit, run};
 use crate::Result;
 use crate::decide::{Decision, RolledBackPush};
+use crate::guard::Guard;
 use crate::units::UnitKind;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -163,8 +164,20 @@ fn gate(
 ) -> Option<Outcome> {
     let mut why: Vec<String> = plan.refused.iter().map(|r| r.headline()).collect();
     for u in &plan.units {
-        why.extend(u.refusals.iter().map(|r| r.headline()));
         let confirmed = opts.confirm_delete.iter().any(|c| confirms(c, u, home_dir));
+        why.extend(
+            u.refusals
+                .iter()
+                .filter(|r| !(confirmed && r.guard == Guard::ChangedSinceInterrupted))
+                .map(|r| match r.guard {
+                    Guard::ChangedSinceInterrupted => format!(
+                        "{}; pass --confirm-delete {} to let the resume replace or delete them",
+                        r.headline(),
+                        u.rel
+                    ),
+                    _ => r.headline(),
+                }),
+        );
         match &u.decision {
             Decision::DeletedOn { .. } if confirmed => {}
             Decision::DeletedOn { .. } => why.push(format!(
@@ -181,10 +194,11 @@ fn gate(
         let named = plan
             .units
             .iter()
-            .any(|u| matches!(u.decision, Decision::DeletedOn { .. }) && confirms(c, u, home_dir));
+            .any(|u| confirmable(u) && confirms(c, u, home_dir));
         if !named {
             why.push(format!(
-                "--confirm-delete {c}: no unit in this plan is deleted on one side under that path"
+                "--confirm-delete {c}: no unit in this plan is deleted on one side, or would \
+                 have a resume replace what changed here since, under that path"
             ));
         }
     }
@@ -205,6 +219,16 @@ fn gate(
         Some(d) if *d != plan.digest() => Some(Outcome::Changed),
         _ => None,
     }
+}
+
+/// Whether `--confirm-delete` has anything to confirm on `u`: a deletion
+/// on one side, or a resume that would replace or delete what the leaf
+/// changed since it was interrupted (guardrail 6, review A3).
+pub fn confirmable(u: &PlannedUnit) -> bool {
+    matches!(u.decision, Decision::DeletedOn { .. })
+        || u.refusals
+            .iter()
+            .any(|r| r.guard == Guard::ChangedSinceInterrupted)
 }
 
 /// Whether `entry` (from `--confirm-delete`, or a unit the person said y

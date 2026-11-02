@@ -5,7 +5,7 @@ use super::{DiffSummary, LeafCtx, PlannedUnit, leaf_case_insensitive};
 use crate::daemon::wire::HomeSnapshot;
 use crate::decide::Decision;
 use crate::guard::{self, Refusal};
-use crate::marker::Direction;
+use crate::marker::{Direction, Marker};
 use crate::rsync::{Abort, ChangeKind, Client, Itemized, Runner, Transfer};
 use crate::units::{self, Discovered, SideUnit, SubSpec};
 use crate::{Result, paths, state};
@@ -59,6 +59,7 @@ pub(super) fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
 /// Fill `diff` and `refusals` on every unit that would move, and return the
 /// transfer each one's dry run used (index-aligned; `None` for the rest):
 /// apply runs exactly those, without `--dry-run`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     ctx: LeafCtx<'_>,
     snap: &HomeSnapshot,
@@ -66,6 +67,7 @@ pub(super) fn run(
     union: &[String],
     leaf_units: &[SideUnit],
     planned: &mut [PlannedUnit],
+    leaf_markers: &[Marker],
     abort: &Abort,
 ) -> Result<Vec<Option<Transfer>>> {
     let mut worktrees = found.worktrees();
@@ -156,6 +158,15 @@ pub(super) fn run(
                     .as_ref()
                     .and_then(|t| guard::dirty_target(t, &it)),
             );
+            // Guardrail 6 (review A3): a resumed pull, removal or confirmed
+            // deletion carries a decision made before it was interrupted,
+            // which says nothing about what the leaf has written since.
+            if direction == Direction::Pull
+                && let Some(m) = leaf_markers.iter().find(|m| m.rel == p.rel)
+            {
+                let late = changed_since(p, transfer.is_file, &it, m.started_at);
+                refusals.extend(guard::changed_since_interrupted(&p.rel, m.started_at, late));
+            }
             Ok((summarize(&it), refusals, transfer))
         },
     );
@@ -167,6 +178,31 @@ pub(super) fn run(
         transfers[i] = Some(transfer);
     }
     Ok(transfers)
+}
+
+/// The leaf paths `it` would delete or replace whose mtime is after `since`
+/// (whole seconds: anything in that second or later counts). Directories
+/// are left out: their mtimes move whenever an interrupted rsync wrote into
+/// them, and their contents are itemized path by path. A repo's `.git` is
+/// not: a commit made since moves its refs.
+fn changed_since(p: &PlannedUnit, is_file: bool, it: &Itemized, since: u64) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt;
+    let since_ns = i128::from(since) * 1_000_000_000;
+    it.changes
+        .iter()
+        .filter(|c| !c.is_dir && matches!(c.kind, ChangeKind::Delete | ChangeKind::Update))
+        .filter(|c| {
+            let path = match is_file {
+                true => p.leaf_path.clone(),
+                false => p.leaf_path.join(&c.path),
+            };
+            std::fs::symlink_metadata(path).is_ok_and(|m| {
+                !m.is_dir()
+                    && i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()) > since_ns
+            })
+        })
+        .map(|c| c.path.clone())
+        .collect()
 }
 
 /// The leaf's repo facts for a unit being removed, so guardrail 1 can say

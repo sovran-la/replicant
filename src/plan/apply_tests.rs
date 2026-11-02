@@ -18,6 +18,8 @@ pub(crate) mod fail;
 pub(crate) mod marker_tests;
 #[path = "apply_more_tests.rs"]
 mod more;
+#[path = "apply_resume_tests.rs"]
+mod resume_tests;
 
 pub(crate) fn ctx<'a>(
     bed: &'a Bed,

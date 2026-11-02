@@ -203,3 +203,20 @@ fn guard_numbers_match_the_plan() {
     .collect();
     assert_eq!(n, vec![1, 3, 4, 5]);
 }
+
+#[test]
+fn guardrail_6_names_each_path_and_when_the_sync_began() {
+    assert_eq!(changed_since_interrupted("work", 0, vec![]), None);
+    let r = changed_since_interrupted("work", 1_762_000_000, vec!["a.md".into(), "d/b".into()])
+        .unwrap();
+    assert_eq!(r.guard, Guard::ChangedSinceInterrupted);
+    assert_eq!(
+        r.headline(),
+        "guardrail 6 (changed here since the interrupted sync): work"
+    );
+    assert_eq!(r.detail.len(), 2);
+    assert!(
+        r.detail[0].starts_with("a.md: changed here after the interrupted sync began (2025-11-01T")
+    );
+    assert!(r.detail[1].starts_with("d/b: "));
+}

@@ -19,6 +19,7 @@ use super::render::{self, Style};
 use crate::Result;
 use crate::daemon::wire::{LocalReply, LocalRequest};
 use crate::decide::Decision;
+use crate::guard::Guard;
 use crate::plan::Plan;
 use crate::plan::apply::{SyncOpts, confirms};
 use std::io::{BufRead, Write};
@@ -69,7 +70,7 @@ pub fn run(a: &Args, t: &mut Term<'_>, call: Call<'_>) -> Result<i32> {
     }
     let p = plan(a, call)?;
     let text = render::plan(&p, a.verbose, t.style);
-    let blocked = blockers(&p);
+    let blocked = blockers(&p, &a.confirm_delete, &a.home_dir);
     if !a.interactive {
         let w: &mut dyn Write = &mut *t.err;
         write!(w, "{text}")?;
@@ -121,11 +122,15 @@ fn plan(a: &Args, call: Call<'_>) -> Result<Plan> {
     }
 }
 
-/// Whether anything but a deletion awaiting confirmation needs a human.
-fn blockers(p: &Plan) -> bool {
+/// Whether anything but a deletion awaiting confirmation needs a human. A
+/// resume's guardrail 6 is waived by a `--confirm-delete` naming its unit.
+fn blockers(p: &Plan, confirm: &[String], home_dir: &std::path::Path) -> bool {
     !p.refused.is_empty()
         || p.units.iter().any(|u| {
-            !u.refusals.is_empty()
+            let confirmed = confirm.iter().any(|c| confirms(c, u, home_dir));
+            u.refusals
+                .iter()
+                .any(|r| !(confirmed && r.guard == Guard::ChangedSinceInterrupted))
                 || (u.decision.is_blocking() && !matches!(u.decision, Decision::DeletedOn { .. }))
         })
 }

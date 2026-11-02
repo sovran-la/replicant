@@ -109,8 +109,17 @@ fn an_interrupted_pull_shows_in_status_resumes_and_clears() {
     let bed = Bed::enrolled();
     testutil::repo(&bed.home_hd.join("work/r"));
     let (home, leaf) = pair(&bed);
-    // A pull that died two hours ago, half done.
-    testutil::write(&bed.leaf_hd.join("work/r/README"), "half\n");
+    // A pull that died two hours ago, half done. What rsync wrote carries
+    // the source's mtime (`-a`), from before the marker: nothing changed
+    // here since, so guardrail 6 has nothing to say (review A3).
+    let half = bed.leaf_hd.join("work/r/README");
+    testutil::write(&half, "half\n");
+    std::fs::File::options()
+        .write(true)
+        .open(&half)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 3600))
+        .unwrap();
     crate::marker::store(&bed.leaf_dirs.state())
         .put(&Marker {
             version: RECORD_VERSION,

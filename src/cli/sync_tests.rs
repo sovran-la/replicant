@@ -311,3 +311,6 @@ fn dry_run_only_plans_and_json_needs_an_answerless_mode() {
 
 #[path = "sync_rollback_tests.rs"]
 mod rollback;
+
+#[path = "sync_resume_tests.rs"]
+mod resume;

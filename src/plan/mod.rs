@@ -259,6 +259,7 @@ pub(crate) fn run<T>(
                 &union,
                 &leaf_units,
                 &mut planned,
+                &leaf_markers,
                 watch.abort(),
             )?;
             t.rsync_ms = ms(started);
