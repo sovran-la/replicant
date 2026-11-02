@@ -194,10 +194,12 @@ granularity can come with v0.3's per-file conflicts.
   gitignore or `.git/info/exclude`, so the walker (the `ignore` crate) and
   rsync cannot drift; the differential test holds them together. Untracked
   but not ignored still syncs: that is WIP. Consequence: `.ai-index/`,
-  `target/`, `vectors.db` and every `.env` stay where they were made. Open
-  until measured: whether macOS's openrsync accepts `--filter` merge rules;
-  if not, replicant materializes a per-repo exclude list from the same
-  `.gitignore` files instead.
+  `target/`, `vectors.db` and every `.env` stay where they were made.
+  Measured: openrsync and rsync 3.4.1 both accept `--filter=':- .gitignore'`
+  but neither reads `!negation` as git does, so replicant materializes the
+  list (`repos::ignored`, decided by rules, a tracked path never ignored)
+  and hands rsync both sides' lists as anchored excludes
+  (`docs/v0.2-prep-notes.md`, "Ignored files do not sync").
 - **Loose:** the sorted manifest of (path, kind, size, mtime, mode, link
   target).
 
