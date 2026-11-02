@@ -70,7 +70,7 @@ fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) ->
                 // As the daemon does: each event handed over as it happens.
                 let on = RefCell::new(on);
                 let emit = |e: ProgressEvent| (on.borrow_mut())(e);
-                let progress = Progress::new(&emit);
+                let progress = Progress::new(&emit, Default::default());
                 Ok(LocalReply::Synced(Box::new(crate::plan::apply::sync_with(
                     &link, ctx, &opts, &progress,
                 )?)))

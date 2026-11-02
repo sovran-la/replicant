@@ -1,10 +1,11 @@
 //! The local socket's stream: frames round-trip, an answer reads past any
 //! number of progress frames sent in one burst, an old daemon's refusal
-//! still reads, and frames reach the CLI in order before the answer.
+//! still reads, and the CLI hanging up raises the request's abort.
 
 use super::*;
 use crate::marker::Direction;
 use crate::plan::apply::UnitOutcome;
+use std::time::Instant;
 
 fn started(i: usize) -> ProgressEvent {
     ProgressEvent::UnitStarted {
@@ -113,13 +114,17 @@ fn request(s: &mut UnixStream, version: u32) {
 }
 
 #[test]
-fn serve_streams_progress_then_answers() {
+fn serve_streams_progress_then_answers_and_a_patient_cli_is_no_hangup() {
     let (mut cli, daemon) = UnixStream::pair().unwrap();
+    let raised = AtomicBool::new(false);
     std::thread::scope(|s| {
         s.spawn(|| {
             serve(daemon, &|_, p| {
                 p.emit(started(1));
                 p.emit(started(2));
+                // Give a watch that misread the quiet CLI time to fire.
+                std::thread::sleep(WATCH_POLL * 2);
+                raised.store(p.abort().raised(), Ordering::SeqCst);
                 Ok(LocalReply::Pong {
                     role: "leaf".into(),
                     name: "n".into(),
@@ -132,6 +137,45 @@ fn serve_streams_progress_then_answers() {
         assert!(matches!(reply, LocalReply::Pong { .. }));
         assert_eq!(seen, vec![started(1), started(2)]);
     });
+    assert!(
+        !raised.load(Ordering::SeqCst),
+        "the CLI was there all along"
+    );
+}
+
+#[test]
+fn a_quick_request_is_not_held_by_the_watch() {
+    let (mut cli, daemon) = UnixStream::pair().unwrap();
+    request(&mut cli, LOCAL_WIRE_VERSION);
+    let t = Instant::now();
+    serve(daemon, &|_, _| Err("refused".into()));
+    // The watch is woken, not waited out (it would take WATCH_POLL).
+    assert!(t.elapsed() < WATCH_POLL, "{:?}", t.elapsed());
+    let err = read_answer(&mut BufReader::new(&cli), &mut |_| {}).unwrap_err();
+    assert!(err.to_string().contains("refused"));
+}
+
+#[test]
+fn the_cli_hanging_up_raises_the_abort_with_why() {
+    let (mut cli, daemon) = UnixStream::pair().unwrap();
+    request(&mut cli, LOCAL_WIRE_VERSION);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        serve(daemon, &|_, p| {
+            let by = Instant::now() + Duration::from_secs(10);
+            while !p.abort().raised() && Instant::now() < by {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            tx.send(p.abort().why()).unwrap();
+            // A frame after the hangup goes nowhere, and is no panic.
+            p.emit(started(3));
+            Err("stopped".into())
+        })
+    });
+    drop(cli);
+    let why = rx.recv_timeout(Duration::from_secs(20)).unwrap();
+    assert_eq!(why.as_deref(), Some(HANGUP));
+    server.join().unwrap();
 }
 
 #[test]

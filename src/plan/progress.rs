@@ -7,6 +7,7 @@
 //! Planning, dry runs and `status` announce nothing.
 
 use crate::marker::Direction;
+use crate::rsync::Abort;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +43,7 @@ pub enum ProgressEvent {
 pub enum UnitOutcome {
     Applied,
     /// Its rsync did not finish (failed, timed out, or stopped: the lease
-    /// lost). Its marker stays; the next `sync` resumes it.
+    /// lost, the CLI gone). Its marker stays; the next `sync` resumes it.
     Interrupted {
         why: String,
     },
@@ -52,24 +53,34 @@ pub enum UnitOutcome {
     },
 }
 
-/// Where a sync sends its events.
+/// Where a sync sends its events, and the flag that stops it: raised, the
+/// running rsync is stopped and the unit left interrupted, and no further
+/// unit begins.
 pub struct Progress<'a> {
     emit: &'a dyn Fn(ProgressEvent),
+    abort: Abort,
 }
 
 fn ignore(_: ProgressEvent) {}
 
 impl<'a> Progress<'a> {
-    pub fn new(emit: &'a dyn Fn(ProgressEvent)) -> Self {
-        Self { emit }
+    pub fn new(emit: &'a dyn Fn(ProgressEvent), abort: Abort) -> Self {
+        Self { emit, abort }
     }
 
-    /// Nobody is listening.
+    /// Nobody is listening, and nothing but a lost lease stops it.
     pub fn silent() -> Progress<'static> {
-        Progress { emit: &ignore }
+        Progress {
+            emit: &ignore,
+            abort: Abort::default(),
+        }
     }
 
     pub fn emit(&self, e: ProgressEvent) {
         (self.emit)(e)
+    }
+
+    pub fn abort(&self) -> &Abort {
+        &self.abort
     }
 }

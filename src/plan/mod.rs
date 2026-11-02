@@ -103,7 +103,7 @@ pub(crate) struct Planned<'a> {
 /// Plan every unit. `dry_run` adds the queue entry, rsync diffs and guards.
 pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool) -> Result<Plan> {
     let mode = if dry_run { Mode::DryRun } else { Mode::Status };
-    let (plan, ()) = run(link, ctx, mode, no_wait, |_, _| Ok(()))?;
+    let (plan, ()) = run(link, ctx, mode, no_wait, Default::default(), |_, _| Ok(()))?;
     report(
         link,
         ctx,
@@ -117,11 +117,14 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
 
 /// Plan, and then run `then` under the same queue entry, its lease still
 /// heartbeated. A lost lease fails the result whatever `then` returned.
+/// `abort` stops every rsync the plan runs once raised, by a lost lease or
+/// by whoever else holds it.
 pub(crate) fn run<T>(
     link: &dyn HomeLink,
     ctx: LeafCtx<'_>,
     mode: Mode,
     no_wait: bool,
+    abort: crate::rsync::Abort,
     then: impl FnOnce(&lease::Watch, Planned<'_>) -> Result<T>,
 ) -> Result<(Plan, T)> {
     let total = Instant::now();
@@ -174,7 +177,7 @@ pub(crate) fn run<T>(
     leaf_repos.sort();
     leaf_repos.dedup();
 
-    let result = lease::with_heartbeat(link, lease, |watch| {
+    let result = lease::with_heartbeat(link, lease, abort, |watch| {
         let started = Instant::now();
         let snap = match link.call(HomeRequest::State {
             leaf_repos: leaf_repos.clone(),

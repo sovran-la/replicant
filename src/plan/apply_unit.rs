@@ -15,7 +15,7 @@ use crate::marker::{self, Direction, Marker};
 use crate::plan::lease::Watch;
 use crate::plan::{HomeLink, LeafCtx, Planned, PlannedUnit, diff};
 use crate::record::RECORD_VERSION;
-use crate::rsync::{ChangeKind, Runner, Transfer};
+use crate::rsync::{ChangeKind, Runner, Stopped, Transfer};
 use crate::state::UnitState;
 use crate::{Error, Result};
 use std::time::Instant;
@@ -135,7 +135,12 @@ fn transfer(
     let ran = t.apply(runner)?;
     let changes = diff::summarize(&ran.itemized).changes;
     if !ran.ok() {
-        let why = ran.why();
+        // Stopped by whoever raised the abort and said why (the CLI hung
+        // up); without a reason, a lost lease.
+        let why = match (ran.stopped, watch.abort().why()) {
+            (Some(Stopped::Aborted), Some(w)) => format!("{w}; rsync stopped"),
+            _ => ran.why(),
+        };
         let journaled = link
             .call(HomeRequest::Interrupted {
                 rel: u.rel.clone(),

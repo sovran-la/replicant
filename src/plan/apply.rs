@@ -128,7 +128,10 @@ pub fn sync(link: &dyn HomeLink, ctx: LeafCtx<'_>, opts: &SyncOpts) -> Result<Sy
     sync_with(link, ctx, opts, &Progress::silent())
 }
 
-/// [`sync`], announcing each unit to `progress` as it starts and ends.
+/// [`sync`], announcing each unit to `progress` as it starts and ends. Its
+/// abort, once raised, stops the plan's rsyncs (planning fails, nothing
+/// written) or the unit's (interrupted, its marker kept), and no later
+/// unit begins.
 pub fn sync_with(
     link: &dyn HomeLink,
     ctx: LeafCtx<'_>,
@@ -141,7 +144,8 @@ pub fn sync_with(
         accept_rollback: &opts.accept_rollback,
         ..ctx
     };
-    let result = run(link, ctx, Mode::Sync, opts.no_wait, |watch, p| {
+    let abort = progress.abort().clone();
+    let result = run(link, ctx, Mode::Sync, opts.no_wait, abort, |watch, p| {
         stash.lock().unwrap_or_else(|e| e.into_inner()).plan = Some(p.plan.clone());
         let outcome = match gate(p.plan, opts, ctx.home_dir, &p.snap.rolled_back) {
             Some(o) => o,

@@ -28,7 +28,7 @@ fn baseline(bed: &Bed, rel: &str) -> Option<Baseline> {
 
 /// After `work/beta` stopped: alpha done, beta marked and not baselined,
 /// gamma not touched, and the journal says so.
-fn stopped_at_beta(bed: &Bed, home: &Home, r: &SyncReport, why: &str) {
+pub(crate) fn stopped_at_beta(bed: &Bed, home: &Home, r: &SyncReport, why: &str) {
     match &r.outcome {
         Outcome::Interrupted {
             rel,
@@ -71,7 +71,7 @@ fn stopped_at_beta(bed: &Bed, home: &Home, r: &SyncReport, why: &str) {
 
 /// The next dry run says resume and writes nothing; the next sync resumes,
 /// clears the marker and finishes the rest.
-fn resumes(bed: &Bed, home: &Home) {
+pub(crate) fn resumes(bed: &Bed, home: &Home) {
     let prints = (
         testutil::fingerprint(&bed.leaf_hd),
         testutil::fingerprint(&bed.leaf_dirs.state()),

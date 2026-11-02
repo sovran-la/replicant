@@ -1,6 +1,7 @@
 //! Apply's loop: every unit of the plan in order, each announced as it
 //! starts and as it ends ([`Progress`]), stopping at the first that does not
-//! finish.
+//! finish. Once the abort is raised (the lease lost, the CLI gone), the
+//! running rsync is stopped and no later unit begins.
 
 use super::super::{AppliedUnit, Outcome, Progress, ProgressEvent, Stash, UnitOutcome};
 use super::plan_step::{Step, step};
@@ -56,6 +57,9 @@ pub(in crate::plan) fn apply_all(
     }
     let total = work.len();
     for (n, (u, s)) in work.into_iter().enumerate() {
+        if watch.abort().raised() {
+            return stopped_before(u, watch);
+        }
         let s = match s {
             Ok(s) => s,
             Err(e) => return failed(u, e),
@@ -147,5 +151,18 @@ fn unit_outcome(o: &Outcome) -> UnitOutcome {
         other => UnitOutcome::Failed {
             why: format!("{other:?}"),
         },
+    }
+}
+
+/// The abort was raised between units: `u` never began, so nothing of it
+/// (not even a marker) was written.
+fn stopped_before(u: &PlannedUnit, watch: &Watch) -> Outcome {
+    let why = match watch.check() {
+        Err(e) => e.to_string(),
+        Ok(()) => watch.abort().why().unwrap_or_else(|| "stopped".to_string()),
+    };
+    Outcome::Failed {
+        rel: u.rel.clone(),
+        why: format!("{why}; stopped before this unit began, nothing of it written"),
     }
 }

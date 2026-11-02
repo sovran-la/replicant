@@ -40,7 +40,8 @@ impl Leaf {
     /// or revoked), ask over the bootstrap for a reissued certificate and,
     /// given one, try once more: home refuses an unknown certificate before
     /// acting on anything, so the retry repeats nothing.
-    /// A sync announces its units to `progress`.
+    /// A sync announces its units to `progress`, and stops once its abort
+    /// is raised (the CLI hung up).
     pub fn handle(&self, req: LocalRequest, progress: &Progress<'_>) -> LocalAnswer {
         let first = self.dispatch(req.clone(), progress);
         match first {
