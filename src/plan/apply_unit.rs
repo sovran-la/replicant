@@ -166,7 +166,9 @@ fn transfer(
         }));
     }
     // A lease lost while rsync ran means another entry may have run beside
-    // it: what arrived is not known to be whole. The marker stays.
+    // it: what arrived is not known to be whole. The marker stays. The
+    // lease only, not the abort: a hangup after exit 0 lost no exclusivity
+    // and the rsync finished whole, so the unit finishes (review P2).
     if let Err(e) = watch.check() {
         let why = e.to_string();
         let journaled = link
