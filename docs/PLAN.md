@@ -1,7 +1,8 @@
 # Replicant — Rough Plan
 
 *Draft 2026-10-31, rev 5 2026-11-01 (v0.1.0 shipped and deployed; review findings folded in; v0.2 entry criteria),
-rev 6 2026-11-01 (decided: F5 weighted out-of-bounds rows, root-relative slash excludes, symlinked bases, granted leases).
+rev 6 2026-11-01 (decided: F5 weighted out-of-bounds rows, root-relative slash excludes, symlinked bases, granted leases),
+rev 7 2026-11-01 late (decided: git-ignored files do not sync; approve mints per-host certs; backup/rollback/confirm shapes; v0.2 build list).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -70,7 +71,9 @@ ssh keys). Acceptable for a read-only v0.1; **not** acceptable once anything
 applies. Scheduled for v0.2, before apply (review F12/Q1), no new
 dependencies:
 
-- `config export-creds <host>` mints a per-host client cert from the existing CA.
+- `approve` mints the per-host client cert from the existing CA as part of
+  enrolling the host (decided 2026-11-01 late); `config export-creds` only
+  prints the bootstrap bundle.
 - `fleet.toml` pins it: `[hosts.x] cert = "sha256:<DER fingerprint>"`.
 - After the handshake home hashes the peer's leaf certificate and derives the
   host from the fingerprint; the host named in the request is ignored, or
@@ -183,11 +186,18 @@ granularity can come with v0.3's per-file conflicts.
   not describe — size, mtime to the nanosecond, mode, link target. Never
   content (decided 2026-11-01): content cost 1.7 GB of reads per `status` on
   thistledown, and a modified 400 MB zip is still a modified 400 MB zip.
-- **Ignored-but-not-excluded files inside repos** enter the repo hash as a
-  metadata manifest of `git ls-files --others --ignored --exclude-standard`,
-  filtered by the root's excludes (accepted from the v0.1 notes, widened by
-  review F6). rsync moves them — an `.env.local`, a local dataset — so they
-  are state. Not in v0.1; a v0.2 entry criterion.
+- **Git-ignored files inside repos do not sync** (decided 2026-11-01 late,
+  reversing the rev 5 reading of F6). They are not state, not in the hash,
+  not moved by rsync, so there is nothing to protect: F6 is deleted, not
+  built. Only each repo's own `.gitignore` files count — the same files
+  rsync's `--filter=':- .gitignore'` merge rule reads — never the global
+  gitignore or `.git/info/exclude`, so the walker (the `ignore` crate) and
+  rsync cannot drift; the differential test holds them together. Untracked
+  but not ignored still syncs: that is WIP. Consequence: `.ai-index/`,
+  `target/`, `vectors.db` and every `.env` stay where they were made. Open
+  until measured: whether macOS's openrsync accepts `--filter` merge rules;
+  if not, replicant materializes a per-repo exclude list from the same
+  `.gitignore` files instead.
 - **Loose:** the sorted manifest of (path, kind, size, mtime, mode, link
   target).
 
@@ -414,9 +424,8 @@ quietly become "ignore forever."
 Before any destructive apply, in order:
 
 1. **Dirty target.** `git status --porcelain` on every repo on the target
-   side, plus every ignored-but-not-excluded file there (review F6: a
-   leaf-only `.env.local` must not vanish on a pull triggered by some other
-   change). Anything that would be overwritten and isn't on the source →
+   side (ignored files never move, so they cannot be lost; rev 7).
+   Anything that would be overwritten and isn't on the source →
    refuse (`--force` after printing exactly what dies). Stays active on
    resume.
 2. **Stale baseline.** Push refuses if home moved since this leaf last
@@ -769,6 +778,46 @@ blobs under `memoryco/gguf_models` (excluded for now), and large dirty
 binaries (SegmentShop zips, xcframeworks). A cleanup pass before the first
 real pull is a cutover prerequisite, and like cutover it is still deferred.
 
+## Decisions 2026-11-01 (late)
+
+- **Ignored files do not sync.** See *State hash*. F6 closed.
+- **Enrollment is the whole trust ceremony.** The shared bundle every leaf
+  starts with is a *bootstrap* credential good for exactly one thing: asking
+  to be enrolled. `approve` mints the host's client cert, pins its
+  fingerprint in `fleet.toml`, and the leaf's next request fetches the cert
+  over the bootstrap bundle and stops using the bootstrap. Home derives the
+  host from the peer certificate and ignores the self-asserted name. Home's
+  server cert is separate from client certs. A pairing-token flow is not
+  needed while every leaf is Brandon's.
+- **Backup on push:** `~/.sovran/replicant/backup/<host>/<timestamp>/` on
+  home via `rsync --backup --backup-dir`, retained 14 days. `replicant
+  rollback` is per push (the unit of "undo what just happened").
+- **DeletedOn confirmation:** both forms — `--confirm-delete <path>` for
+  hooks, and the y/N in the collect-then-apply pass for humans.
+- **Second leaf is stonebox**, not twinoaks: lower stakes, and it exercises
+  the Linux-leaf path (and F9's Mac→Linux push) before a work machine does.
+- **Cleanup before the first real pull** happens on a list Brandon reads:
+  `.sync-conflict-*` files (delete where the sibling original exists), and
+  the largest dirty/untracked binaries by repo (exclude or move out).
+- **F7 NFC/NFD** stays out of scope until it bites; no `unicode-normalization`
+  dependency. Cross-unit case collisions remain a v0.2 item.
+- **First real pull** is one subscription, when the apply path has been
+  reviewed. Not yet.
+
+### v0.2 build list, in order
+
+1. Ignored files do not sync: `ignore` crate honoring in-repo `.gitignore`
+   in the walker, rsync `--filter=':- .gitignore'` (or a materialized list if
+   openrsync refuses it), differential test, hash and guardrail 1 unchanged
+   apart from no longer seeing ignored paths.
+2. Per-host certs through `approve`; bootstrap bundle demoted.
+3. F3's second half: a lost lease kills the running rsync child.
+4. Apply: real pull and push, baselines written after rsync exit 0,
+   markers and resume, backup-dir on push, `--confirm-delete` and the y/N
+   pass, `rollback`, journal entries. Reviewed before it runs against
+   `~/work`.
+5. stonebox enrolled; F9's Mac→Linux push deletion names tested for real.
+
 ## Phases
 
 1. **Mitigation now.** Add `.git/index`, `.git/*.lock`, `.git/worktrees` to
@@ -804,8 +853,7 @@ rows), and from `docs/v0.2-prep-review.md` **P3** (root-relative excludes),
 - **F4** — a missing subscription base is an error, and a unit that vanished
   since baseline is "deleted on X" with explicit confirmation, never a plain
   whole-unit delete.
-- **F6** — ignored-but-not-excluded files enter the repo hash as a metadata
-  manifest, and guardrail 1 treats them as at-risk on the target.
+- **F6** — closed by rev 7: git-ignored files do not sync at all.
 - **F7** — guardrail 4 also checks collisions across units and NFC/NFD pairs.
 - **F8** — a waiter's lease refresh checks that its connection is alive.
 - **F9** — push deletions from openrsync to rsync 3 must come back with names;
