@@ -77,3 +77,56 @@ fn a_client_certificate_that_is_not_the_bootstrap_is_not_gated_by_it() {
     ));
     home.stop();
 }
+
+#[test]
+fn collect_says_unknown_then_pending_then_hands_over_once() {
+    let bed = Bed::new("");
+    let home = Daemon::start(bed.home_dirs.clone()).unwrap();
+    let fresh = dial(&home, &bed.home_dirs.credentials(), "fresh", &bed.leaf_hd);
+    let collect = || fresh.call(HomeRequest::CollectCert);
+
+    assert!(matches!(
+        collect(),
+        Ok(HomeReply::Collected(wire::Collected::Unknown { ref home })) if home == "home"
+    ));
+    fresh
+        .call(HomeRequest::Subscribe {
+            paths: vec!["~/work".into()],
+        })
+        .unwrap();
+    let Ok(HomeReply::Collected(wire::Collected::Pending { paths, .. })) = collect() else {
+        panic!()
+    };
+    assert_eq!(paths, vec!["work"]);
+
+    let LocalReply::Approved(a) = local::call(
+        &bed.home_dirs,
+        LocalRequest::Approve {
+            host: "fresh".into(),
+            allow: vec![],
+        },
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let Ok(HomeReply::Collected(wire::Collected::Issued { bundle })) = collect() else {
+        panic!()
+    };
+    let id = tls::parse(&bundle, std::path::Path::new("x")).unwrap();
+    assert_eq!(id.fingerprint(), a.cert);
+
+    let err = fresh.refused(HomeRequest::CollectCert);
+    assert!(err.contains("no certificate is waiting"), "one-shot: {err}");
+    assert!(!bed.home_dirs.issued().join("fresh.pem").exists());
+    home.stop();
+}
+
+#[test]
+fn only_the_bootstrap_collects() {
+    let bed = Bed::enrolled();
+    let home = Daemon::start(bed.home_dirs.clone()).unwrap();
+    let leaf = dial(&home, &leaf_identity(&bed, "leaf"), "leaf", &bed.leaf_hd);
+    let err = leaf.refused(HomeRequest::CollectCert);
+    assert!(err.contains("already has its own certificate"), "{err}");
+    home.stop();
+}

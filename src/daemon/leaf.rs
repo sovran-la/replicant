@@ -2,57 +2,20 @@
 //! need home, and the leaf's own copy of its journal lines.
 
 use super::journal::Journal;
-use super::remote::Dialer;
-use super::tls::Identity;
 use super::wire::*;
 use crate::config::{Dirs, HomeEntry, LeafConfig, leaf::check_local, short_hostname, with_port};
 use crate::plan::{self, HomeLink, LeafCtx, LeafStatus};
 use crate::{Error, Result, paths};
+use link::Link;
 use std::path::PathBuf;
-use std::time::Duration;
-
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Long enough to wait out the queue and hash home's side of a large tree.
-const REQUEST_DEADLINE: Duration = Duration::from_secs(900);
-/// Heartbeats and releases: short, so a hung call cannot outlast the lease
-/// it is meant to keep, and the heartbeat thread gets to retry.
-const LEASE_CALL_DEADLINE: Duration = Duration::from_secs(10);
 
 pub struct Leaf {
     pub dirs: Dirs,
     pub journal: Journal,
 }
 
-/// The mTLS link to home, as this leaf.
-struct Remote<'a> {
-    journal: &'a Journal,
-    address: String,
-    me: String,
-    home_dir: PathBuf,
-    dialer: Dialer,
-}
-
-impl HomeLink for Remote<'_> {
-    fn call(&self, request: HomeRequest) -> Result<HomeReply> {
-        let deadline = match request {
-            HomeRequest::Heartbeat { .. } | HomeRequest::Release { .. } => LEASE_CALL_DEADLINE,
-            _ => REQUEST_DEADLINE,
-        };
-        let call = HomeCall {
-            version: WIRE_VERSION,
-            host: self.me.clone(),
-            home_dir: self.home_dir.clone(),
-            request,
-        };
-        let answer: HomeAnswer = self.dialer.call(&self.address, &call, deadline)?;
-        for line in &answer.journal {
-            if let Err(e) = self.journal.append_raw(line) {
-                eprintln!("replicant: could not keep a local copy of a journal line: {e}");
-            }
-        }
-        answer.result.map_err(Error::Remote)
-    }
-}
+#[path = "leaf_link.rs"]
+mod link;
 
 impl Leaf {
     pub fn open(dirs: Dirs) -> Self {
@@ -67,17 +30,6 @@ impl Leaf {
             Error::Config(
                 "this machine has no home yet; run `replicant subscribe <home> <paths...>`".into(),
             )
-        })
-    }
-
-    fn remote(&self, cfg: &LeafConfig) -> Result<Remote<'_>> {
-        let identity = Identity::load(&cfg.credentials(&self.dirs))?;
-        Ok(Remote {
-            journal: &self.journal,
-            address: cfg.home.address.clone(),
-            me: cfg.name()?,
-            home_dir: cfg.home_dir()?,
-            dialer: Dialer::new(&identity, CONNECT_TIMEOUT)?,
         })
     }
 
@@ -102,7 +54,8 @@ impl Leaf {
             LocalRequest::Unsubscribe { paths } => {
                 let mut cfg = self.cfg()?;
                 let reply = self
-                    .remote(&cfg)?
+                    .link(&cfg)?
+                    .host()?
                     .call(HomeRequest::Unsubscribe { paths })?;
                 let HomeReply::Unsubscribed(out) = reply else {
                     return Err(Error::Remote(format!("unexpected reply: {reply:?}")));
@@ -116,14 +69,14 @@ impl Leaf {
             LocalRequest::Status => Ok(LocalReply::LeafStatus(Box::new(self.status()?))),
             LocalRequest::Fleet => {
                 let cfg = self.cfg()?;
-                match self.remote(&cfg)?.call(HomeRequest::FleetState)? {
+                match self.link(&cfg)?.host()?.call(HomeRequest::FleetState)? {
                     HomeReply::Fleet(f) => Ok(LocalReply::Fleet(f)),
                     other => Err(Error::Remote(format!("unexpected reply: {other:?}"))),
                 }
             }
             LocalRequest::DryRun { no_wait } => {
                 let cfg = self.cfg()?;
-                let link = self.remote(&cfg)?;
+                let link = self.link(&cfg)?.host()?;
                 let (me, hd, state) = (cfg.name()?, cfg.home_dir()?, self.dirs.state());
                 let scratch = self.dirs.scratch();
                 let ctx = LeafCtx {
@@ -194,9 +147,11 @@ impl Leaf {
         cfg.home.credentials = credentials.or(cfg.home.credentials);
         cfg.save(&self.dirs.leaf())?;
 
-        let reply = self
-            .remote(&cfg)?
-            .call(HomeRequest::Subscribe { paths: raw })?;
+        let reply = match self.link(&cfg)? {
+            Link::Host(r) | Link::Bootstrap(r, _) => {
+                r.call(HomeRequest::Subscribe { paths: raw })?
+            }
+        };
         let HomeReply::Subscribed(out) = reply else {
             return Err(Error::Remote(format!("unexpected reply: {reply:?}")));
         };
@@ -209,8 +164,30 @@ impl Leaf {
 
     fn status(&self) -> Result<LeafStatus> {
         let cfg = self.cfg()?;
-        let link = self.remote(&cfg)?;
         let me = cfg.name()?;
+        let link = match self.link(&cfg)? {
+            Link::Host(r) => r,
+            // Not enrolled yet: what home said about it is the whole status.
+            Link::Bootstrap(_, state) => {
+                let (home, enrollment, pending_paths) = match state {
+                    Collected::Pending { home, paths } => (home, Enrollment::Pending, paths),
+                    Collected::Unknown { home } => (home, Enrollment::Unknown, vec![]),
+                    Collected::Issued { .. } => unreachable!("link() keeps an issued bundle"),
+                };
+                return Ok(LeafStatus {
+                    me,
+                    home,
+                    enrollment,
+                    cap: None,
+                    paths: vec![],
+                    except: vec![],
+                    as_local: cfg.as_local,
+                    pending_paths,
+                    plan: None,
+                    queue: vec![],
+                });
+            }
+        };
         let view = plan::subscriptions(&link)?;
         let (hd, state, scratch) = (cfg.home_dir()?, self.dirs.state(), self.dirs.scratch());
         let planned = match view.enrollment {

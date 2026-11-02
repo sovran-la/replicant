@@ -15,7 +15,9 @@ use crate::units::{SideUnit, SubSpec};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const WIRE_VERSION: u32 = 1;
+/// 2: per-host certificates. Home derives the caller from its certificate,
+/// and a leaf collects its own with [`HomeRequest::CollectCert`].
+pub const WIRE_VERSION: u32 = 2;
 
 // ---------------------------------------------------------------- leaf → home
 
@@ -23,7 +25,10 @@ pub const WIRE_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HomeCall {
     pub version: u32,
-    /// The leaf's fleet name. Self-asserted: see [`super::certs`].
+    /// The leaf's fleet name. Never trusted for identity: home derives the
+    /// host from the peer certificate and refuses a request that names
+    /// another. Over the bootstrap bundle it names the host asking to be
+    /// enrolled, or collecting its certificate.
     pub host: String,
     /// The leaf's `$HOME`, for path normalization and pending enrollment.
     pub home_dir: PathBuf,
@@ -66,6 +71,10 @@ pub enum HomeRequest {
         summary: String,
     },
     FleetState,
+    /// Over the bootstrap bundle: the certificate `approve` issued this
+    /// host, if one is waiting. One-shot: home deletes its copy as it
+    /// answers.
+    CollectCert,
 }
 
 /// Home's answer, plus any journal lines it wrote about the caller so the
@@ -87,6 +96,20 @@ pub enum HomeReply {
     Done,
     State(HomeSnapshot),
     Fleet(FleetState),
+    Collected(Collected),
+}
+
+/// What [`HomeRequest::CollectCert`] found for the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Collected {
+    /// The host's identity bundle (certificate, key, CA). Home no longer
+    /// has a copy.
+    Issued { bundle: String },
+    /// Waiting for `replicant approve` on home.
+    Pending { home: String, paths: Vec<String> },
+    /// Home has no record of the host: it has not subscribed.
+    Unknown { home: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

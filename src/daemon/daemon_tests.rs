@@ -5,6 +5,7 @@ use super::*;
 use crate::config::{HomeEntry, LeafConfig, leaf::LOCAL_RSYNC};
 use crate::decide::Decision;
 use crate::testutil::{self, Bed};
+use std::os::unix::fs::PermissionsExt;
 use wire::Enrollment;
 
 fn leaf_toml(bed: &Bed, address: &str) {
@@ -24,12 +25,12 @@ fn leaf_toml(bed: &Bed, address: &str) {
     .unwrap();
 }
 
-/// Home and leaf daemons, the leaf holding a client identity of its own.
+/// Home and leaf daemons: the leaf holds home's bootstrap bundle, and its
+/// own certificate if fleet.toml already enrolls it.
 fn pair(bed: &Bed) -> (Daemon, Daemon) {
     let home = Daemon::start(bed.home_dirs.clone()).unwrap();
     let addr = home.tcp_addr().unwrap().to_string();
-    let id = super::test_certs::leaf_identity(bed, "leaf");
-    std::fs::copy(id, bed.leaf_dirs.home_bundle()).unwrap();
+    super::test_certs::equip_leaf(bed);
     leaf_toml(bed, &addr);
     let leaf = Daemon::start(bed.leaf_dirs.clone()).unwrap();
     (home, leaf)
@@ -73,6 +74,12 @@ fn enroll_approve_status_dry_run_fleet_and_log_over_mtls() {
     assert_eq!(st.enrollment, Enrollment::Pending);
     assert!(st.plan.is_none());
 
+    assert_eq!(st.pending_paths, vec!["work"]);
+    assert!(
+        !bed.leaf_dirs.host_identity().exists(),
+        "nothing to collect yet"
+    );
+
     let LocalReply::Pending { hosts } = local(&bed.home_dirs, LocalRequest::Pending) else {
         panic!()
     };
@@ -88,11 +95,24 @@ fn enroll_approve_status_dry_run_fleet_and_log_over_mtls() {
         panic!()
     };
     assert_eq!(a.subscribed, vec!["work"]);
+    let issued = bed.home_dirs.issued().join("leaf.pem");
+    assert!(issued.exists(), "minted and waiting");
 
+    // The leaf's next request collects its certificate over the bootstrap
+    // and uses it from then on; home's copy is gone.
     let LocalReply::LeafStatus(st) = local(&bed.leaf_dirs, LocalRequest::Status) else {
         panic!()
     };
     assert_eq!(st.enrollment, Enrollment::Enrolled);
+    let own = tls::Identity::load(&bed.leaf_dirs.host_identity()).unwrap();
+    assert_eq!(own.fingerprint(), a.cert, "the leaf holds the pinned cert");
+    assert!(!issued.exists(), "collection is one-shot");
+    let mode = std::fs::metadata(bed.leaf_dirs.host_identity())
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, certs::FILE_MODE);
+    assert!(bed.leaf_dirs.home_bundle().exists(), "home.pem stays");
     let plan = st.plan.unwrap();
     assert_eq!(
         plan.units
@@ -129,7 +149,7 @@ fn enroll_approve_status_dry_run_fleet_and_log_over_mtls() {
     let events: Vec<_> = lines.iter().map(|l| l.event.as_str()).collect();
     assert_eq!(
         events,
-        ["pending", "status", "dry-run"],
+        ["pending", "collect", "status", "dry-run"],
         "the leaf keeps its own copy"
     );
     let LocalReply::Log { lines } = local(
@@ -141,6 +161,9 @@ fn enroll_approve_status_dry_run_fleet_and_log_over_mtls() {
         panic!()
     };
     assert!(lines.iter().any(|l| l.event == "approve"));
+    let collect = lines.iter().find(|l| l.event == "collect").unwrap();
+    assert_eq!(collect.host, "leaf");
+    assert_eq!(collect.detail, format!("cert:{}", a.cert));
 
     let err = local::call(&bed.home_dirs, LocalRequest::DryRun { no_wait: true })
         .unwrap_err()
@@ -225,6 +248,7 @@ fn a_leaf_with_another_homes_bundle_is_refused_in_the_handshake() {
     let theirs = certs::Paths::of(&Dirs::at(p.to_path_buf()));
     certs::ensure(&theirs).unwrap();
     std::fs::copy(&theirs.bootstrap, bed.leaf_dirs.home_bundle()).unwrap();
+    std::fs::copy(&theirs.bootstrap, bed.leaf_dirs.host_identity()).unwrap();
     let err = local::call(&bed.leaf_dirs, LocalRequest::Status)
         .unwrap_err()
         .to_string();

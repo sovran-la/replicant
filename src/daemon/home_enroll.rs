@@ -10,7 +10,7 @@ use super::Home;
 use crate::config::{edit, short_hostname};
 use crate::daemon::certs;
 use crate::daemon::journal::Line;
-use crate::daemon::wire::{Approved, Reissued};
+use crate::daemon::wire::{Approved, Collected, Reissued};
 use crate::{Error, Result, subscribe};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -60,6 +60,40 @@ impl Home {
             cert: issued.fingerprint,
             replaced,
         })
+    }
+
+    /// Hand `host` the bundle waiting for it, once: home's copy is deleted
+    /// before the answer leaves, so a second collect finds nothing. Under
+    /// the fleet lock, as approve and reissue write it.
+    pub(super) fn collect(&self, host: &str, j: &mut Vec<String>) -> Result<Collected> {
+        let f = self.fleet()?;
+        let path = self.issued_path(host)?;
+        let bundle = match std::fs::read_to_string(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return match (f.hosts.contains_key(host), f.pending.get(host)) {
+                    (true, _) => Err(Error::Refused(format!(
+                        "{host} is enrolled on {} but no certificate is waiting for it; run \
+                         `replicant approve {host}` on {} to issue one",
+                        f.name, f.name
+                    ))),
+                    (false, Some(p)) => Ok(Collected::Pending {
+                        home: f.name.clone(),
+                        paths: p.paths.clone(),
+                    }),
+                    (false, None) => Ok(Collected::Unknown {
+                        home: f.name.clone(),
+                    }),
+                };
+            }
+            Err(e) => return Err(e.into()),
+        };
+        std::fs::remove_file(&path)?;
+        let cert = crate::daemon::tls::parse(&bundle, &path)
+            .map(|id| id.fingerprint())
+            .unwrap_or_else(|e| format!("(unreadable: {e})"));
+        self.journal(j, Line::new("collect", host, "", format!("cert:{cert}")));
+        Ok(Collected::Issued { bundle })
     }
 
     fn mint(&self, host: &str) -> Result<certs::Issued> {

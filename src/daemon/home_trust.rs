@@ -5,8 +5,9 @@
 //!
 //! - **the bootstrap** (`credentials.pem`, every new leaf's `home.pem`): may
 //!   ask to be enrolled (`Subscribe` from a host with no `[hosts.*]` entry)
-//!   and nothing else. The name it gives is self-asserted, so the bootstrap
-//!   never acts for an enrolled host.
+//!   and collect the certificate `approve` issued (`CollectCert`), nothing
+//!   else. The name it gives is self-asserted, so the bootstrap never acts
+//!   for an enrolled host.
 
 use super::Home;
 use crate::daemon::wire::HomeRequest;
@@ -42,7 +43,8 @@ pub(super) struct Admitted {
 
 /// The refusal for everything the bootstrap may not do.
 pub const BOOTSTRAP_ONLY: &str = "this is home's bootstrap bundle, good only for `replicant \
-     subscribe` from a machine home has not enrolled";
+     subscribe` from a machine home has not enrolled and for collecting the certificate \
+     `approve` issues it";
 
 impl Home {
     /// Decide whether `caller`, claiming to be `claimed`, may make `request`.
@@ -60,7 +62,7 @@ impl Home {
         };
         if self.bootstrap.as_deref() == Some(fp) {
             return match request {
-                HomeRequest::Subscribe { .. } => Ok(Admitted {
+                HomeRequest::Subscribe { .. } | HomeRequest::CollectCert => Ok(Admitted {
                     host: claimed.into(),
                     bootstrap: true,
                 }),

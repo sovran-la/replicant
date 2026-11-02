@@ -21,6 +21,18 @@ pub fn leaf_identity(bed: &Bed, host: &str) -> PathBuf {
     path
 }
 
+/// Give the bed's leaf home's bootstrap bundle as `home.pem`, and, if
+/// fleet.toml enrolls it, a certificate of its own as `host.pem`.
+pub fn equip_leaf(bed: &Bed) {
+    let p = certs::Paths::of(&bed.home_dirs);
+    certs::ensure(&p).unwrap();
+    std::fs::copy(&p.bootstrap, bed.leaf_dirs.home_bundle()).unwrap();
+    let f = crate::config::Fleet::load(&bed.home_dirs.fleet()).unwrap();
+    if f.hosts.contains_key("leaf") {
+        std::fs::copy(leaf_identity(bed, "leaf"), bed.leaf_dirs.host_identity()).unwrap();
+    }
+}
+
 /// A caller that speaks [`HomeCall`] to a running home directly, with any
 /// identity and any claimed host name.
 pub struct RawLeaf {

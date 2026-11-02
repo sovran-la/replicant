@@ -221,6 +221,13 @@ impl Home {
                 Ok(HomeReply::Done)
             }
             HomeRequest::FleetState => Ok(HomeReply::Fleet(self.fleet_state()?)),
+            HomeRequest::CollectCert if bootstrap => {
+                Ok(HomeReply::Collected(self.collect(&host, j)?))
+            }
+            HomeRequest::CollectCert => Err(Error::Refused(format!(
+                "{host} already has its own certificate; a reissued one is collected over the \
+                 bootstrap bundle"
+            ))),
         }
     }
 
