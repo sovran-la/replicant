@@ -1,7 +1,7 @@
 //! The trust model over real mTLS: what the bootstrap bundle may do, and
 //! what a host's own certificate may do.
 
-use super::test_certs::{dial, leaf_identity, pair};
+use super::test_certs::{apply_requests, dial, leaf_identity, pair};
 use super::*;
 use crate::testutil::Bed;
 use wire::{HomeReply, HomeRequest};
@@ -12,7 +12,10 @@ fn every_other_request() -> Vec<HomeRequest> {
             paths: vec!["~/work".into()],
         },
         HomeRequest::Subscriptions,
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
         HomeRequest::Heartbeat { lease: 1 },
         HomeRequest::Release { lease: 1 },
         HomeRequest::State {
@@ -24,9 +27,14 @@ fn every_other_request() -> Vec<HomeRequest> {
             event: "dry-run".into(),
             units: vec![],
             summary: String::new(),
+            markers: vec![],
+            sync_ok: None,
         },
         HomeRequest::FleetState,
     ]
+    .into_iter()
+    .chain(apply_requests())
+    .collect()
 }
 
 #[test]

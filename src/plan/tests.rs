@@ -8,6 +8,7 @@ use crate::decide::Decision;
 use crate::guard::Guard;
 use crate::marker::Direction;
 use crate::record::{RECORD_VERSION, Store};
+use crate::state::UnitState;
 use crate::testutil::{self, Bed, InProcess};
 use crate::units::UnitKind;
 use std::path::PathBuf;
@@ -29,6 +30,8 @@ fn go(bed: &Bed, home: &Home, cfg: &LeafConfig, dry: bool) -> Result<Plan> {
             cfg,
             state_dir: &state,
             scratch_dir: &scratch,
+            rsync: crate::plan::RSYNC,
+            accept_rollback: &[],
         },
         dry,
         false,
@@ -313,3 +316,6 @@ mod rooted;
 
 #[path = "tests_symlink.rs"]
 mod symlink;
+
+#[path = "tests_lease_kill.rs"]
+pub(crate) mod lease_kill;

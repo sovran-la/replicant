@@ -1,9 +1,10 @@
 //! replicant: explicit, home-base-mediated rsync for keeping `~/work` (and a
 //! few config dirs) identical across machines.
 //!
-//! The design is docs/PLAN.md. v0.1 is read-only: it subscribes, approves,
-//! reports status and computes `sync --dry-run`, and never writes a synced
-//! path or a baseline.
+//! The design is docs/PLAN.md. It subscribes, approves, reports status,
+//! computes `sync --dry-run`, and (v0.2) applies `sync`: synced paths are
+//! written only by rsync, and only after the whole plan may go
+//! (`plan::apply`).
 
 pub mod baseline;
 pub mod cli;
@@ -27,6 +28,9 @@ pub mod units;
 
 #[cfg(test)]
 pub(crate) mod testutil;
+
+#[cfg(test)]
+mod write_set_tests;
 
 pub use error::{Error, Result};
 

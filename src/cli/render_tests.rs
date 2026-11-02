@@ -134,6 +134,8 @@ fn fleet_state() -> FleetState {
         stale,
         report,
         queue_position: None,
+        last_sync: None,
+        markers: vec![],
     };
     let now = 10 * 86_400;
     FleetState {

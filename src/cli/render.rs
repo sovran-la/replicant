@@ -10,8 +10,12 @@ use std::fmt::Write;
 
 #[path = "render_fleet.rs"]
 mod fleet_view;
+
+#[path = "render_sync.rs"]
+mod sync_view;
 use fleet_view::queue;
 pub use fleet_view::{fleet, log, revoked};
+pub use sync_view::{open_markers, pushes, rolled_back, synced};
 
 /// How many diff lines a unit shows without `--verbose`.
 pub const DIFF_PREVIEW: usize = 12;
@@ -22,14 +26,14 @@ pub struct Style {
 }
 
 impl Style {
-    fn red(self, s: &str) -> String {
+    pub(crate) fn red(self, s: &str) -> String {
         if self.color {
             format!("\x1b[31m{s}\x1b[0m")
         } else {
             s.to_string()
         }
     }
-    fn dim(self, s: &str) -> String {
+    pub(crate) fn dim(self, s: &str) -> String {
         if self.color {
             format!("\x1b[2m{s}\x1b[0m")
         } else {
@@ -260,6 +264,7 @@ pub fn leaf_status(l: &LeafStatus, st: Style) -> String {
     if let Some(p) = &l.plan {
         s.push_str(&plan(p, false, st));
     }
+    s.push_str(&open_markers(&l.markers, &l.me, &l.home, st));
     s.push_str(&queue(&l.queue));
     s
 }

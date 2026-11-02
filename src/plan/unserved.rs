@@ -2,8 +2,11 @@
 //! each the way the baseline was hashed, with the excludes and carve-outs
 //! home reports for it, and [`decide::decide_unserved`] decides: `Remove`
 //! only for an explicit unsubscribe of an unchanged, unmarked unit; an
-//! orphan, a conflict or a broken home root otherwise.
+//! orphan, a conflict or a broken home root otherwise. A push of the unit
+//! home rolled back holds a `Remove` until accepted, as `decide_all` holds
+//! a pull.
 
+use super::apply::accepts_rollback;
 use super::{LeafCtx, PlannedUnit};
 use crate::baseline::Baseline;
 use crate::daemon::wire::HomeSnapshot;
@@ -84,7 +87,7 @@ pub(super) fn plan(
             let files = u.map_or(0, |u| u.files);
             let path = local(&b.rel);
             let told = told(&b.rel);
-            let decision = decide::decide_unserved(UnservedInputs {
+            let table = decide::decide_unserved(UnservedInputs {
                 home_name,
                 rel: &b.rel,
                 path: &path.display().to_string(),
@@ -95,7 +98,23 @@ pub(super) fn plan(
                 files,
                 marker: marker::covering(leaf_markers, &b.rel)
                     .or_else(|| marker::covering(&snap.markers, &b.rel)),
+                me: ctx.me,
             });
+            // A rolled-back push holds a removal as it holds a pull
+            // (re-review R2): home no longer holds what the leaf pushed.
+            let decision = decide::hold_rolled_back(
+                table,
+                decide::Held {
+                    rel: &b.rel,
+                    home_name,
+                    leaf,
+                    home: &empty,
+                    leaf_path: &path,
+                    home_path: &snap.home_dir.join(&b.rel),
+                    rolled_back: snap.rolled_back.iter().find(|r| r.unit == b.rel),
+                    accepted: accepts_rollback(ctx, &b.rel, &path),
+                },
+            );
             PlannedUnit {
                 rel: b.rel.clone(),
                 kind: b.kind,

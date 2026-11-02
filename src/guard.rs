@@ -1,6 +1,6 @@
 //! The guardrails, as refusals with human-readable reports. PLAN.md,
 //! "Guardrails". v0.1 runs 1, 3, 4 and 5; 2 (stale baseline) needs baselines
-//! and lands with apply in v0.2.
+//! and lands with apply in v0.2. 6 guards a resumed pull (review A3).
 //!
 //! In a dry run a refusal is reported, not enforced — nothing is applied — but
 //! it is computed exactly as an apply would compute it, so `--dry-run` says
@@ -24,6 +24,10 @@ pub enum Guard {
     CaseCollision,
     /// 5: a path outside the host's subscriptions or cap.
     SubscriptionBounds,
+    /// 6: a resumed pull would replace or delete leaf paths changed after
+    /// the interrupted sync began (review A3). Waived per unit by
+    /// `--confirm-delete`.
+    ChangedSinceInterrupted,
 }
 
 impl Guard {
@@ -33,6 +37,7 @@ impl Guard {
             Guard::SourceMidWrite => 3,
             Guard::CaseCollision => 4,
             Guard::SubscriptionBounds => 5,
+            Guard::ChangedSinceInterrupted => 6,
         }
     }
 
@@ -42,6 +47,7 @@ impl Guard {
             Guard::SourceMidWrite => "source mid-write",
             Guard::CaseCollision => "case collision",
             Guard::SubscriptionBounds => "subscription bounds",
+            Guard::ChangedSinceInterrupted => "changed here since the interrupted sync",
         }
     }
 }
@@ -163,6 +169,31 @@ pub fn diff_bounds(unit: &str, diff: &Itemized) -> Option<Refusal> {
         detail: escapes
             .into_iter()
             .map(|p| format!("rsync reported a path outside the unit: {p}"))
+            .collect(),
+    })
+}
+
+/// Guardrail 6 (review A3): `late` are the target paths a resume would
+/// replace or delete that changed after its marker's `started_at`. The
+/// marker records what the source held, not what the target has gained
+/// since, so the earlier decision does not cover them.
+pub fn changed_since_interrupted(
+    unit: &str,
+    started_at: u64,
+    late: Vec<String>,
+) -> Option<Refusal> {
+    (!late.is_empty()).then(|| Refusal {
+        guard: Guard::ChangedSinceInterrupted,
+        unit: unit.to_string(),
+        detail: late
+            .into_iter()
+            .map(|p| {
+                format!(
+                    "{p}: changed here after the interrupted sync began ({}); resuming would \
+                     replace or delete it",
+                    crate::timefmt::iso(started_at)
+                )
+            })
             .collect(),
     })
 }

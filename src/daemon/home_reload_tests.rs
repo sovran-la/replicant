@@ -69,7 +69,10 @@ fn a_cap_narrowed_by_hand_is_enforced_on_the_next_request() {
         &home,
         "leaf",
         &bed.leaf_hd,
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
     );
     assert!(acq.result.is_ok(), "{:?}", acq.result);
     assert_eq!(home.queue.view()[0].paths, vec!["work/a"], "Acquire");
@@ -181,7 +184,10 @@ fn a_broken_fleet_toml_does_not_touch_granted_leases() {
         &home,
         "leaf",
         &bed.leaf_hd,
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
     ));
     assert_eq!(secs, crate::config::fleet::DEFAULT_LEASE_SECS);
 
@@ -200,7 +206,10 @@ fn a_broken_fleet_toml_does_not_touch_granted_leases() {
     assert!(home.queue.expire(at).is_empty(), "refreshed");
 
     for request in [
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
         HomeRequest::Subscriptions,
         HomeRequest::Subscribe {
             paths: vec![format!("{}/work/c", bed.leaf_hd.display())],

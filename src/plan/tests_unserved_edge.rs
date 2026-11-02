@@ -16,6 +16,7 @@ fn an_unsubscribed_path_under_an_interrupted_sync_is_never_remove() {
             host: "leaf".into(),
             source_state: UnitState::Present("s".into()),
             started_at: 7,
+            push: None,
         })
         .unwrap();
     let p = status(&bed, &home);
@@ -39,6 +40,7 @@ fn a_dead_push_marker_on_home_fences_an_unsubscribed_path() {
             host: "leaf".into(),
             source_state: UnitState::Present("s".into()),
             started_at: 7,
+            push: None,
         })
         .unwrap();
     let w = why(unit(&status(&bed, &home), "work/b/r")).to_string();
@@ -90,6 +92,8 @@ fn a_baseline_an_older_home_says_nothing_about_is_not_served() {
         cfg: &cfg,
         state_dir: &state,
         scratch_dir: &scratch,
+        rsync: crate::plan::RSYNC,
+        accept_rollback: &[],
     };
     let p = plan(&link, ctx, false, false).unwrap();
     assert_eq!(

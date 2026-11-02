@@ -32,6 +32,7 @@ fn marker(direction: Direction) -> Marker {
         host: "birchbook".into(),
         source_state: UnitState::Present("s".into()),
         started_at: 9,
+        push: None,
     }
 }
 
@@ -46,6 +47,7 @@ fn run(reason: UnservedReason, leaf: &UnitState, files: u64, m: Option<&Marker>)
         baseline: &base(),
         files,
         marker: m,
+        me: "birchbook",
     })
 }
 

@@ -14,7 +14,8 @@
 //! | `host.pem` | leaf | the daemon, collected from home after `approve` |
 //! | `replicant.sock`, `daemon.lock` | both | the daemon |
 //! | `journal.log` | both | the daemon (home: everything; leaf: its own lines) |
-//! | `state/` | both | the daemon: contacts, markers, baselines |
+//! | `state/` | both | the daemon: contacts, markers, baselines, push manifests |
+//! | `backup/` | home | the daemon: what each push replaced or deleted |
 
 pub mod edit;
 pub mod fleet;
@@ -23,7 +24,7 @@ pub mod leaf;
 pub use fleet::{Fleet, HostEntry, Pending, Root, Subscription};
 pub use leaf::{HomeEntry, LeafConfig};
 
-use crate::{Error, Result};
+use crate::Result;
 use std::path::{Path, PathBuf};
 
 /// The environment variable that relocates the whole directory.
@@ -70,6 +71,10 @@ impl Dirs {
     pub fn state(&self) -> PathBuf {
         self.root.join("state")
     }
+    /// Home's push backups: `backup/<host>/<YYYYMMDDTHHMMSSZ>/`.
+    pub fn backup(&self) -> PathBuf {
+        self.root.join("backup")
+    }
     /// Private scratch space: the empty directory an absent source stands in
     /// with. Never the shared temp dir, where whatever is planted becomes an
     /// rsync source.
@@ -110,10 +115,24 @@ impl Dirs {
 }
 
 /// `$HOME`, which must be set and absolute.
+///
+/// Never in a test (review N3): every fixture names its own home dir
+/// (`Bed`, `test_certs::pair`), and one that forgot would otherwise read,
+/// and through a sync write, the real one.
+#[cfg(test)]
+pub fn user_home() -> Result<PathBuf> {
+    panic!(
+        "user_home() called in a test: the fixture must set its own home_dir (leaf.toml \
+         home_dir, fleet.toml home_dir, or REPLICANT_HOME), never fall through to $HOME"
+    )
+}
+
+/// `$HOME`, which must be set and absolute.
+#[cfg(not(test))]
 pub fn user_home() -> Result<PathBuf> {
     match std::env::var_os("HOME") {
         Some(h) if Path::new(&h).is_absolute() => Ok(PathBuf::from(h)),
-        _ => Err(Error::Config(
+        _ => Err(crate::Error::Config(
             "$HOME is not set to an absolute path, and replicant maps every path through it".into(),
         )),
     }
@@ -179,6 +198,10 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "user_home_tests.rs"]
+mod user_home_tests;
 
 #[cfg(test)]
 mod tests {

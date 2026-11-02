@@ -6,16 +6,22 @@
 //! half-understood subscription request is worse than a refused one.
 
 use super::fleet::FleetState;
-use crate::decide::{Decision, UnservedReason};
+use crate::baseline::Baseline;
+use crate::decide::{Decision, RolledBackPush, UnservedReason};
 use crate::guard::Refusal;
-use crate::marker::Marker;
+use crate::marker::{Direction, Marker};
+use crate::state::UnitState;
+use crate::units::UnitKind;
 use crate::units::{SideUnit, SubSpec};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// 2: per-host certificates. Home derives the caller from its certificate,
 /// and a leaf collects its own with [`HomeRequest::CollectCert`].
-pub const WIRE_VERSION: u32 = 2;
+/// 3: apply ([`HomeRequest::BeginPush`] and the rest of `sync`'s writes).
+/// 4: [`HomeSnapshot::rolled_back`] (review A2), and `--accept-rollback`
+/// (and `rollback_accepted` on [`HomeRequest::Agree`], re-review R2).
+pub const WIRE_VERSION: u32 = 4;
 
 // ---------------------------------------------------------------- leaf → home
 
@@ -45,6 +51,10 @@ pub enum HomeRequest {
     Subscriptions,
     Acquire {
         no_wait: bool,
+        /// A real `sync` rather than a dry run (shown in the queue). Absent
+        /// from an older leaf: a dry run.
+        #[serde(default)]
+        apply: bool,
     },
     Heartbeat {
         lease: u64,
@@ -67,8 +77,79 @@ pub enum HomeRequest {
         event: String,
         units: Vec<ReportedUnit>,
         summary: String,
+        /// The leaf's own open markers, for the fleet view.
+        #[serde(default)]
+        markers: Vec<Marker>,
+        /// For a real `sync`: whether it finished. Absent otherwise.
+        #[serde(default)]
+        sync_ok: Option<bool>,
     },
     FleetState,
+    /// Apply, before a push's real rsync: home is the target, so home writes
+    /// the in-progress marker (or keeps this host's own, resuming).
+    /// Requires the caller to hold the head of the queue.
+    BeginPush {
+        lease: u64,
+        rel: String,
+        source_state: UnitState,
+        /// The files (unit-relative) the push will replace or delete, from
+        /// its dry run just before: home copies them to the push's backup
+        /// before it answers.
+        #[serde(default)]
+        backup: Vec<String>,
+        /// The unit is a single file.
+        #[serde(default)]
+        is_file: bool,
+    },
+    /// Apply, after a push's rsync exited 0: home's state of the unit now,
+    /// hashed as the plan hashed it. `union` is the plan's repos within the
+    /// unit.
+    Rehash {
+        lease: u64,
+        rel: String,
+        kind: UnitKind,
+        union: Vec<String>,
+    },
+    /// Apply: both sides agree on `rel`. Home records `baseline` as its copy
+    /// for this host, or drops its copy when `None` (the unit was deleted).
+    /// Agreeing settles a rollback of this host's push of `rel`, but one
+    /// without a baseline only when `rollback_accepted` (re-review R2).
+    Agree {
+        lease: u64,
+        rel: String,
+        baseline: Option<Baseline>,
+        /// The host passed `--accept-rollback` naming `rel`.
+        #[serde(default)]
+        rollback_accepted: bool,
+    },
+    /// Apply: the unit is done. Home clears its marker (a push) and
+    /// journals `sync <host> <rel> <detail>`.
+    Settle {
+        lease: u64,
+        rel: String,
+        direction: Option<Direction>,
+        detail: String,
+        /// What rsync reported writing (a push's manifest keeps it).
+        #[serde(default)]
+        changes: Vec<String>,
+    },
+    /// Apply: a unit's rsync failed or was stopped. Journaled; every marker
+    /// stays. No lease needed: it is evidence, also after the lease is lost.
+    Interrupted {
+        rel: String,
+        direction: Direction,
+        why: String,
+        /// What rsync reported writing before it stopped.
+        #[serde(default)]
+        changes: Vec<String>,
+    },
+    /// Apply: a journal line about this host that is not an rsync:
+    /// [`NOTE_EVENTS`] only.
+    Note {
+        event: String,
+        rel: String,
+        detail: String,
+    },
     /// Over the bootstrap bundle: the certificate `approve` issued this
     /// host, if one is waiting. One-shot: home deletes its copy as it
     /// answers.
@@ -90,12 +171,28 @@ pub enum HomeReply {
     Subscribed(SubscribeOutcome),
     Unsubscribed(UnsubscribeOutcome),
     Subscriptions(SubscriptionsView),
-    Lease { lease: u64, lease_secs: u64 },
+    Lease {
+        lease: u64,
+        lease_secs: u64,
+    },
     Done,
     State(HomeSnapshot),
     Fleet(FleetState),
     Collected(Collected),
+    /// [`HomeRequest::Rehash`]'s answer.
+    Rehashed {
+        state: UnitState,
+    },
+    /// [`HomeRequest::BeginPush`]'s answer: the push's id on home, which
+    /// names its backup.
+    Begun {
+        push: String,
+    },
 }
+
+/// The events a leaf may journal with [`HomeRequest::Note`]: a deletion it
+/// was told to carry out, and a shared state adopted as the first baseline.
+pub const NOTE_EVENTS: &[&str] = &["confirm-delete", "adopt"];
 
 /// What [`HomeRequest::CollectCert`] found for the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,6 +256,14 @@ pub struct SubscriptionsView {
     /// For a pending host, what it asked for.
     pub pending_paths: Vec<String>,
     pub lease_secs: u64,
+    /// A marker older than this is reported as interrupted (fleet.toml
+    /// `[daemon] marker_alert_mins`). Absent from an older home: an hour.
+    #[serde(default = "default_marker_alert")]
+    pub marker_alert_secs: u64,
+}
+
+fn default_marker_alert() -> u64 {
+    crate::config::fleet::DEFAULT_MARKER_ALERT_MINS * 60
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,6 +286,10 @@ pub struct HomeSnapshot {
     /// from an older home: none.
     #[serde(default)]
     pub unserved: Vec<Unserved>,
+    /// This host's pushes home rolled back that it has not settled (review
+    /// A2): the newest per unit. Such a unit holds rather than pulls.
+    #[serde(default)]
+    pub rolled_back: Vec<RolledBackPush>,
 }
 
 /// A path a leaf has a baseline for and home no longer serves.

@@ -37,6 +37,7 @@ use std::time::Duration;
 use wire::{LocalReply, LocalRequest};
 
 const REAP_EVERY: Duration = Duration::from_millis(500);
+const SWEEP_EVERY: Duration = Duration::from_secs(86_400);
 
 /// A running daemon.
 pub struct Daemon {
@@ -202,10 +203,19 @@ fn spawn_tcp(
     })
 }
 
+/// Expired leases every half second; old push backups at start and once a
+/// day after.
 fn spawn_reaper(home: Arc<home::Home>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
     std::thread::spawn(move || {
+        let mut swept: Option<std::time::Instant> = None;
         while !stop.load(Ordering::SeqCst) {
             home.reap();
+            if swept.is_none_or(|t| t.elapsed() >= SWEEP_EVERY) {
+                swept = Some(std::time::Instant::now());
+                if let Err(e) = home.sweep_backups(crate::now_secs()) {
+                    eprintln!("replicant: could not sweep old backups: {e}");
+                }
+            }
             std::thread::sleep(REAP_EVERY);
         }
     })
@@ -239,9 +249,14 @@ fn home_local(h: &home::Home, req: LocalRequest) -> Result<LocalReply> {
         }
         LocalRequest::Reissue { host } => Ok(LocalReply::Reissued(h.reissue(&host)?)),
         LocalRequest::Revoke { host } => Ok(LocalReply::Revoked(h.revoke(&host)?)),
+        LocalRequest::Rollback { push: Some(id) } => Ok(LocalReply::RolledBack(h.rollback(&id)?)),
+        LocalRequest::Rollback { push: None } => Ok(LocalReply::Pushes {
+            pushes: h.pushes()?,
+        }),
         LocalRequest::Subscribe { .. }
         | LocalRequest::Unsubscribe { .. }
-        | LocalRequest::DryRun { .. } => Err(Error::Refused(
+        | LocalRequest::DryRun { .. }
+        | LocalRequest::Sync { .. } => Err(Error::Refused(
             "this machine is home; subscribe and sync run on a leaf".into(),
         )),
     }
@@ -262,6 +277,10 @@ mod trust_tests;
 #[cfg(test)]
 #[path = "daemon_identity_tests.rs"]
 mod identity_tests;
+
+#[cfg(test)]
+#[path = "daemon_apply_tests.rs"]
+mod apply_tests;
 
 #[cfg(test)]
 #[path = "test_certs.rs"]

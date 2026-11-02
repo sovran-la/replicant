@@ -236,6 +236,17 @@ impl Excludes {
         self.matches(rel, is_dir)
     }
 
+    /// The rsync rule text matching exactly `rel` (relative to the transfer
+    /// root, every character literal), as [`Excludes::push_exact`] would
+    /// write it: for an `--include=` of one path.
+    pub fn literal_rule(rel: &str, is_dir: bool) -> String {
+        pattern::literal(rel, is_dir)
+            .rsync_rules()
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+    }
+
     /// The patterns as rsync arguments, one `--exclude=` per rule.
     pub fn rsync_args(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();

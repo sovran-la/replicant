@@ -1,7 +1,7 @@
 //! The command line as clap sees it. PLAN.md, "Implementation sketch":
-//! subscribe | unsubscribe | approve | sync | status | log | daemon | config
-//! | host.
-//! (`hold`, `release`, `rollback` arrive with the phases that need them.)
+//! subscribe | unsubscribe | approve | sync | status | rollback | log |
+//! daemon | config | host.
+//! (`hold` and `release` arrive with the phase that needs them.)
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -47,24 +47,70 @@ pub enum Cmd {
     },
     /// On home: review pending hosts and decide their caps.
     Approve { host: Option<String> },
-    /// The decision table without acting (on home: the whole fleet).
+    /// The decision table and open markers, without acting (on home: the
+    /// whole fleet).
     Status {
         #[arg(long)]
         fleet: bool,
         #[arg(long)]
         json: bool,
     },
-    /// Decide the direction and show it. v0.1 supports --dry-run only.
+    /// Decide each unit's direction, show it, and carry it out.
+    ///
+    /// On a terminal the plan is shown and `y` asked for (each deletion
+    /// first, by itself); --yes skips the question. Nothing is written
+    /// while anything needs a human: a conflict, a quarantine, a guardrail
+    /// refusal, an unconfirmed deletion (exit 2). An rsync that does not
+    /// finish stops the sync at its unit; its marker stays and the next
+    /// sync resumes it (exit 1). Pushes are backed up on home first.
     Sync {
+        /// Show the decision and the itemized rsync diff; write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Apply without asking. Does not confirm deletions.
+        #[arg(long)]
+        yes: bool,
+        /// Never prompt (as without a terminal): with --yes it applies,
+        /// without it it only shows the plan. Reports go to stderr.
+        #[arg(long)]
+        non_interactive: bool,
+        /// Carry out the deletion of a unit that vanished on one side since
+        /// it was last synced: its path here (starting with /, ~ or .) or
+        /// its home-relative path as `status` prints it (work/r). Also lets
+        /// an interrupted sync's resume replace or delete what changed here
+        /// since it was interrupted (guardrail 6). Repeatable. Required
+        /// even with --yes.
+        #[arg(long = "confirm-delete", value_name = "PATH")]
+        confirm_delete: Vec<String>,
+        /// Take home's copy of a unit whose push from here home rolled back
+        /// (`replicant rollback`): until then sync holds it as a conflict
+        /// rather than pull over what this machine pushed. Named like
+        /// --confirm-delete. Repeatable. Required even with --yes.
+        #[arg(long = "accept-rollback", value_name = "PATH")]
+        accept_rollback: Vec<String>,
         /// Fail instead of waiting behind another sync.
         #[arg(long)]
         no_wait: bool,
+        /// Print the plan (--dry-run) or the report (--yes) as JSON.
         #[arg(long)]
         json: bool,
+        /// Show every line of each unit's rsync diff.
         #[arg(short, long)]
         verbose: bool,
+    },
+    /// On home: undo one push, or list the pushes.
+    ///
+    /// Files the push replaced or deleted come back from its backup; files
+    /// it created are removed; what it wrote is kept in the push's backup
+    /// directory first. Its marker (a quarantine) is cleared; baselines are
+    /// not touched. The pushing leaf's next sync holds the unit as a
+    /// conflict until it runs `sync --accept-rollback <path>`, which pulls
+    /// the result.
+    Rollback {
+        /// `<host>/<YYYYMMDDTHHMMSSZ>`, as `sync` and `log` print it
+        /// (`backup:...`). Without it, every push home still has a backup of.
+        #[arg(value_name = "PUSH-ID")]
+        push: Option<String>,
     },
     /// Read the journal.
     Log {

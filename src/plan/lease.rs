@@ -4,11 +4,14 @@
 //! retried for as long as the lease could still be alive on home; a definitive
 //! "not in the queue" (expired, or home restarted: the queue is in memory)
 //! marks the lease **lost**. A plan whose lease was lost fails, because the
-//! next entry may already have proceeded alongside it.
+//! next entry may already have proceeded alongside it, and any rsync it is
+//! running is stopped ([`Watch::abort`]): two real rsyncs must never
+//! interleave on home (review F3).
 
 use super::HomeLink;
 use crate::daemon::queue::NOT_QUEUED;
 use crate::daemon::wire::HomeRequest;
+use crate::rsync::Abort;
 use crate::{Error, Result};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -23,6 +26,7 @@ const MIN_RETRY: Duration = Duration::from_millis(50);
 pub struct Watch {
     id: u64,
     lost: Mutex<Option<String>>,
+    abort: Abort,
 }
 
 impl Watch {
@@ -31,6 +35,18 @@ impl Watch {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get_or_insert(why);
+        self.abort.raise();
+    }
+
+    /// The queue entry: what apply's requests to home name.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Raised when the lease is lost: give it to every rsync the plan runs,
+    /// and the running one is stopped.
+    pub fn abort(&self) -> &Abort {
+        &self.abort
     }
 
     /// `Err` once the lease is lost; the plan stops at the next check.
@@ -89,6 +105,7 @@ pub(super) fn with_heartbeat<T>(
     let watch = Watch {
         id,
         lost: Mutex::new(None),
+        abort: Abort::default(),
     };
     let window = Duration::from_secs(secs.max(1));
     let (stop, stopped) = mpsc::channel::<()>();

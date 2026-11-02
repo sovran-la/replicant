@@ -17,8 +17,8 @@
 //! first is withdrawn there instead of being granted a lease nobody would
 //! heartbeat (v0.1 review, F8).
 //!
-//! v0.1 takes an entry for every dry run so the mechanism is exercised, and
-//! nothing holds one for long.
+//! Every `sync`, dry run or real, takes an entry; a real one holds it from
+//! its plan to its last unit's journal line.
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -39,10 +39,14 @@ const WAIT_TICK: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
-    /// A sync (in v0.1 always a dry run).
+    /// A dry run (`sync --dry-run`).
     DryRun,
+    /// A real `sync`: it writes.
+    Sync,
     /// An agent on home holding paths (v0.4).
     Hold,
+    /// `replicant rollback` on home, writing a unit back.
+    Rollback,
 }
 
 #[derive(Debug, Clone)]
@@ -258,7 +262,9 @@ impl Queue {
 pub fn describe(v: &QueueView) -> String {
     let kind = match v.kind {
         EntryKind::DryRun => "dry-run",
+        EntryKind::Sync => "sync",
         EntryKind::Hold => "hold",
+        EntryKind::Rollback => "rollback",
     };
     let age = match v.started_at {
         Some(s) => format!(

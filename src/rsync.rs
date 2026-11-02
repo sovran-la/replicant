@@ -1,8 +1,8 @@
 //! The data plane: build an rsync command and parse its itemized output.
 //!
-//! replicant never copies a byte itself. In v0.1 it never runs rsync for real
-//! either: [`Transfer::args`] always carries `--dry-run`, and there is no code
-//! path that omits it.
+//! replicant never copies a byte itself. A plan runs [`Transfer::dry_run`],
+//! whose arguments always carry `--dry-run`; only `sync`'s apply runs
+//! [`Transfer::apply`], the same arguments without it (`rsync/apply.rs`).
 //!
 //! Output is read with `--itemize-changes --out-format=%i %n`, which both
 //! rsync 3 (Linux) and openrsync (macOS's /usr/bin/rsync, protocol 29) print
@@ -12,12 +12,15 @@
 //! connection, and the child is killed at [`Runner::timeout`]. A wedged
 //! transfer would otherwise hold the head of home's queue for the whole fleet.
 
+mod apply;
 mod child;
 mod client;
 mod parse;
 mod scratch;
 mod spill;
 
+pub use apply::{Ran, copy_listed, delete_listed};
+pub use child::{Abort, Stopped};
 pub use client::Client;
 pub use parse::parse;
 
@@ -44,6 +47,10 @@ pub struct Runner {
     /// A private directory (the config dir's) for the empty stand-in and a
     /// long exclude list's file.
     pub scratch: PathBuf,
+    /// The rsync program: `rsync` on `PATH`. Tests stand a script in.
+    pub program: String,
+    /// Raised to stop whatever this runner is running (a lost lease).
+    pub abort: Abort,
 }
 
 impl Runner {
@@ -53,7 +60,33 @@ impl Runner {
             ssh: "ssh".into(),
             client,
             scratch,
+            program: "rsync".into(),
+            abort: Abort::default(),
         }
+    }
+
+    /// Run `args`, turning a stop into the error that explains it.
+    fn run(&self, args: &[String]) -> Result<child::Finished> {
+        let out = child::run(&self.program, args, self.timeout, &self.abort)?;
+        match out.stopped {
+            None => Ok(out),
+            Some(why) => Err(stopped_error(&self.program, args, self.timeout, why)),
+        }
+    }
+}
+
+/// What a stopped rsync is reported as.
+fn stopped_error(program: &str, args: &[String], timeout: Duration, why: Stopped) -> Error {
+    match why {
+        Stopped::TimedOut => Error::Rsync(format!(
+            "{program} {} did not finish within {}s; killed it",
+            args.join(" "),
+            timeout.as_secs()
+        )),
+        Stopped::Aborted => Error::Rsync(format!(
+            "{program} {} was stopped: this run's lease on home's queue was lost",
+            args.join(" ")
+        )),
     }
 }
 
@@ -77,7 +110,7 @@ pub struct Transfer {
     pub source_absent: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChangeKind {
     Create,
     Update,
@@ -152,12 +185,19 @@ impl Transfer {
         }
     }
 
-    /// The full argument list. `empty` is the directory standing in for an
-    /// absent source.
+    /// The dry run's full argument list. `empty` is the directory standing
+    /// in for an absent source.
     pub fn args(&self, runner: &Runner, empty: &Path) -> Vec<String> {
-        let mut a: Vec<String> = ["-a", "--delete", "--dry-run", "--itemize-changes"]
-            .map(String::from)
-            .into();
+        self.build(runner, empty, true)
+    }
+
+    /// The argument list, with `--dry-run` or (apply only) without.
+    fn build(&self, runner: &Runner, empty: &Path, dry: bool) -> Vec<String> {
+        let mut a: Vec<String> = ["-a", "--delete"].map(String::from).into();
+        if dry {
+            a.push("--dry-run".into());
+        }
+        a.push("--itemize-changes".into());
         a.push("--out-format=%i %n".into());
         // Names as raw bytes: rsync 3 under a daemon with no LANG escapes
         // high-bit bytes as \#ooo, which guardrail 1 could not match against
@@ -198,7 +238,7 @@ impl Transfer {
         // A long ignored list rides in a file; it must outlive the child.
         let (args, excludes_file) = spill::spill(args, &runner.scratch, spill::LIMIT)?;
         debug_assert!(args.iter().any(|a| a == "--dry-run"));
-        let out = child::run("rsync", &args, runner.timeout)?;
+        let out = runner.run(&args)?;
         drop(empty);
         drop(excludes_file);
         let code = out.code.unwrap_or(-1);

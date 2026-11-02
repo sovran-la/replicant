@@ -96,7 +96,13 @@ fn enroll_approve_status_dry_run_fleet_and_log_over_mtls() {
         Decision::Pull
     );
 
-    let LocalReply::Plan(p) = local(&bed.leaf_dirs, LocalRequest::DryRun { no_wait: true }) else {
+    let LocalReply::Plan(p) = local(
+        &bed.leaf_dirs,
+        LocalRequest::DryRun {
+            no_wait: true,
+            accept_rollback: vec![],
+        },
+    ) else {
         panic!()
     };
     let r = p.units.iter().find(|u| u.rel == "work/r").unwrap();
@@ -138,9 +144,15 @@ fn enroll_approve_status_dry_run_fleet_and_log_over_mtls() {
     assert_eq!(collect.host, "leaf");
     assert_eq!(collect.detail, format!("cert:{}", a.cert));
 
-    let err = local::call(&bed.home_dirs, LocalRequest::DryRun { no_wait: true })
-        .unwrap_err()
-        .to_string();
+    let err = local::call(
+        &bed.home_dirs,
+        LocalRequest::DryRun {
+            no_wait: true,
+            accept_rollback: vec![],
+        },
+    )
+    .unwrap_err()
+    .to_string();
     assert!(err.contains("this machine is home"), "{err}");
     let err = local::call(&bed.leaf_dirs, LocalRequest::Pending)
         .unwrap_err()

@@ -1,9 +1,10 @@
 //! A leaf's daemon: the CLI's requests, relayed to home over mTLS where they
 //! need home, and the leaf's own copy of its journal lines.
 
-use super::journal::Journal;
+use super::journal::{Journal, Line};
 use super::wire::*;
 use crate::config::{Dirs, HomeEntry, LeafConfig, leaf::check_local, short_hostname, with_port};
+use crate::plan::apply::Outcome;
 use crate::plan::{self, HomeLink, LeafCtx, LeafStatus};
 use crate::{Error, Result, paths};
 use link::Link;
@@ -89,21 +90,20 @@ impl Leaf {
                     other => Err(Error::Remote(format!("unexpected reply: {other:?}"))),
                 }
             }
-            LocalRequest::DryRun { no_wait } => {
-                let cfg = self.cfg()?;
-                let link = self.link(&cfg)?.host()?;
-                let (me, hd, state) = (cfg.name()?, cfg.home_dir()?, self.dirs.state());
-                let scratch = self.dirs.scratch();
-                let ctx = LeafCtx {
-                    me: &me,
-                    home_dir: &hd,
-                    cfg: &cfg,
-                    state_dir: &state,
-                    scratch_dir: &scratch,
-                };
+            LocalRequest::DryRun {
+                no_wait,
+                accept_rollback,
+            } => self.planning(&accept_rollback, |link, ctx| {
                 Ok(LocalReply::Plan(Box::new(plan::plan(
-                    &link, ctx, true, no_wait,
+                    link, ctx, true, no_wait,
                 )?)))
+            }),
+            LocalRequest::Sync { opts } => {
+                let (me, report) = self.planning(&opts.accept_rollback, |link, ctx| {
+                    Ok((ctx.me.to_string(), plan::apply::sync(link, ctx, &opts)?))
+                })?;
+                journal_unheard(&self.journal, &me, &report.outcome);
+                Ok(LocalReply::Synced(Box::new(report)))
             }
             LocalRequest::Log { filter } => Ok(LocalReply::Log {
                 lines: self.journal.read(&filter)?,
@@ -115,7 +115,35 @@ impl Leaf {
             | LocalRequest::Revoke { .. } => Err(Error::Refused(
                 "approve runs on home, and this machine is a leaf".into(),
             )),
+            LocalRequest::Rollback { .. } => Err(Error::Refused(
+                "rollback runs on home, where the backups are; this machine is a leaf".into(),
+            )),
         }
+    }
+
+    /// Run `f` with the link to home, as this host, and the plan context
+    /// (`accept`: `--accept-rollback`).
+    fn planning<T>(
+        &self,
+        accept: &[String],
+        f: impl FnOnce(&dyn HomeLink, LeafCtx<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let cfg = self.cfg()?;
+        let link = self.link(&cfg)?.host()?;
+        let (me, hd, state) = (cfg.name()?, cfg.home_dir()?, self.dirs.state());
+        let scratch = self.dirs.scratch();
+        f(
+            &link,
+            LeafCtx {
+                me: &me,
+                home_dir: &hd,
+                cfg: &cfg,
+                state_dir: &state,
+                scratch_dir: &scratch,
+                rsync: plan::RSYNC,
+                accept_rollback: accept,
+            },
+        )
     }
 
     fn subscribe(
@@ -201,6 +229,7 @@ impl Leaf {
                     pending_paths,
                     plan: None,
                     queue: vec![],
+                    markers: vec![],
                 });
             }
         };
@@ -215,16 +244,27 @@ impl Leaf {
                     cfg: &cfg,
                     state_dir: &state,
                     scratch_dir: &scratch,
+                    rsync: plan::RSYNC,
+                    accept_rollback: &[],
                 },
                 false,
                 false,
             )?),
             _ => None,
         };
-        let queue = match link.call(HomeRequest::FleetState)? {
-            HomeReply::Fleet(f) => f.queue,
-            _ => vec![],
+        let (queue, home_markers) = match link.call(HomeRequest::FleetState)? {
+            HomeReply::Fleet(f) => (f.queue, f.markers),
+            _ => (vec![], vec![]),
         };
+        let markers = plan::open_markers(
+            &me,
+            &view.home,
+            crate::marker::store(&state).all()?,
+            &home_markers,
+            &view.specs,
+            view.marker_alert_secs,
+            crate::now_secs(),
+        );
         let except = view.specs.iter().flat_map(|s| s.except.clone()).collect();
         Ok(LeafStatus {
             me,
@@ -237,6 +277,27 @@ impl Leaf {
             pending_paths: view.pending_paths,
             plan: planned,
             queue,
+            markers,
         })
     }
 }
+
+/// An interruption home did not journal (it was unreachable): the leaf's
+/// own journal keeps it, so the history survives home being away.
+fn journal_unheard(journal: &Journal, me: &str, outcome: &Outcome) {
+    if let Outcome::Interrupted {
+        rel,
+        why,
+        journaled: false,
+    } = outcome
+    {
+        let detail = format!("interrupted ({why}); marker kept; home did not hear of it");
+        if let Err(e) = journal.append(&Line::new("sync", me, rel, detail)) {
+            eprintln!("replicant: could not journal an interrupted sync: {e}");
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "leaf_tests.rs"]
+mod tests;

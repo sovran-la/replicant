@@ -16,7 +16,10 @@ fn queue_through_the_handler_and_expiry_is_journaled() {
         &home,
         "leaf",
         &bed.leaf_hd,
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
     )) else {
         panic!()
     };
@@ -25,7 +28,10 @@ fn queue_through_the_handler_and_expiry_is_journaled() {
         &home,
         "leaf",
         &bed.leaf_hd,
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
     );
     assert!(busy.result.unwrap_err().contains("queue busy"));
     ok(call(
@@ -65,6 +71,8 @@ fn fleet_state_shows_stale_and_fresh_leaves() {
                 decision: crate::decide::Decision::Push,
             }],
             summary: "push".into(),
+            markers: vec![],
+            sync_ok: None,
         },
     ));
     // spruce last talked to home nine days ago.
@@ -73,6 +81,8 @@ fn fleet_state_shows_stale_and_fresh_leaves() {
         rel: "spruce".into(),
         last_contact: crate::now_secs() - 9 * 86_400,
         report: None,
+        last_sync: None,
+        markers: vec![],
     };
     fleet::contacts(&bed.home_dirs.state()).put(&old).unwrap();
     let HomeReply::Fleet(s) = ok(call(&home, "leaf", &bed.leaf_hd, HomeRequest::FleetState)) else {

@@ -70,7 +70,10 @@ fn a_pinned_certificate_is_its_host_and_only_its_host() {
             paths: vec!["~/work/c".into()],
         },
         HomeRequest::Subscriptions,
-        HomeRequest::Acquire { no_wait: true },
+        HomeRequest::Acquire {
+            no_wait: true,
+            apply: false,
+        },
         HomeRequest::State {
             leaf_repos: vec![],
             case_check: false,
@@ -80,10 +83,15 @@ fn a_pinned_certificate_is_its_host_and_only_its_host() {
             event: "dry-run".into(),
             units: vec![],
             summary: String::new(),
+            markers: vec![],
+            sync_ok: None,
         },
         HomeRequest::FleetState,
         HomeRequest::CollectCert,
-    ] {
+    ]
+    .into_iter()
+    .chain(super::test_certs::apply_requests())
+    {
         let err = a_as_b.refused(request);
         assert!(err.contains("this certificate is leaf's"), "{err}");
     }
@@ -96,7 +104,7 @@ fn a_pinned_certificate_is_its_host_and_only_its_host() {
         .into_iter()
         .filter(|l| l.event == "refused")
         .collect();
-    assert_eq!(refused.len(), 8, "every mismatch journaled: {refused:?}");
+    assert_eq!(refused.len(), 14, "every mismatch journaled: {refused:?}");
     assert!(
         refused
             .iter()
@@ -120,7 +128,10 @@ fn a_lease_is_heartbeated_and_released_only_by_its_holder() {
     let home = Daemon::start(bed.home_dirs.clone()).unwrap();
     let a = dial(&home, &leaf_identity(&bed, "leaf"), "leaf", &bed.leaf_hd);
     let b = dial(&home, &leaf_identity(&bed, "other"), "other", &bed.leaf_hd);
-    let Ok(HomeReply::Lease { lease, .. }) = b.call(HomeRequest::Acquire { no_wait: true }) else {
+    let Ok(HomeReply::Lease { lease, .. }) = b.call(HomeRequest::Acquire {
+        no_wait: true,
+        apply: false,
+    }) else {
         panic!()
     };
     for request in [
@@ -192,7 +203,10 @@ fn a_broken_fleet_toml_keeps_granted_leases_for_their_holders() {
     let home = Daemon::start(bed.home_dirs.clone()).unwrap();
     let a = dial(&home, &leaf_identity(&bed, "leaf"), "leaf", &bed.leaf_hd);
     let ghost = dial(&home, &leaf_identity(&bed, "ghost"), "ghost", &bed.leaf_hd);
-    let Ok(HomeReply::Lease { lease, .. }) = a.call(HomeRequest::Acquire { no_wait: true }) else {
+    let Ok(HomeReply::Lease { lease, .. }) = a.call(HomeRequest::Acquire {
+        no_wait: true,
+        apply: false,
+    }) else {
         panic!()
     };
     testutil::hand_edit(&bed.home_dirs.fleet(), "[hosts.leaf]\n", "[hosts.leaf\n");

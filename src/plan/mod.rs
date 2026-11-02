@@ -1,16 +1,22 @@
-//! The leaf's `status` and `sync --dry-run`: discover, exchange state with
-//! home, decide every unit, and (for a dry run) take a queue entry, run the
-//! rsync dry runs and the guardrails.
+//! The leaf's `status`, `sync --dry-run` and `sync`: discover, exchange state
+//! with home, decide every unit, and (for a dry run or a sync) take a queue
+//! entry, run the rsync dry runs and the guardrails.
 //!
-//! Read-only end to end: git runs without optional locks, rsync runs with
-//! `--dry-run`, and nothing here writes a baseline, a marker, or a synced path.
+//! Planning is read-only end to end: git runs without optional locks, rsync
+//! runs with `--dry-run`, and nothing here writes a baseline, a marker, or a
+//! synced path. A real `sync` then applies under the same queue entry
+//! ([`apply`]); that is the only code that writes.
 
+pub mod apply;
 mod bases;
+mod decide_all;
 mod diff;
 mod lease;
+mod open;
 mod types;
 mod unserved;
 
+pub use open::{OpenMarker, open_markers};
 pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings, Tone};
 
 use crate::baseline::{self, Baseline};
@@ -18,10 +24,8 @@ use crate::config::LeafConfig;
 use crate::daemon::wire::{
     Enrollment, HomeReply, HomeRequest, HomeSnapshot, ReportedUnit, SubscriptionsView,
 };
-use crate::decide;
 use crate::marker::{self, Marker};
-use crate::state::UnitState;
-use crate::units::{self, Discovered, SideUnit};
+use crate::units::{self, Discovered};
 use crate::{Error, Result};
 use std::path::Path;
 use std::time::Instant;
@@ -41,7 +45,15 @@ pub struct LeafCtx<'a> {
     pub state_dir: &'a Path,
     /// [`crate::config::Dirs::scratch`].
     pub scratch_dir: &'a Path,
+    /// The rsync program: [`RSYNC`] in production; tests stand a script in.
+    pub rsync: &'a str,
+    /// `--accept-rollback`: units (by unit path or this leaf's path) whose
+    /// rolled-back push this host takes home's copy for (review A2).
+    pub accept_rollback: &'a [String],
 }
+
+/// The rsync a leaf runs: whatever `rsync` is on `PATH`.
+pub const RSYNC: &str = "rsync";
 
 fn ms(since: Instant) -> u64 {
     since.elapsed().as_millis() as u64
@@ -56,9 +68,94 @@ pub fn subscriptions(link: &dyn HomeLink) -> Result<SubscriptionsView> {
     }
 }
 
+/// What a plan is for: `status` (no queue entry, no rsync), `sync
+/// --dry-run`, or a real `sync` (the same as a dry run, and then apply under
+/// the same queue entry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Status,
+    DryRun,
+    Sync,
+}
+
+impl Mode {
+    /// The journal event home records for it.
+    fn event(self) -> &'static str {
+        match self {
+            Mode::Status => "status",
+            Mode::DryRun => "dry-run",
+            Mode::Sync => "sync",
+        }
+    }
+}
+
+/// What a plan computed beyond the [`Plan`] itself, for apply: the
+/// transfer each moving unit's dry run used (index-aligned with
+/// `plan.units`), and the repos of both sides.
+pub(crate) struct Planned<'a> {
+    pub plan: &'a Plan,
+    pub transfers: &'a [Option<crate::rsync::Transfer>],
+    pub union: &'a [String],
+    pub snap: &'a HomeSnapshot,
+}
+
 /// Plan every unit. `dry_run` adds the queue entry, rsync diffs and guards.
 pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool) -> Result<Plan> {
+    let mode = if dry_run { Mode::DryRun } else { Mode::Status };
+    let (plan, ()) = run(link, ctx, mode, no_wait, |_, _| Ok(()))?;
+    report(
+        link,
+        ctx,
+        mode.event(),
+        &plan,
+        plan.summary().join("; "),
+        None,
+    );
+    Ok(plan)
+}
+
+/// Tell home what was decided (and, for a sync, whether it finished), with
+/// this leaf's open markers, for the fleet view and the journal. The work
+/// is done either way; only home's line is missing if this fails.
+pub(crate) fn report(
+    link: &dyn HomeLink,
+    ctx: LeafCtx<'_>,
+    event: &str,
+    plan: &Plan,
+    summary: String,
+    sync_ok: Option<bool>,
+) {
+    let markers = marker::store(ctx.state_dir).all().unwrap_or_default();
+    let reported = plan
+        .units
+        .iter()
+        .map(|u| ReportedUnit {
+            rel: u.rel.clone(),
+            decision: u.decision.clone(),
+        })
+        .collect();
+    if let Err(e) = link.call(HomeRequest::Report {
+        event: event.into(),
+        units: reported,
+        summary,
+        markers,
+        sync_ok,
+    }) {
+        eprintln!("replicant: the {event} finished, but home did not journal it: {e}");
+    }
+}
+
+/// Plan, and then run `then` under the same queue entry, its lease still
+/// heartbeated. A lost lease fails the result whatever `then` returned.
+pub(crate) fn run<T>(
+    link: &dyn HomeLink,
+    ctx: LeafCtx<'_>,
+    mode: Mode,
+    no_wait: bool,
+    then: impl FnOnce(&lease::Watch, Planned<'_>) -> Result<T>,
+) -> Result<(Plan, T)> {
     let total = Instant::now();
+    let dry_run = mode != Mode::Status;
     let view = subscriptions(link)?;
     if view.enrollment != Enrollment::Enrolled {
         return Err(Error::Refused(format!(
@@ -76,7 +173,10 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
 
     let lease = if dry_run {
         let started = Instant::now();
-        let reply = link.call(HomeRequest::Acquire { no_wait })?;
+        let reply = link.call(HomeRequest::Acquire {
+            no_wait,
+            apply: mode == Mode::Sync,
+        })?;
         t.queue_ms = ms(started);
         match reply {
             HomeReply::Lease { lease, lease_secs } => Some((lease, lease_secs)),
@@ -90,10 +190,24 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         None
     };
 
+    // A repo this leaf has a baseline for stays a unit while it is served,
+    // even gone from both sides: its baseline must be decided over (and
+    // dropped), not left to turn its return into a false conflict.
+    let mut leaf_repos = found.repos();
+    leaf_repos.extend(
+        baselines
+            .iter()
+            .filter(|b| b.kind == units::UnitKind::Repo)
+            .filter(|b| view.specs.iter().any(|s| s.covers(&b.rel)))
+            .map(|b| b.rel.clone()),
+    );
+    leaf_repos.sort();
+    leaf_repos.dedup();
+
     let result = lease::with_heartbeat(link, lease, |watch| {
         let started = Instant::now();
         let snap = match link.call(HomeRequest::State {
-            leaf_repos: found.repos(),
+            leaf_repos: leaf_repos.clone(),
             case_check: leaf_case_insensitive(),
             baselines: baselines.iter().map(|b| b.rel.clone()).collect(),
         })? {
@@ -112,13 +226,13 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
             .collect();
         bases::check(&home_absent, &baselines, &view.home)?;
         let started = Instant::now();
-        let mut union = found.repos();
+        let mut union = leaf_repos.clone();
         union.extend(snap.repos.iter().cloned());
         union.sort();
         union.dedup();
         let leaf_units = units::snapshot(&found, &union, false)?;
         let leaf_markers: Vec<Marker> = marker::store(ctx.state_dir).all()?;
-        let mut planned = decide_all(
+        let mut planned = decide_all::decide_all(
             ctx,
             &view.home,
             &baselines,
@@ -130,6 +244,7 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         planned.extend(gone.units);
         planned.sort_by(|a, b| a.rel.cmp(&b.rel).then(a.kind.cmp(&b.kind)));
         t.leaf_state_ms = ms(started);
+        let mut transfers = vec![None; planned.len()];
         if dry_run {
             // Do not start an rsync on a lease that is already gone.
             watch.check()?;
@@ -137,10 +252,37 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
             union.extend(gone.repos);
             union.sort();
             union.dedup();
-            diff::run(ctx, &snap, &found, &union, &leaf_units, &mut planned)?;
+            transfers = diff::run(
+                ctx,
+                &snap,
+                &found,
+                &union,
+                &leaf_units,
+                &mut planned,
+                &leaf_markers,
+                watch.abort(),
+            )?;
             t.rsync_ms = ms(started);
         }
-        Ok((planned, snap))
+        let plan = Plan {
+            me: ctx.me.into(),
+            home: view.home.clone(),
+            dry_run,
+            units: planned,
+            refused: view.refused.clone(),
+            orphaned: view.orphaned.clone(),
+            timings: t.clone(),
+        };
+        let out = then(
+            watch,
+            Planned {
+                plan: &plan,
+                transfers: &transfers,
+                union: &union,
+                snap: &snap,
+            },
+        )?;
+        Ok((plan, out))
     });
     if let Some((id, _)) = lease {
         let released = lease::release(link, id);
@@ -151,85 +293,14 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
             (_, Ok(())) => {}
         }
     }
-    let (units, _snap) = result?;
-    t.total_ms = ms(total);
-    let plan = Plan {
-        me: ctx.me.into(),
-        home: view.home,
-        dry_run,
-        units,
-        refused: view.refused,
-        orphaned: view.orphaned,
-        timings: t,
-    };
-    let reported = plan
-        .units
-        .iter()
-        .map(|u| ReportedUnit {
-            rel: u.rel.clone(),
-            decision: u.decision.clone(),
-        })
-        .collect();
-    let event = if dry_run { "dry-run" } else { "status" };
-    // The work is done and correct; only home's journal line is missing.
-    if let Err(e) = link.call(HomeRequest::Report {
-        event: event.into(),
-        units: reported,
-        summary: plan.summary().join("; "),
-    }) {
-        eprintln!("replicant: the {event} finished, but home did not journal it: {e}");
-    }
-    Ok(plan)
+    let (mut plan, out) = result?;
+    plan.timings.total_ms = ms(total);
+    Ok((plan, out))
 }
 
 /// Guardrail 4 applies when this leaf's filesystem folds case: macOS.
 pub fn leaf_case_insensitive() -> bool {
     cfg!(target_os = "macos")
-}
-
-fn decide_all(
-    ctx: LeafCtx<'_>,
-    home_name: &str,
-    baselines: &[Baseline],
-    snap: &HomeSnapshot,
-    leaf_units: &[SideUnit],
-    leaf_markers: &[Marker],
-) -> Vec<PlannedUnit> {
-    let mut out = Vec::new();
-    for l in leaf_units {
-        let h = snap
-            .units
-            .iter()
-            .find(|h| h.rel == l.rel && h.kind == l.kind);
-        let empty = UnitState::Empty;
-        let home_state = h.map(|h| &h.state).unwrap_or(&empty);
-        let b = baselines.iter().find(|b| b.rel == l.rel);
-        let decision = decide::decide(decide::Inputs {
-            me: ctx.me,
-            home_name,
-            leaf: &l.state,
-            home: home_state,
-            baseline: b,
-            leaf_marker: marker::covering(leaf_markers, &l.rel),
-            home_marker: marker::covering(&snap.markers, &l.rel),
-        });
-        out.push(PlannedUnit {
-            rel: l.rel.clone(),
-            kind: l.kind,
-            decision,
-            leaf: l.state.clone(),
-            home: home_state.clone(),
-            leaf_head: l.head.clone(),
-            home_head: h.and_then(|h| h.head.clone()),
-            leaf_path: ctx.cfg.local_path(&l.rel, ctx.home_dir),
-            home_path: snap.home_dir.join(&l.rel),
-            diff: None,
-            refusals: vec![],
-            leaf_files: l.files,
-            home_files: h.map_or(0, |h| h.files),
-        });
-    }
-    out
 }
 
 #[cfg(test)]

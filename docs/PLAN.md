@@ -2,7 +2,9 @@
 
 *Draft 2026-10-31, rev 5 2026-11-01 (v0.1.0 shipped and deployed; review findings folded in; v0.2 entry criteria),
 rev 6 2026-11-01 (decided: F5 weighted out-of-bounds rows, root-relative slash excludes, symlinked bases, granted leases),
-rev 7 2026-11-01 late (decided: git-ignored files do not sync; approve mints per-host certs; backup/rollback/confirm shapes; v0.2 build list).
+rev 7 2026-11-01 late (decided: git-ignored files do not sync; approve mints per-host certs; backup/rollback/confirm shapes; v0.2 build list),
+rev 8 2026-11-01 night (apply built on `bsneed/v0.2-apply`, pending review: F3's kill, sync applies, markers, home-side push backup, rollback per push, fleet view's last sync),
+rev 9 2026-11-02 (apply review fixed: a marker resumes only its own unit; a resume will not replace leaf work newer than its marker (guardrail 6); a rolled-back push holds its pusher until `--accept-rollback`).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -103,11 +105,26 @@ client-side.)
 ```
 replicant subscribe thistledown ~/work/tundra ~/work/sequoia   # enroll; what this machine wants
 replicant unsubscribe ~/work/rust                              # stop; next sync cleans it off
-replicant sync              # figure out the direction, show it, do it
-replicant sync --yes        # don't wait for confirmation
+replicant sync              # figure out the direction, show it, ask, do it
+replicant sync --yes        # don't ask (deletions still need --confirm-delete,
+                            # a rolled-back push --accept-rollback)
+replicant sync --confirm-delete work/r   # carry out a "deleted on X" unit, or let a resume
+                                         # replace what changed here since (repeatable)
+replicant sync --accept-rollback work/r  # take home's copy of a unit whose push from here
+                                         # home rolled back (repeatable)
+replicant sync --non-interactive         # never prompt; without --yes, only shows the plan
 replicant sync --dry-run    # decision + itemized rsync diff, no writes
-replicant status            # the decision table without acting; unresolved conflicts in red
+replicant sync --no-wait    # fail instead of queueing behind another sync
+replicant status            # the decision table and open markers (with age); conflicts in red
+replicant status --fleet    # every host: last contact, last sync, open markers, quarantines
+replicant rollback [<push-id>]           # on home: undo one push; without an id, list them
 ```
+
+Exit codes: 0 done (or nothing to do), 2 something needs a human and
+nothing was written (a conflict, a quarantine, a guardrail refusal, an
+unconfirmed deletion, no terminal and no `--yes`), 1 anything else (an
+rsync that did not finish, a plan that changed after it was confirmed, a
+`n` at the prompt).
 
 Direction is inferred, never typed. Each leaf keeps a **baseline** per
 unit: the state it and home last agreed on, recording both sides' hashes,
@@ -126,8 +143,17 @@ unit vanished on one side since baseline  → "deleted on X"; never a plain pull
                                             explicit confirmation required
 both changed, to the same state           → nothing to do
 both changed, differently                 → conflict resolution, see below
-interrupted marker present (own push)     → resume that direction; never a conflict
-home marker from another leaf             → quarantined; refused with the reason
+own marker for exactly this unit          → resume that direction: only on an exact-unit own
+  (a dead pull here, a dead push on home)   marker (one above or below it is ignored, and the
+                                            unit is decided by the rest of the table); a
+                                            conflict if its source has vanished since; leaf
+                                            paths newer than the marker that it would replace
+                                            or delete block (guardrail 6, `--confirm-delete`)
+home marker from another leaf             → quarantined (over the unit, above or below it);
+                                            refused with the reason
+home rolled back a push of mine, and the  → conflict "home rolled back your push <id>"; blocks
+  table would write the leaf (pull, resume  until `--accept-rollback <path>` (`--yes` never
+  pull, deleted on home)                    does), then decided by the table
 
 baseline home no longer serves (home says why, per path):
   marker over it                          → conflict naming the interrupted sync; blocks
@@ -456,8 +482,15 @@ Before any destructive apply, in order:
 5. **Subscription bounds.** A host's subscriptions (and its `allow` cap)
    bound everything; paths outside them are never transferred, never
    deleted, in either direction.
+6. **Changed since the interrupted sync** (rev 9, review A3). A resume
+   (pull, removal, confirmed deletion) carries a decision made before it
+   was interrupted, and its marker records only the source's state. Any
+   leaf file or link its dry run would replace or delete whose mtime is
+   after the marker's start → refuse, naming each path, until
+   `--confirm-delete <unit>`. Covers a repo's working tree and `.git`,
+   which guardrail 1 cannot see once the work is committed.
 
-`--dry-run` runs all five and prints the itemized rsync diff.
+`--dry-run` runs them all and prints the itemized rsync diff.
 
 ## The queue
 
@@ -496,10 +529,10 @@ An edit to `lease_secs` applies to the next `Acquire`.
 Losing a lease is never silent. The holder retries heartbeats for as long
 as the lease could still be alive; a definitive "not queued", or silence for
 the whole lease, marks it lost and fails the run with "lease lost", whatever
-the work returned. A failed release is an error too. In v0.1 the flag is
-checked before rsync starts and at the end; once apply exists, a lost lease
-must also **kill the running rsync child**, or two real rsyncs interleave on
-home (v0.2 entry criterion, F3).
+the work returned. A failed release is an error too. A lost lease also
+**stops the running rsync**: SIGTERM to its process group (ssh included),
+SIGKILL two seconds later, so two real rsyncs never interleave on home (F3,
+built in v0.2). The unit's marker stays and the next sync resumes it.
 
 A waiter's lease is currently refreshed without checking its connection, so
 a leaf that dies while waiting holds its place for up to the full lease
@@ -516,7 +549,11 @@ mean refs pointing at objects that never arrived. So:
 - Baselines are written only after rsync exits 0, and the marker is
   cleared in the same step.
 - A marker on a **leaf** (dead pull) is private: home is untouched, nobody
-  else can see the mess, and the leaf's next `sync` resumes the pull.
+  else can see the mess, and the leaf's next `sync` resumes the pull of
+  exactly that unit. A marker on a loose unit says nothing about the repos
+  inside it, nor a repo's about its loose unit (rev 9, review A1): those
+  are decided by the table, or one exit-24 would pull home's copy over
+  every leaf-only repo under a root.
 - A marker on **home** (dead push) **quarantines that path**: pulls of it by
   any other leaf are refused with the reason, while syncs of other paths
   proceed. The queue keeps flowing; only the damaged path is fenced.
@@ -528,24 +565,44 @@ A home marker clears one of three ways:
   clears the marker. The common case; needs nothing from anyone. "Its own"
   is only as good as host identity, which is why per-host certs land before
   apply.
-- **Rollback.** `replicant rollback <path>` on home restores the pre-push
-  state from that push's `--backup-dir` plus its journaled itemized change
-  list: new files removed, changed and deleted files restored. Baselines
-  untouched. For when the leaf is not coming back soon and someone needs
-  the path.
+- **Rollback.** `replicant rollback <push-id>` on home restores the
+  pre-push state from that push's backup plus its recorded itemized change
+  list: new files removed, changed and deleted files restored, through
+  rsync, under a queue entry. Per push, not per path (decided rev 7).
+  Baselines untouched. For when the leaf is not coming back soon and
+  someone needs the path. The pushing leaf's next sync then holds the unit
+  as a conflict rather than pull home's restored copy over the work it
+  pushed, until it passes `--accept-rollback` (rev 9, review A2); the
+  rollback settles once the two agree on the unit again, and its backup
+  is kept until then.
 - **Accept.** `--force` declares the half-state the new truth. Almost never
   right; exists so the other two are not the only exits.
 
-A marker older than a configurable age is reported in `status`, and
-`--dry-run` shows what resuming would do.
+`status` lists every open marker with its age; one older than `[daemon]
+marker_alert_mins` (default 60) is red ("interrupted"), a younger one may
+still be running. `--dry-run` shows what resuming would do. A resume whose
+source has vanished since the marker was written is a conflict, never a
+delete: the marker does not carry a deletion's confirmation. Nor does it
+cover what the leaf wrote after the interruption: guardrail 6 holds the
+resume until `--confirm-delete` (rev 9).
 
 ## Home is also the backup
 
 Push and local agents are the only things that write home, so a bad push
-is the one way to damage the backup from outside. Pushes run with
-`rsync --backup --backup-dir` into a dated directory on home (or home runs
-filesystem snapshots). Either way, a bad push is recoverable and the backup
-role of thistledown survives replicant.
+is the one way to damage the backup from outside. Before a push writes,
+home copies every file it will replace or delete into
+`~/.sovran/replicant/backup/<host>/<YYYYMMDDTHHMMSSZ>/run-<n>/` and keeps a
+manifest of the push (`state/pushes/`). `replicant rollback <push-id>` undoes
+one push; backups older than `[daemon] backup_days` (default 14) are swept
+daily, except a push whose marker is still open. A bad push is recoverable
+and the backup role of thistledown survives replicant.
+
+Home takes the copy itself rather than passing `rsync --backup
+--backup-dir` (decided 2026-11-01, built in v0.2): macOS's openrsync, given
+`--backup`, silently skips `--delete` (measured), so a push to such a
+receiver would never delete anything. The copy is of the files the push's
+own dry run, taken just before it, says it will replace or delete
+(`docs/v0.2-prep-notes.md`, "Apply").
 
 ## Journal
 
@@ -562,7 +619,14 @@ several zones.
 2026-10-31T20:10:00Z  conflict  birchbook  work/scratch/notes.md  chose:birchbook
 2026-10-31T20:10:00Z  conflict  birchbook  work/rust/sysdirs      skipped
 2026-10-31T21:00:00Z  approve   spruce     allow:(none)
+2026-10-31T21:05:00Z  confirm-delete birchbook work/old  deleted on birchbook — would remove 3 files on thistledown; requires explicit confirmation: confirmed, carrying it out
+2026-10-31T21:06:00Z  rollback  thistledown work/sequoia  push birchbook/20261031T200215Z: restored 2, removed 1
 ```
+
+As built (v0.2): `sync` lines are per unit (`push 41 files 0 del ok
+backup:<push-id>`, `push interrupted (rsync exit 20); marker kept`, `push 2
+files 0 del resumed → ok`) plus one summary line per sync; `adopt` records
+a shared state taken as the first baseline; `backup-sweep` the daily sweep.
 
 `replicant log [--host H] [--path P] [--since T]` reads it. Leaves keep a
 local copy of their own entries so the history survives home being
@@ -825,11 +889,14 @@ real pull is a cutover prerequisite, and like cutover it is still deferred.
 2. Per-host certs through `approve`; bootstrap bundle demoted. Built on
    `bsneed/v0.2-certs`; see `docs/v0.2-prep-notes.md`, "Per-host
    certificates".
-3. F3's second half: a lost lease kills the running rsync child.
+3. F3's second half: a lost lease kills the running rsync child. **Built**
+   on `bsneed/v0.2-apply`.
 4. Apply: real pull and push, baselines written after rsync exit 0,
-   markers and resume, backup-dir on push, `--confirm-delete` and the y/N
-   pass, `rollback`, journal entries. Reviewed before it runs against
-   `~/work`.
+   markers and resume, backup on push (home-side, see *Home is also the
+   backup*), `--confirm-delete` and the y/N pass, `rollback`, journal
+   entries. **Built** on `bsneed/v0.2-apply`, pending review; reviewed
+   before it runs against `~/work`. Record: `docs/v0.2-prep-notes.md`,
+   "Apply".
 5. stonebox enrolled; F9's Mac→Linux push deletion names tested for real.
 
 ## Phases
@@ -844,10 +911,13 @@ real pull is a cutover prerequisite, and like cutover it is still deferred.
    pre-merge), tagged `0.1.0`, 239 tests. Deployed: home on thistledown as a
    systemd user unit, leaf on birchbook via launchd, subscribed
    `~/work → ~/work2`. First real dry run 14.5 s, ~1.1 s after perf work.
-3. **v0.2.0 — apply.** Gated on the entry criteria below. Real pull and push
-   into `~/work2` on a leaf (the `--as` dogfood), baselines + history, the
-   queue + leases, markers/resume/rollback, journal, guardrail 2,
-   backup-dir on home.
+3. **v0.2.0 — apply: built, pending review** (`bsneed/v0.2-apply`, not
+   merged). Real pull and push into `~/work2` on a leaf (the `--as`
+   dogfood), baselines on both sides, the queue + leases (a lost lease
+   stops the rsync), markers/resume/rollback, journal, guardrail 2 (the
+   both-changed row), home-side backup on push. Not built: per-path
+   baseline history on home (the last N), `--force` accept of a marker.
+   First real run is one subscription, after review.
 4. **v0.3.0 — conflicts.** Repo and file conflict prompts, collect-then-
    apply, skip tracking, `--adopt`, merge via peer-to-peer git.
 5. **v0.4.0 — agents.** Leaf hooks (sync), home hooks (hold/release),
@@ -876,7 +946,8 @@ rows), and from `docs/v0.2-prep-review.md` **P3** (root-relative excludes),
   previewing a stale cached fleet). Done in v0.2-prep.
 - **F12** — per-host client certs, fingerprint-pinned in fleet.toml, host
   derived from the peer cert, server cert separated.
-- **F3 (v0.2 half)** — a lost lease kills the running rsync child.
+- **F3 (v0.2 half)** — a lost lease kills the running rsync child. Built
+  on `bsneed/v0.2-apply`.
 - **Q3** — drop `refs/remotes/*` from the state hash; IDE autofetch otherwise
   makes every repo a conflict.
 - **Q5** — holds are kept alive by the agents daemon's view of the agent, not

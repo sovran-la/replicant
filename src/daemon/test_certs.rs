@@ -122,3 +122,47 @@ impl RawLeaf {
         }
     }
 }
+
+/// One of each of apply's requests to home, for the trust tests: each must
+/// be refused as the others are.
+pub fn apply_requests() -> Vec<HomeRequest> {
+    vec![
+        HomeRequest::BeginPush {
+            lease: 1,
+            rel: "work".into(),
+            source_state: crate::state::UnitState::Empty,
+            backup: vec![],
+            is_file: false,
+        },
+        HomeRequest::Rehash {
+            lease: 1,
+            rel: "work".into(),
+            kind: crate::units::UnitKind::Loose,
+            union: vec![],
+        },
+        HomeRequest::Agree {
+            lease: 1,
+            rel: "work".into(),
+            baseline: None,
+            rollback_accepted: false,
+        },
+        HomeRequest::Settle {
+            lease: 1,
+            rel: "work".into(),
+            direction: None,
+            detail: String::new(),
+            changes: vec![],
+        },
+        HomeRequest::Interrupted {
+            rel: "work".into(),
+            direction: crate::marker::Direction::Push,
+            why: String::new(),
+            changes: vec![],
+        },
+        HomeRequest::Note {
+            event: "adopt".into(),
+            rel: "work".into(),
+            detail: String::new(),
+        },
+    ]
+}

@@ -27,11 +27,13 @@ fn marker(host: &str, direction: Direction) -> Marker {
         host: host.into(),
         source_state: p("s"),
         started_at: 99,
+        push: None,
     }
 }
 
 fn run(leaf: &UnitState, home: &UnitState, b: Option<&Baseline>) -> Decision {
     decide(Inputs {
+        rel: "work/x",
         me: "birchbook",
         home_name: "thistledown",
         leaf,
@@ -186,6 +188,7 @@ fn markers_still_win_over_a_deletion() {
     let b = base(p("l"), p("h"));
     let m = marker("birchbook", Direction::Pull);
     let d = decide(Inputs {
+        rel: "work/x",
         me: "birchbook",
         home_name: "thistledown",
         leaf: &E,
@@ -207,6 +210,7 @@ fn leaf_marker_resumes_pull_even_when_table_would_conflict() {
     let m = marker("birchbook", Direction::Pull);
     let b = base(p("l"), p("h"));
     let d = decide(Inputs {
+        rel: "work/x",
         me: "birchbook",
         home_name: "thistledown",
         leaf: &p("half"),
@@ -228,6 +232,7 @@ fn leaf_marker_resumes_pull_even_when_table_would_conflict() {
 fn own_home_marker_resumes_push() {
     let m = marker("birchbook", Direction::Push);
     let d = decide(Inputs {
+        rel: "work/x",
         me: "birchbook",
         home_name: "thistledown",
         leaf: &p("l"),
@@ -250,6 +255,7 @@ fn other_leafs_home_marker_quarantines_even_over_own_leaf_marker() {
     let theirs = marker("twinoaks", Direction::Push);
     let mine = marker("birchbook", Direction::Pull);
     let d = decide(Inputs {
+        rel: "work/x",
         me: "birchbook",
         home_name: "thistledown",
         leaf: &p("l"),

@@ -129,6 +129,35 @@ impl Plan {
                 .any(|u| u.decision.is_blocking() || !u.refusals.is_empty())
     }
 
+    /// What a person confirms: every unit's decision, both sides' states,
+    /// its dry run's changes and its refusals, and the refused
+    /// subscriptions, hashed. A `sync` that was confirmed against a plan
+    /// applies only if its own plan has the same digest, so a file edited
+    /// while the person read the plan (the same change list, other bytes)
+    /// stops it too. Timings do not count.
+    pub fn digest(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let shape: Vec<_> = self
+            .units
+            .iter()
+            .map(|u| {
+                (
+                    &u.rel,
+                    u.kind,
+                    &u.decision,
+                    (&u.leaf, &u.home),
+                    u.diff.as_ref().map(|d| &d.changes),
+                    &u.refusals,
+                )
+            })
+            .collect();
+        let text = serde_json::to_string(&(shape, &self.refused)).unwrap_or_default();
+        Sha256::digest(text.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
     /// One line per direction, as PLAN.md's `sync` prints it:
     /// `push → thistledown: 3 repos, 41 files changed, 0 deleted`.
     pub fn summary(&self) -> Vec<String> {
@@ -194,4 +223,7 @@ pub struct LeafStatus {
     pub pending_paths: Vec<String>,
     pub plan: Option<Plan>,
     pub queue: Vec<QueueView>,
+    /// Interrupted (or running) syncs over this leaf's paths, either side.
+    #[serde(default)]
+    pub markers: Vec<super::OpenMarker>,
 }

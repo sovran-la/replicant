@@ -5,8 +5,8 @@ use super::{DiffSummary, LeafCtx, PlannedUnit, leaf_case_insensitive};
 use crate::daemon::wire::HomeSnapshot;
 use crate::decide::Decision;
 use crate::guard::{self, Refusal};
-use crate::marker::Direction;
-use crate::rsync::{ChangeKind, Client, Itemized, Runner, Transfer};
+use crate::marker::{Direction, Marker};
+use crate::rsync::{Abort, ChangeKind, Client, Itemized, Runner, Transfer};
 use crate::units::{self, Discovered, SideUnit, SubSpec};
 use crate::{Result, paths, state};
 
@@ -14,14 +14,14 @@ use crate::{Result, paths, state};
 /// plenty and does not look like an attack to sshd.
 const RSYNC_WORKERS: usize = 4;
 
-fn spec_for<'s>(specs: &'s [SubSpec], rel: &str) -> Option<&'s SubSpec> {
+pub(super) fn spec_for<'s>(specs: &'s [SubSpec], rel: &str) -> Option<&'s SubSpec> {
     specs
         .iter()
         .filter(|s| paths::is_within(rel, &s.rel))
         .max_by_key(|s| s.rel.len())
 }
 
-fn summarize(it: &Itemized) -> DiffSummary {
+pub(super) fn summarize(it: &Itemized) -> DiffSummary {
     let changes = it
         .changes
         .iter()
@@ -47,7 +47,7 @@ fn summarize(it: &Itemized) -> DiffSummary {
 /// diffed the way its deletion would travel, toward the side that still has
 /// it, so the human confirming it sees what would go; it still has no
 /// [`Decision::direction`], so nothing can carry it out unconfirmed.
-fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
+pub(super) fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
     match d {
         Decision::Remove => Some(Direction::Pull),
         Decision::DeletedOn { host } if host == me => Some(Direction::Push),
@@ -56,7 +56,10 @@ fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
     }
 }
 
-/// Fill `diff` and `refusals` on every unit that would move.
+/// Fill `diff` and `refusals` on every unit that would move, and return the
+/// transfer each one's dry run used (index-aligned; `None` for the rest):
+/// apply runs exactly those, without `--dry-run`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     ctx: LeafCtx<'_>,
     snap: &HomeSnapshot,
@@ -64,7 +67,9 @@ pub(super) fn run(
     union: &[String],
     leaf_units: &[SideUnit],
     planned: &mut [PlannedUnit],
-) -> Result<()> {
+    leaf_markers: &[Marker],
+    abort: &Abort,
+) -> Result<Vec<Option<Transfer>>> {
     let mut worktrees = found.worktrees();
     worktrees.extend(snap.worktrees.iter().cloned());
     let sub_rels: Vec<String> = snap.specs.iter().map(|s| s.rel.clone()).collect();
@@ -74,18 +79,23 @@ pub(super) fn run(
         .filter(|i| diff_direction(ctx.me, &planned[*i].decision).is_some())
         .collect();
 
+    let mut transfers = vec![None; planned.len()];
     if jobs.is_empty() {
-        return Ok(());
+        return Ok(transfers);
     }
-    let runner = Runner::new(
-        ctx.cfg.rsync_timeout(),
-        Client::detect()?,
-        ctx.scratch_dir.to_path_buf(),
-    );
+    let runner = Runner {
+        program: ctx.rsync.into(),
+        abort: abort.clone(),
+        ..Runner::new(
+            ctx.cfg.rsync_timeout(),
+            Client::detect()?,
+            ctx.scratch_dir.to_path_buf(),
+        )
+    };
     let results = state::parallel_map(
         &jobs,
         RSYNC_WORKERS,
-        |&i| -> Result<(DiffSummary, Vec<Refusal>)> {
+        |&i| -> Result<(DiffSummary, Vec<Refusal>, Transfer)> {
             let p = &planned[i];
             let remove = p.decision == Decision::Remove;
             let direction = diff_direction(ctx.me, &p.decision).expect("filtered above");
@@ -148,16 +158,57 @@ pub(super) fn run(
                     .as_ref()
                     .and_then(|t| guard::dirty_target(t, &it)),
             );
-            Ok((summarize(&it), refusals))
+            // Guardrail 6 (review A3): a resumed pull, removal or confirmed
+            // deletion carries a decision made before it was interrupted,
+            // which says nothing about what the leaf has written since.
+            if direction == Direction::Pull
+                && let Some(m) = leaf_markers.iter().find(|m| m.rel == p.rel)
+            {
+                let late = changed_since(p, transfer.is_file, &it, m.started_at);
+                refusals.extend(guard::changed_since_interrupted(&p.rel, m.started_at, late));
+            }
+            Ok((summarize(&it), refusals, transfer))
         },
     );
 
     for (i, r) in jobs.into_iter().zip(results) {
-        let (d, refusals) = r?;
+        let (d, refusals, transfer) = r?;
         planned[i].diff = Some(d);
         planned[i].refusals = refusals;
+        transfers[i] = Some(transfer);
     }
-    Ok(())
+    Ok(transfers)
+}
+
+/// The leaf paths `it` would delete or replace that changed after `since`
+/// (whole seconds: anything in that second or later counts). "Changed" is
+/// the later of mtime and ctime (review R1): `mv`, `cp -p`, `tar x` and
+/// `unzip` carry an old mtime into the unit, but the rename or `utimes`
+/// that put it there moves ctime, which no user tool can set back.
+/// Directories are left out: their times move whenever an interrupted rsync
+/// wrote into them, and their contents are itemized path by path. A repo's
+/// `.git` is not: a commit made since moves its refs.
+fn changed_since(p: &PlannedUnit, is_file: bool, it: &Itemized, since: u64) -> Vec<String> {
+    let since_ns = i128::from(since) * 1_000_000_000;
+    it.changes
+        .iter()
+        .filter(|c| !c.is_dir && matches!(c.kind, ChangeKind::Delete | ChangeKind::Update))
+        .filter(|c| {
+            let path = match is_file {
+                true => p.leaf_path.clone(),
+                false => p.leaf_path.join(&c.path),
+            };
+            std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir() && changed_ns(&m) > since_ns)
+        })
+        .map(|c| c.path.clone())
+        .collect()
+}
+
+/// The later of a path's mtime and ctime, in nanoseconds since the epoch.
+fn changed_ns(m: &std::fs::Metadata) -> i128 {
+    use std::os::unix::fs::MetadataExt;
+    let ns = |s: i64, n: i64| i128::from(s) * 1_000_000_000 + i128::from(n);
+    ns(m.mtime(), m.mtime_nsec()).max(ns(m.ctime(), m.ctime_nsec()))
 }
 
 /// The leaf's repo facts for a unit being removed, so guardrail 1 can say
