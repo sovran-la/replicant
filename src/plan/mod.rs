@@ -9,19 +9,20 @@ mod bases;
 mod diff;
 mod lease;
 mod types;
+mod unserved;
 
-pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings};
+pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings, Tone};
 
 use crate::baseline::{self, Baseline};
 use crate::config::LeafConfig;
 use crate::daemon::wire::{
     Enrollment, HomeReply, HomeRequest, HomeSnapshot, ReportedUnit, SubscriptionsView,
 };
-use crate::decide::{self, Decision};
+use crate::decide;
 use crate::marker::{self, Marker};
 use crate::state::UnitState;
 use crate::units::{self, Discovered, SideUnit};
-use crate::{Error, Result, paths};
+use crate::{Error, Result};
 use std::path::Path;
 use std::time::Instant;
 
@@ -94,6 +95,7 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         let snap = match link.call(HomeRequest::State {
             leaf_repos: found.repos(),
             case_check: leaf_case_insensitive(),
+            baselines: baselines.iter().map(|b| b.rel.clone()).collect(),
         })? {
             HomeReply::State(s) => s,
             other => {
@@ -115,12 +117,26 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         union.sort();
         union.dedup();
         let leaf_units = units::snapshot(&found, &union, false)?;
+        let leaf_markers: Vec<Marker> = marker::store(ctx.state_dir).all()?;
+        let mut planned = decide_all(
+            ctx,
+            &view.home,
+            &baselines,
+            &snap,
+            &leaf_units,
+            &leaf_markers,
+        );
+        let gone = unserved::plan(ctx, &view.home, &snap, &baselines, &leaf_markers)?;
+        planned.extend(gone.units);
+        planned.sort_by(|a, b| a.rel.cmp(&b.rel).then(a.kind.cmp(&b.kind)));
         t.leaf_state_ms = ms(started);
-        let mut planned = decide_all(ctx, &view.home, &baselines, &snap, &leaf_units)?;
         if dry_run {
             // Do not start an rsync on a lease that is already gone.
             watch.check()?;
             let started = Instant::now();
+            union.extend(gone.repos);
+            union.sort();
+            union.dedup();
             diff::run(ctx, &snap, &found, &union, &leaf_units, &mut planned)?;
             t.rsync_ms = ms(started);
         }
@@ -143,6 +159,7 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
         dry_run,
         units,
         refused: view.refused,
+        orphaned: view.orphaned,
         timings: t,
     };
     let reported = plan
@@ -176,8 +193,8 @@ fn decide_all(
     baselines: &[Baseline],
     snap: &HomeSnapshot,
     leaf_units: &[SideUnit],
-) -> Result<Vec<PlannedUnit>> {
-    let leaf_markers: Vec<Marker> = marker::store(ctx.state_dir).all()?;
+    leaf_markers: &[Marker],
+) -> Vec<PlannedUnit> {
     let mut out = Vec::new();
     for l in leaf_units {
         let h = snap
@@ -193,7 +210,7 @@ fn decide_all(
             leaf: &l.state,
             home: home_state,
             baseline: b,
-            leaf_marker: marker::covering(&leaf_markers, &l.rel),
+            leaf_marker: marker::covering(leaf_markers, &l.rel),
             home_marker: marker::covering(&snap.markers, &l.rel),
         });
         out.push(PlannedUnit {
@@ -212,33 +229,7 @@ fn decide_all(
             home_files: h.map_or(0, |h| h.files),
         });
     }
-    // A baseline outside every subscription is a path this leaf was synced
-    // and has since unsubscribed: the next sync removes the leaf's copy.
-    for b in baselines {
-        let subscribed = snap.specs.iter().any(|s| {
-            paths::is_within(&b.rel, &s.rel)
-                && !s.except.iter().any(|e| paths::is_within(&b.rel, e))
-        });
-        if !subscribed {
-            out.push(PlannedUnit {
-                rel: b.rel.clone(),
-                kind: b.kind,
-                decision: Decision::Remove,
-                leaf: b.leaf.clone(),
-                home: UnitState::Empty,
-                leaf_head: None,
-                home_head: None,
-                leaf_path: ctx.cfg.local_path(&b.rel, ctx.home_dir),
-                home_path: snap.home_dir.join(&b.rel),
-                diff: None,
-                refusals: vec![],
-                leaf_files: 0,
-                home_files: 0,
-            });
-        }
-    }
-    out.sort_by(|a, b| a.rel.cmp(&b.rel).then(a.kind.cmp(&b.kind)));
-    Ok(out)
+    out
 }
 
 #[cfg(test)]

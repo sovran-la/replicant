@@ -175,3 +175,6 @@ fn case_collision_pair_on_disk_when_filesystem_allows() {
         );
     }
 }
+
+#[path = "repos_base_tests.rs"]
+mod base;

@@ -14,6 +14,7 @@ fn unit_list() -> Excludes {
         rel: "u".into(),
         exclude: Vec::new(),
         except: EXCEPT.iter().map(|s| s.to_string()).collect(),
+        root: String::new(),
     };
     excludes(&spec, "u", UnitKind::Loose, &[], &[]).unwrap()
 }
@@ -79,6 +80,7 @@ fn repos_and_worktrees_stay_directory_only() {
         rel: "u".into(),
         exclude: Vec::new(),
         except: Vec::new(),
+        root: String::new(),
     };
     let ex = excludes(&spec, "u", UnitKind::Loose, &["u/top".into()], &[]).unwrap();
     assert!(carved(&ex, "repo").is_empty(), "`top` is a file");

@@ -115,7 +115,7 @@ fn head_that_stops_heartbeating_expires_and_releases_the_queue() {
         .expect("the next entry proceeds");
     waiter.join().unwrap();
     assert!(
-        q.heartbeat(dead, LEASE).is_err(),
+        q.heartbeat(dead).is_err(),
         "an expired lease cannot be revived"
     );
     assert!(q.release(dead).is_err());
@@ -123,20 +123,30 @@ fn head_that_stops_heartbeating_expires_and_releases_the_queue() {
 }
 
 #[test]
-fn heartbeat_keeps_a_lease_alive() {
+fn heartbeat_refreshes_by_the_lease_the_entry_was_granted() {
     let q = Queue::new();
+    let lease = Duration::from_secs(1);
     let id = q
-        .acquire(
-            "a",
-            EntryKind::Hold,
-            vec![],
-            Duration::from_millis(100),
-            false,
-            LONG,
-        )
+        .acquire("a", EntryKind::Hold, vec![], lease, false, LONG)
         .unwrap();
-    q.heartbeat(id, Duration::from_secs(60)).unwrap();
-    assert!(q.expire(Instant::now() + Duration::from_secs(1)).is_empty());
+    // The granted lease ends no later than this.
+    let granted_by = Instant::now() + lease;
+    std::thread::sleep(Duration::from_millis(60));
+    let before = Instant::now();
+    q.heartbeat(id).unwrap();
+    let after = Instant::now();
+    assert!(
+        q.expire(granted_by + Duration::from_millis(30)).is_empty(),
+        "refreshed past the original lease"
+    );
+    assert!(
+        q.expire(before + lease - Duration::from_millis(1))
+            .is_empty()
+    );
+    // By the granted length, not longer.
+    let expired = q.expire(after + lease + Duration::from_millis(1));
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].id, id);
 }
 
 #[test]

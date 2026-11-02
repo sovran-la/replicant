@@ -7,6 +7,7 @@ fn spec(rel: &str) -> SubSpec {
         rel: rel.into(),
         exclude: vec!["target".into()],
         except: vec![],
+        root: String::new(),
     }
 }
 
@@ -111,6 +112,7 @@ fn single_file_subscription_is_a_file_loose_unit() {
         rel: ".claude/settings.json".into(),
         exclude: vec![],
         except: vec![],
+        root: String::new(),
     }];
     let found = side(tmp.path(), &subs);
     let units = snapshot(&found, &[], true).unwrap();
@@ -129,6 +131,7 @@ fn except_carves_out_repos_and_loose_paths() {
         rel: "work".into(),
         exclude: vec![],
         except: vec!["work/rust".into()],
+        root: String::new(),
     }];
     let found = side(tmp.path(), &subs);
     assert_eq!(found.repos(), vec!["work/tundra/beacon"]);

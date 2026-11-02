@@ -7,7 +7,7 @@
 
 use super::fleet::{FleetState, PendingView};
 use super::journal::{Filter, Line};
-use crate::decide::Decision;
+use crate::decide::{Decision, UnservedReason};
 use crate::guard::Refusal;
 use crate::marker::Marker;
 use crate::plan::{LeafStatus, Plan};
@@ -53,6 +53,11 @@ pub enum HomeRequest {
     State {
         leaf_repos: Vec<String>,
         case_check: bool,
+        /// Every path the leaf holds a baseline for, so home can say why it
+        /// no longer serves any of them (review F5). Absent from an older
+        /// leaf: none.
+        #[serde(default)]
+        baselines: Vec<String>,
     },
     /// What the leaf decided, for the fleet view and the journal.
     Report {
@@ -122,8 +127,14 @@ pub struct SubscriptionsView {
     /// In-bounds subscriptions, with their root excludes and carve-outs.
     pub specs: Vec<SubSpec>,
     pub cap: Option<Vec<String>>,
-    /// Subscriptions home will not serve: outside a cap narrowed since.
+    /// Subscriptions home will not serve because no root covers them:
+    /// home's config is broken, so the leaf blocks.
     pub refused: Vec<Refusal>,
+    /// Subscriptions home will not serve by policy: outside a cap narrowed
+    /// since, or wholly inside a root exclude. Shown, never blocking (review
+    /// F5). Absent from an older home: none.
+    #[serde(default)]
+    pub orphaned: Vec<Refusal>,
     /// For a pending host, what it asked for.
     pub pending_paths: Vec<String>,
     pub lease_secs: u64,
@@ -144,6 +155,25 @@ pub struct HomeSnapshot {
     /// sync or an error (review F4). Absent from an older home: none.
     #[serde(default)]
     pub absent: Vec<String>,
+    /// The leaf's baselines home no longer serves, and why. A baseline out
+    /// of bounds and missing here is [`UnservedReason::NotServed`]. Absent
+    /// from an older home: none.
+    #[serde(default)]
+    pub unserved: Vec<Unserved>,
+}
+
+/// A path a leaf has a baseline for and home no longer serves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unserved {
+    /// The baseline's path, with the excludes and carve-outs home would
+    /// apply to it if it still served it (none when no root covers it), so
+    /// the leaf hashes its copy the way the baseline was hashed.
+    pub spec: SubSpec,
+    pub reason: UnservedReason,
+    /// What home can say about it: for a missing root, which subscription
+    /// lost it and which roots fleet.toml has.
+    #[serde(default)]
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

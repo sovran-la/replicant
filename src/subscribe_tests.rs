@@ -261,3 +261,6 @@ fn unsubscribe_while_pending_trims_the_request() {
 
 #[path = "subscribe_approve_tests.rs"]
 mod more;
+
+#[path = "subscribe_unsubscribed_tests.rs"]
+mod unsubscribed;

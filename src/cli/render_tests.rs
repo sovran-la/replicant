@@ -69,6 +69,7 @@ fn a_plan() -> Plan {
             ),
         ],
         refused: vec![],
+        orphaned: vec![],
         timings: Timings {
             total_ms: 1234,
             ..Default::default()
@@ -255,6 +256,7 @@ fn a_deleted_unit_says_what_it_would_remove_and_that_it_needs_confirmation() {
         dry_run: false,
         units: vec![on_home, on_leaf],
         refused: vec![],
+        orphaned: vec![],
         timings: Timings::default(),
     };
     let text = plan(&p, false, PLAIN);

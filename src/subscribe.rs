@@ -5,13 +5,20 @@
 //! Each function takes the fleet as loaded and the path to write; the caller
 //! (home's daemon, holding its fleet lock) reloads afterwards.
 
-use crate::config::{Fleet, HostEntry, Pending, Subscription, edit};
-use crate::daemon::wire::{AllowPreview, Approved, SubscribeOutcome, UnsubscribeOutcome};
+use crate::config::{Fleet, Pending, Root, Subscription, edit};
+use crate::daemon::wire::{SubscribeOutcome, UnsubscribeOutcome};
 use crate::paths::{self, Normalizer};
 use crate::{Error, Result};
 use std::path::Path;
 
-fn normalizer<'a>(fleet: &'a Fleet, leaf_home: &'a Path, roots: &'a [String]) -> Normalizer<'a> {
+mod approve;
+pub use approve::{approve, preview_allow};
+
+pub(crate) fn normalizer<'a>(
+    fleet: &'a Fleet,
+    leaf_home: &'a Path,
+    roots: &'a [String],
+) -> Normalizer<'a> {
     Normalizer {
         leaf_home,
         home_home: &fleet.home_dir,
@@ -29,6 +36,19 @@ pub fn outside_cap(paths: &[String], cap: Option<&[String]>) -> Vec<String> {
             .cloned()
             .collect(),
     }
+}
+
+/// Why `rel`, a subscription under root `r`, lies wholly inside one of the
+/// root's excludes and so is never served (review P3), if it does.
+pub fn inside_exclude(r: &Root, rel: &str) -> Result<Option<String>> {
+    let prefix = paths::relative_to(rel, &r.rel).unwrap_or("");
+    Ok(crate::exclude::covering(&r.exclude, prefix)?.map(|pat| {
+        format!(
+            "{rel} is inside [roots.{}] exclude {pat:?}: never synced; subscribe to a path \
+             outside it",
+            r.name
+        )
+    }))
 }
 
 /// A subscribe request from `host`, whose `$HOME` is `leaf_home`.
@@ -50,6 +70,16 @@ pub fn subscribe(
     // An enrolled host's home dir is what approve recorded, not what it says now.
     let hd = enrolled.map(|e| e.home_dir.as_path()).unwrap_or(leaf_home);
     let requested = normalizer(fleet, hd, &roots).normalize(raw)?;
+    for p in &requested {
+        if let Some(why) = fleet
+            .root_for(p)
+            .map(|r| inside_exclude(r, p))
+            .transpose()?
+            .flatten()
+        {
+            return Err(Error::Refused(why));
+        }
+    }
 
     let Some(entry) = enrolled else {
         let mut all = fleet
@@ -88,18 +118,20 @@ pub fn subscribe(
     let mut all = current.paths.clone();
     all.extend(requested.iter().cloned());
     let (paths, absorbed) = paths::collapse(&all);
-    // Re-subscribing a carved-out path (or a parent of one) restores it.
-    let except: Vec<String> = current
-        .except
-        .into_iter()
-        .filter(|e| !requested.iter().any(|r| paths::is_within(e, r)))
-        .collect();
+    // Re-subscribing a carved-out or unsubscribed path (or a parent of one)
+    // restores it.
+    let restored = |list: Vec<String>| -> Vec<String> {
+        list.into_iter()
+            .filter(|e| !requested.iter().any(|r| paths::is_within(e, r)))
+            .collect()
+    };
     edit::set_subscription(
         file,
         host,
         &Subscription {
             paths: paths.clone(),
-            except,
+            except: restored(current.except),
+            unsubscribed: restored(current.unsubscribed),
         },
     )?;
     Ok(SubscribeOutcome {
@@ -203,12 +235,18 @@ pub fn unsubscribe(
         )));
     }
     except.sort();
+    // Remembered so home can tell the leaf these were given up on purpose
+    // (review F5); a carve-out says so already, by being in `except`.
+    let mut unsubscribed = sub.unsubscribed.clone();
+    unsubscribed.extend(removed.iter().cloned());
+    let (unsubscribed, _) = paths::collapse(&unsubscribed);
     edit::set_subscription(
         file,
         host,
         &Subscription {
             paths: paths_left.clone(),
             except: except.clone(),
+            unsubscribed,
         },
     )?;
     Ok(UnsubscribeOutcome {
@@ -216,62 +254,6 @@ pub fn unsubscribe(
         carved,
         paths: paths_left,
         except,
-    })
-}
-
-/// Normalize a typed allow list against a pending host, and show what it keeps.
-pub fn preview_allow(fleet: &Fleet, host: &str, raw: &[String]) -> Result<AllowPreview> {
-    let p = fleet
-        .pending
-        .get(host)
-        .ok_or_else(|| Error::Refused(format!("{host} is not pending on {}", fleet.name)))?;
-    let roots = fleet.root_rels();
-    let words: Vec<String> = raw
-        .iter()
-        .flat_map(|r| r.split_whitespace())
-        .map(String::from)
-        .collect();
-    let allow = if words.is_empty() {
-        None
-    } else {
-        Some(paths::collapse(&normalizer(fleet, &p.home_dir, &roots).normalize(&words)?).0)
-    };
-    let drop = outside_cap(&p.paths, allow.as_deref());
-    let keep = p
-        .paths
-        .iter()
-        .filter(|x| !drop.contains(x))
-        .cloned()
-        .collect();
-    Ok(AllowPreview {
-        host: host.into(),
-        allow,
-        keep,
-        drop,
-    })
-}
-
-/// Approve a pending host with a cap (empty = none). Never starts a sync.
-pub fn approve(fleet: &Fleet, file: &Path, host: &str, raw_allow: &[String]) -> Result<Approved> {
-    let preview = preview_allow(fleet, host, raw_allow)?;
-    let p = &fleet.pending[host];
-    edit::approve(
-        file,
-        host,
-        &HostEntry {
-            home_dir: p.home_dir.clone(),
-            allow: preview.allow.clone(),
-        },
-        &Subscription {
-            paths: preview.keep.clone(),
-            except: vec![],
-        },
-    )?;
-    Ok(Approved {
-        host: host.into(),
-        allow: preview.allow,
-        subscribed: preview.keep,
-        dropped: preview.drop,
     })
 }
 

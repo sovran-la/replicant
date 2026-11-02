@@ -64,6 +64,8 @@ struct RawSubscription {
     paths: Vec<String>,
     #[serde(default)]
     except: Vec<String>,
+    #[serde(default)]
+    unsubscribed: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,10 +100,15 @@ pub struct HostEntry {
 ///
 /// `except` carves a sub-path out of a broader subscription: subscribed to
 /// `work`, then `unsubscribe ~/work/rust`.
+///
+/// `unsubscribed` lists subscriptions `unsubscribe` removed, until restored.
+/// With `except` it tells a leaf a path was given up on purpose, the only
+/// case it may remove its copy (review F5); a hand edit to `paths` is not.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Subscription {
     pub paths: Vec<String>,
     pub except: Vec<String>,
+    pub unsubscribed: Vec<String>,
 }
 
 /// A host that asked and has not been approved.
@@ -173,7 +180,8 @@ impl Fleet {
                 if pat.starts_with('/') || pat.is_empty() {
                     return Err(bad(format!(
                         "[roots.{rname}] exclude {pat:?}: anchored and empty patterns are not \
-                         supported; write it unanchored (e.g. \"agents/state\")"
+                         supported; write it without the leading `/` (a pattern with a `/` is \
+                         relative to the root, e.g. \"agents/state\")"
                     )));
                 }
                 crate::exclude::check(pat)
@@ -220,6 +228,7 @@ impl Fleet {
                 Subscription {
                     paths: check_rels(&s.paths).map_err(ctx)?,
                     except: check_rels(&s.except).map_err(ctx)?,
+                    unsubscribed: check_rels(&s.unsubscribed).map_err(ctx)?,
                 },
             );
         }
