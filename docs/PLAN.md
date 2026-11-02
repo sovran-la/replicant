@@ -1,6 +1,7 @@
 # Replicant — Rough Plan
 
-*Draft 2026-10-31, rev 5 2026-11-01 (v0.1.0 shipped and deployed; review findings folded in; v0.2 entry criteria).
+*Draft 2026-10-31, rev 5 2026-11-01 (v0.1.0 shipped and deployed; review findings folded in; v0.2 entry criteria),
+rev 6 2026-11-01 (decided: F5 weighted out-of-bounds rows, root-relative slash excludes, symlinked bases, granted leases).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -119,9 +120,15 @@ both changed, to the same state           → nothing to do
 both changed, differently                 → conflict resolution, see below
 interrupted marker present (own push)     → resume that direction; never a conflict
 home marker from another leaf             → quarantined; refused with the reason
-unsubscribed baseline                     → remove from the leaf, only if the host
-                                            explicitly unsubscribed it AND leaf ==
-                                            baseline.leaf; otherwise conflict
+
+baseline home no longer serves (home says why, per path):
+  marker over it                          → conflict naming the interrupted sync; blocks
+  unsubscribed, leaf == baseline.leaf     → remove from the leaf
+  unsubscribed, leaf changed              → conflict: "push first, or
+                                            `unsubscribe --force <path>`"; blocks
+  cap narrowed, excluded, not served      → orphaned: shown, never deleted, never
+                                            blocks; red if the leaf changed
+  root missing or renamed on home         → "fix fleet.toml on <home>"; blocks
 ```
 
 The two "identical" rows are what keep the Syncthing cutover from being a
@@ -129,12 +136,32 @@ wall of conflicts: both sides already agree, so agreeing is free. The
 vanished and missing-base rows exist because "everything became Empty" is
 far more often a renamed `~/work2`, an unmounted volume or an `--as` pointed
 at nothing than a real delete, and reading it as an ordinary change sends a
-whole-unit `rsync --delete` into home, the backup (review F4). `Remove` is
-narrow for the same reason (F5): a path home stops serving because a cap was
-narrowed or a root removed or mistyped is *not* an unsubscribe, and deleting
-unpushed leaf work in a loose unit is exactly what guardrail 1 cannot see.
-v0.1 has the identical, same-state, quarantine and remove rows; the vanished
-row and the conditions on remove are v0.2 entry criteria.
+whole-unit `rsync --delete` into home, the backup (review F4).
+
+`Remove` is narrow for the same reason (F5, decided 2026-11-01): only a path
+the host explicitly unsubscribed, with nothing unpushed (`leaf ==
+baseline.leaf`) and no marker over it. Home tells the leaf why it no longer
+serves each path the leaf has a baseline for (`unsubscribe` records what it
+removed, `except` what it carved out), and the reason weights the row:
+
+- **Unsubscribed with unpushed work** is a real conflict and blocks: the
+  host asked for it gone, but deleting it would lose work.
+- **A cap narrowed, an exclude added, a path dropped by hand** are home's
+  policy, not this host's choice: the path is **orphaned**. It is shown
+  (dim; red, "home will not accept them", if the leaf changed since
+  baseline), it does not block the rest of the sync or the exit code, and
+  nothing is deleted. `unsubscribe` removes it here; re-subscribing serves
+  it again.
+- **A root missing or renamed in fleet.toml** almost always means home's
+  config is broken, not a decision, so it blocks: "fix fleet.toml on home".
+
+Deleting unpushed leaf work in a loose unit is exactly what guardrail 1
+cannot see, and a whole-unit delete because a cap was narrowed or a root
+mistyped is the F4 failure again. Removing a loose unit excludes the repos
+inside it, so it never takes a repo with it. A baseline holds hashes, not
+manifests: the rows know *that* the leaf changed, not how many files did.
+v0.1 has the identical, same-state, quarantine and these unserved rows; the
+vanished row is new in v0.2-prep.
 
 `sync` always prints what it decided before touching anything:
 
@@ -197,6 +224,13 @@ This is how we dogfood: `~/work` stays on Syncthing untouched while the
 same content is subscribed into `~/work2` and lived in for a while.
 birchbook does exactly this today: `~/work → ~/work2`.
 
+A subscription base that is a **symlink is followed** (decided 2026-11-01,
+review P4): `~/work2 → /Volumes/data/work2` is the directory it names, the
+most likely `--as` layout. A dangling link is a missing base, so an
+unmounted volume is the missing-base error once synced, never "empty".
+Only the base is followed; symlinks inside the tree stay links, as rsync
+`-a` copies them.
+
 `subscribe` is a request to home. Home records it in the fleet config and
 starts serving it; `sync` on the leaf reads its subscriptions back from
 home. Home is the record of truth: `replicant status` on thistledown shows
@@ -258,8 +292,10 @@ threat is not a hostile user but an agent or a reflex typing
 `subscribe thistledown ~/work` on the wrong box. twinoaks gets a cap;
 birchbook and stonebox do not.
 
-Hand edits to fleet.toml are not picked up until the daemon's next own write
-or a restart (review F11); reload on change is a v0.2 entry criterion.
+Hand edits to fleet.toml are picked up on the next request (review F11). A
+broken edit fails closed: every request that reads policy (subscribe,
+subscriptions, state, acquire, approve) is refused until the file parses.
+Heartbeats and releases read no policy (see *Leases*).
 
 A leaf's local config is little more than where home is, and `subscribe`
 writes that (plus `home_dir`, the rsync host, and the rsync time bound, all
@@ -428,6 +464,13 @@ loudly, removed from the queue, and the next entry proceeds.
 
 Expiry releases the queue. It does **not** clear the marker (below). Those
 are different things on purpose.
+
+A lease lives on the length it was **granted** (decided 2026-11-01, review
+P5): the fleet's `lease_secs` is read once, at `Acquire`, and stored on the
+entry; heartbeats refresh by that and releases read nothing. So a typo saved
+in fleet.toml mid-transfer refuses new work but cannot abort a sync in
+flight (which, once a lost lease kills the rsync child, it otherwise would).
+An edit to `lease_secs` applies to the next `Acquire`.
 
 Losing a lease is never silent. The holder retries heartbeats for as long
 as the lease could still be alive; a definitive "not queued", or silence for
@@ -627,10 +670,21 @@ root:
 
 Everything else comes from each root's `exclude` in fleet.toml (`target/`,
 `.build/`, `node_modules/`, `.DS_Store` in the example). Anchored (`/x`)
-patterns are refused. The exclude engine moves to `globset` with the sovran
+patterns are refused. The exclude engine is `globset` with the sovran
 filesystem matching rules, plus a differential test against rsync so the
-walkers and rsync agree on every pattern (decided 2026-11-01; in flight on
-`bsneed/v0.2-prep`).
+walkers and rsync agree on every pattern (decided 2026-11-01, landed in
+v0.2-prep).
+
+A pattern with a `/` is **relative to the root** (decided 2026-11-01, review
+P3): `agents/state` on the `.sovran` root is `~/.sovran/agents/state` for a
+host subscribed to `.sovran`, to `.sovran/agents`, or to anything else, so
+what an exclude protects does not depend on how a host splits its
+subscriptions. Per unit it is rewritten by stripping the unit's root-relative
+prefix (`/state` in `.sovran/agents`; dropped in `.sovran/x`), and the same
+rewritten list goes to discovery, the hash and rsync. A bare name or a `**/`
+pattern matches at any depth, as written. Subscribing to a path wholly
+inside an exclude is refused; one written before the exclude existed is
+orphaned, not served.
 
 **`.git/index` is synced** (decided 2026-10-31, still true after v0.1).
 Failure 1 above came from syncing it while both machines were live. With a
@@ -742,13 +796,14 @@ real pull is a cutover prerequisite, and like cutover it is still deferred.
 ## v0.2 entry criteria
 
 Latent in a read-only v0.1, fatal once anything applies. Each is designed
-before it is built (F-numbers from `docs/v0.1-review.md`):
+before it is built (F-numbers from `docs/v0.1-review.md`). Decided and built
+on `bsneed/v0.2-design` (rev 6), now in the body above: **F5** (the unserved
+rows), and from `docs/v0.2-prep-review.md` **P3** (root-relative excludes),
+**P4** (symlinked bases) and **P5** (granted leases).
 
 - **F4** — a missing subscription base is an error, and a unit that vanished
   since baseline is "deleted on X" with explicit confirmation, never a plain
   whole-unit delete.
-- **F5** — `Remove` only for explicit unsubscribes and only when
-  `leaf == baseline.leaf`; otherwise conflict.
 - **F6** — ignored-but-not-excluded files enter the repo hash as a metadata
   manifest, and guardrail 1 treats them as at-risk on the target.
 - **F7** — guardrail 4 also checks collisions across units and NFC/NFD pairs.
@@ -756,7 +811,7 @@ before it is built (F-numbers from `docs/v0.1-review.md`):
 - **F9** — push deletions from openrsync to rsync 3 must come back with names;
   needs a real Mac→Linux push test with a deletion.
 - **F11** — hand edits to fleet.toml are reloaded (also fixes `approve`
-  previewing a stale cached fleet).
+  previewing a stale cached fleet). Done in v0.2-prep.
 - **F12** — per-host client certs, fingerprint-pinned in fleet.toml, host
   derived from the peer cert, server cert separated.
 - **F3 (v0.2 half)** — a lost lease kills the running rsync child.
