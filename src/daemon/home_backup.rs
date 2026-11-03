@@ -62,6 +62,10 @@ pub struct Run {
     /// whose diff says `+` for those; kept for older manifests.
     #[serde(default)]
     pub absent: Vec<String>,
+    /// Directories the run removed, made or changed the mode of, as they
+    /// were before it (`native::backup::dirs_noted`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dirs: Vec<crate::native::backup::DirWas>,
     /// What the transfer reported writing, in the dry run's notation (`~ a`,
     /// `+ d/`, `- b`); partial for a run that failed.
     pub changes: Vec<String>,
@@ -179,6 +183,7 @@ impl Home {
             started_at: now,
             backed_up: vec![],
             absent: vec![],
+            dirs: vec![],
             changes: vec![],
             reported: false,
         });
@@ -236,6 +241,7 @@ impl Home {
             run.changes = changes.to_vec();
             run.reported = true;
             run.backed_up = kept;
+            run.dirs = crate::native::backup::dirs_noted(&run_dir)?;
         }
         if finished {
             push.finished_at = Some(crate::now_secs());

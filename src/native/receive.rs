@@ -173,6 +173,14 @@ impl<'a> Receiver<'a> {
         }
     }
 
+    /// Note what directory `rel` was, on home, before it changes.
+    pub(super) fn note_dir(&self, rel: &str, mode: Option<u32>) -> Result<()> {
+        match &self.backup {
+            Some(b) => b.note_dir(rel, mode),
+            None => Ok(()),
+        }
+    }
+
     /// Move whatever is at `abs` out of the way: into the backup on home,
     /// else gone.
     pub(super) fn displace(&self, abs: &Path, rel: &str) -> Result<()> {

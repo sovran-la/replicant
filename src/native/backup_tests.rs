@@ -82,3 +82,35 @@ fn remove_tree_takes_files_links_and_trees_and_ignores_the_missing() {
     remove_tree(&t.path().join("nothing")).unwrap();
     assert_eq!(fs::read_dir(t.path()).unwrap().count(), 0);
 }
+
+#[test]
+fn a_runs_directory_notes_keep_each_directorys_first_line() {
+    let t = tempfile::tempdir().unwrap();
+    let run = t.path().join("backup/run-1");
+    assert!(dirs_noted(&run).unwrap().is_empty(), "none noted");
+    let b = Backup::new(run.clone());
+    b.note_dir("a", Some(0o700)).unwrap();
+    b.note_dir("new", None).unwrap();
+    b.note_dir("a", Some(0o755)).unwrap();
+    b.note_dir("new", Some(0o755)).unwrap();
+    // A process that died mid-line.
+    let log = run.with_extension("dirs");
+    let mut text = fs::read_to_string(&log).unwrap();
+    text.push_str("{\"p\":\"torn");
+    fs::write(&log, text).unwrap();
+    assert_eq!(
+        dirs_noted(&run).unwrap(),
+        [
+            DirWas {
+                rel: "a".into(),
+                mode: Some(0o700)
+            },
+            DirWas {
+                rel: "new".into(),
+                mode: None
+            },
+        ]
+    );
+    // It is beside the run's directory, not in it: nothing to restore.
+    assert!(!run.exists());
+}

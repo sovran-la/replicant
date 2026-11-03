@@ -1,8 +1,9 @@
 //! Home's own list operations on a unit, through the receiver (so every
 //! write of a synced path stays in one place, under its checks): copying
 //! listed files with their metadata (a rollback restoring from a push's
-//! backup, keeping what the push wrote), and deleting exactly a list (a
-//! rollback removing what a push created).
+//! backup, keeping what the push wrote), deleting exactly a list (a rollback
+//! removing what a push created), and putting directories back as they were
+//! ([`open_dirs`] before the files go in, [`set_dir_modes`] after).
 
 use super::manifest::{Entry, EntryKind};
 use super::receive::Receiver;
@@ -12,6 +13,42 @@ use crate::{Error, Result, paths};
 use std::fs;
 use std::io::Read as _;
 use std::path::Path;
+
+fn dir_entry(rel: &str, mode: u32) -> Entry {
+    Entry {
+        rel: rel.to_string(),
+        kind: EntryKind::Dir,
+        size: 0,
+        mtime_ns: 0,
+        mode,
+        link: None,
+    }
+}
+
+/// Make each of `dirs` (`(path, mode)`) exist and be fillable, parents first.
+pub fn open_dirs(root: &Path, dirs: &[(String, u32)]) -> Result<()> {
+    let rx = Receiver::open(root, false, None, None)?;
+    let mut sorted: Vec<&(String, u32)> = dirs.iter().collect();
+    sorted.sort();
+    for (rel, mode) in sorted {
+        rx.mkdir(&dir_entry(rel, *mode))?;
+    }
+    Ok(())
+}
+
+/// Give each of `dirs` its final mode, deepest first.
+pub fn set_dir_modes(root: &Path, dirs: &[(String, u32)]) -> Result<()> {
+    let rx = Receiver::open(root, false, None, None)?;
+    let list: Vec<Entry> = dirs.iter().map(|(r, m)| dir_entry(r, *m)).collect();
+    rx.dir_modes(&list)?;
+    rx.sync_dirs()
+}
+
+/// Whether `rel` under `root` is a file or link, reached through real
+/// directories only: what a rollback can keep a copy of.
+pub fn holds_file(root: &Path, rel: &str) -> bool {
+    under_real_dirs(root, rel) && fs::symlink_metadata(root.join(rel)).is_ok_and(|m| !m.is_dir())
+}
 
 /// Whether every directory between `root` and `rel` is a real directory.
 fn under_real_dirs(root: &Path, rel: &str) -> bool {

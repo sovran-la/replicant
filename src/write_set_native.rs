@@ -21,8 +21,8 @@ pub(super) const NATIVE: &[(&str, &str, usize, &str)] = &[
     (
         "native/receive_tree.rs",
         "set_permissions(",
-        2,
-        "a new directory owner-writable, then dir_modes' final mode: synced paths",
+        3,
+        "a directory owner-writable, new or existing, then dir_modes' final mode: synced paths",
     ),
     (
         "native/receive_tree.rs",
@@ -87,8 +87,14 @@ pub(super) const NATIVE: &[(&str, &str, usize, &str)] = &[
     (
         "native/backup.rs",
         "create_dir_all(",
+        2,
+        "a push run's backup dir, and the directory its dirs note lies in: backup/",
+    ),
+    (
+        "native/backup.rs",
+        "OpenOptions::new(",
         1,
-        "a push run's backup dir: backup/",
+        "a run's dirs note, appended to: backup/",
     ),
     (
         "native/backup.rs",

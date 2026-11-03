@@ -8,6 +8,7 @@ fn run(changes: &[&str], backed: &[&str], absent: &[&str], reported: bool) -> Ru
         started_at: 1,
         backed_up: s(backed),
         absent: s(absent),
+        dirs: vec![],
         changes: s(changes),
         reported,
     }
@@ -201,4 +202,80 @@ fn record_run_refuses_a_change_outside_the_unit() {
     let p: Push = pushes(&bed.home_dirs.state()).get(id).unwrap().unwrap();
     assert_eq!(p.runs[0].changes, ok);
     assert!(p.finished_at.is_some());
+}
+
+fn run_of(changes: &[&str], backed: &[&str]) -> Run {
+    run(changes, backed, &[], true)
+}
+
+#[test]
+fn undo_of_a_kind_change_deletes_the_new_kind_and_restores_the_old() {
+    let mut p = push_of(&[]);
+    p.runs = vec![run_of(
+        &["- a/", "+ a", "- a/x", "- f", "+ f/", "+ f/y"],
+        &["a/x", "f"],
+    )];
+    let u = undo(&p);
+    assert_eq!(
+        u.delete,
+        [
+            ("a".to_string(), false),
+            ("f".to_string(), true),
+            ("f/y".to_string(), false),
+        ]
+    );
+    assert_eq!(u.restore, [vec!["a/x".to_string(), "f".to_string()]]);
+    assert!(u.unbacked.is_empty());
+}
+
+#[test]
+fn undo_across_runs_goes_by_the_first_but_clears_what_a_later_run_made() {
+    let mut p = push_of(&[]);
+    // Run 1 replaced `f`; run 2 made it a directory. Run 1 made `n`; run 2
+    // replaced it, keeping run 1's copy, which is no one's original.
+    p.runs = vec![
+        run_of(&["~ f", "+ n"], &["f"]),
+        run_of(&["- f", "+ f/", "~ n"], &["f", "n"]),
+    ];
+    let u = undo(&p);
+    assert_eq!(
+        u.delete,
+        [("f".to_string(), true), ("n".to_string(), false)]
+    );
+    assert_eq!(u.restore, [vec!["f".to_string()], vec![]]);
+}
+
+#[test]
+fn undo_takes_directories_from_what_the_run_noted_first() {
+    use crate::native::backup::DirWas;
+    let d = |rel: &str, mode| DirWas {
+        rel: rel.into(),
+        mode,
+    };
+    let mut p = push_of(&[]);
+    p.runs = vec![
+        run_of(&["- gone/", "a modes/", "+ made/"], &[]),
+        run_of(&[], &[]),
+    ];
+    p.runs[0].dirs = vec![
+        d("gone", Some(0o700)),
+        d("modes", Some(0o750)),
+        d("made", None),
+    ];
+    p.runs[1].dirs = vec![
+        d("gone", None),
+        d("made", Some(0o777)),
+        d("late", None),
+        d("../out", None),
+    ];
+    let u = undo(&p);
+    assert_eq!(
+        u.dirs,
+        [("gone".to_string(), 0o700), ("modes".to_string(), 0o750)]
+    );
+    assert_eq!(
+        u.delete,
+        [("late".to_string(), true), ("made".to_string(), true)],
+        "and nothing outside the unit"
+    );
 }

@@ -7,10 +7,18 @@
 //!
 //! A path already kept in this run is not kept again: the run's copy is
 //! the one from before the run touched it, which is what rollback needs.
+//!
+//! Directories are not kept, since nothing in one is lost by removing it once
+//! it is empty; but what they were is what a rollback must put back. Each one
+//! a run removes, creates or changes the mode of is noted first, one line in
+//! `run-<n>.dirs` beside the run's directory ([`Backup::note_dir`]): a record
+//! that, like the directory, survives a leaf dying before it reports.
 
 use crate::{Error, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::{self, BufRead as _, Write as _};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -20,6 +28,36 @@ pub type Rename = fn(&Path, &Path) -> io::Result<()>;
 
 fn rename(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
+}
+
+/// What a directory was before a run first touched it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirWas {
+    #[serde(rename = "p")]
+    pub rel: String,
+    /// Its permission bits; `None`: it did not exist, the run made it.
+    #[serde(rename = "m")]
+    pub mode: Option<u32>,
+}
+
+/// What the run at `run_dir` noted, each directory's first line only: that is
+/// what it was before the run. A line a dying process tore is not one.
+pub fn dirs_noted(run_dir: &Path) -> Result<Vec<DirWas>> {
+    let file = match fs::File::open(run_dir.with_extension("dirs")) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e.into()),
+    };
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for line in io::BufReader::new(file).lines() {
+        if let Ok(d) = serde_json::from_str::<DirWas>(&line?)
+            && seen.insert(d.rel.clone())
+        {
+            out.push(d);
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +77,25 @@ impl Backup {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Note what directory `rel` was, before it is removed, made or changed.
+    pub fn note_dir(&self, rel: &str, mode: Option<u32>) -> Result<()> {
+        let mut line = serde_json::to_vec(&DirWas {
+            rel: rel.to_string(),
+            mode,
+        })
+        .map_err(|e| Error::Transfer(format!("encode: {e}")))?;
+        line.push(b'\n');
+        if let Some(parent) = self.dir.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(self.dir.with_extension("dirs"))?;
+        f.write_all(&line)?;
+        Ok(())
     }
 
     /// Move `abs` (the unit-relative `rel`, a file, link or directory) out of

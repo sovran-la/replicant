@@ -289,3 +289,36 @@ fn a_name_too_long_for_its_temporary_still_arrives() {
     rx.file(&file(&name, 1, 1, 0o644), b"x").unwrap();
     assert_eq!(names(t.path()), [name]);
 }
+
+/// The review's m1 (p15): a read-only target directory whose source is
+/// writable is filled, not refused forever.
+#[test]
+fn an_existing_read_only_directory_is_opened_to_be_filled() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path();
+    std::fs::create_dir(root.join("ro")).unwrap();
+    fs::set_permissions(root.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+    let rx = Receiver::open(root, false, None, None).unwrap();
+    let e = Entry {
+        rel: "ro".into(),
+        kind: EntryKind::Dir,
+        size: 0,
+        mtime_ns: 0,
+        mode: 0o755,
+        link: None,
+    };
+    rx.mkdir(&e).unwrap();
+    let f = Entry {
+        rel: "ro/f".into(),
+        kind: EntryKind::File,
+        size: 1,
+        mtime_ns: 1,
+        mode: 0o644,
+        link: None,
+    };
+    rx.file(&f, b"x").unwrap();
+    rx.dir_modes(std::slice::from_ref(&e)).unwrap();
+    let m = fs::metadata(root.join("ro")).unwrap();
+    assert_eq!(m.permissions().mode() & 0o7777, 0o755);
+    assert_eq!(fs::read(root.join("ro/f")).unwrap(), b"x");
+}

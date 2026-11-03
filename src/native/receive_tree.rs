@@ -3,13 +3,17 @@
 //! durable.
 
 use super::{Receiver, bad};
-use crate::Result;
 use crate::native::is_temp;
 use crate::native::manifest::{Entry, EntryKind};
+use crate::{Error, Result};
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+
+fn mode_of(m: &fs::Metadata) -> u32 {
+    m.permissions().mode() & 0o7777
+}
 
 impl Receiver<'_> {
     /// Remove what a dead transfer left: temporary names only.
@@ -36,6 +40,9 @@ impl Receiver<'_> {
         if kind == EntryKind::Dir {
             self.guard(&abs, rel)?;
             self.delete(under)?;
+            if let Ok(m) = fs::symlink_metadata(&abs) {
+                self.note_dir(rel, Some(mode_of(&m)))?;
+            }
             return match fs::remove_dir(&abs) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -56,15 +63,25 @@ impl Receiver<'_> {
         }
     }
 
-    /// Make sure directory `e` exists. Its mode is set by [`Self::dir_modes`].
+    /// Make sure directory `e` exists and can be filled: a new one, or one
+    /// already there, is owner-writable until [`Self::dir_modes`] sets its
+    /// final mode.
     pub fn mkdir(&self, e: &Entry) -> Result<()> {
         let abs = self.path(&e.rel, true)?;
+        let writable = fs::Permissions::from_mode((e.mode & 0o7777) | 0o700);
         match fs::symlink_metadata(&abs) {
-            Ok(m) if m.is_dir() => Ok(()),
+            Ok(m) if m.is_dir() => {
+                if mode_of(&m) != writable.mode() {
+                    self.note_dir(&e.rel, Some(mode_of(&m)))?;
+                    fs::set_permissions(&abs, writable)?;
+                }
+                Ok(())
+            }
             Ok(_) => Err(bad(&e.rel, "is not a directory, and was not replaced")),
             Err(_) => {
+                self.note_dir(&e.rel, None)?;
                 fs::create_dir(&abs)?;
-                fs::set_permissions(&abs, fs::Permissions::from_mode((e.mode & 0o7777) | 0o700))?;
+                fs::set_permissions(&abs, writable)?;
                 self.touch(&abs);
                 Ok(())
             }
@@ -77,6 +94,11 @@ impl Receiver<'_> {
         dirs.sort_by(|a, b| b.rel.cmp(&a.rel));
         for e in dirs {
             let abs = self.path(&e.rel, true)?;
+            if let Ok(m) = fs::symlink_metadata(&abs)
+                && mode_of(&m) != e.mode & 0o7777
+            {
+                self.note_dir(&e.rel, Some(mode_of(&m)))?;
+            }
             fs::set_permissions(&abs, fs::Permissions::from_mode(e.mode & 0o7777))?;
         }
         Ok(())
@@ -100,10 +122,14 @@ impl Receiver<'_> {
             self.guard(&abs, rel)?;
             match fs::symlink_metadata(&abs) {
                 Err(_) => {}
-                Ok(m) if m.is_dir() => match fs::remove_dir(&abs) {
+                Ok(m) if m.is_dir() => match self
+                    .note_dir(rel, Some(mode_of(&m)))
+                    .and_then(|()| Ok(fs::remove_dir(&abs)?))
+                {
                     Ok(()) => self.touch(&abs),
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                    Err(_) => kept.push(rel.clone()),
+                    Err(Error::Io(e)) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(Error::Io(_)) => kept.push(rel.clone()),
+                    Err(e) => return Err(e),
                 },
                 Ok(_) => {
                     self.displace(&abs, rel)?;

@@ -5,6 +5,7 @@
 use super::*;
 use crate::native::tests_fixture::{Fault, Faulty, Fx, manifest, run, tree};
 use crate::testutil::{fingerprint, write};
+use std::os::unix::fs::PermissionsExt;
 
 type Files = Vec<(String, (Vec<u8>, u32, std::time::SystemTime))>;
 
@@ -46,10 +47,43 @@ fn diverge(fx: &Fx) {
     write(&fx.leaf().join("only-leaf.txt"), "created by the push");
 }
 
+/// What the push does to directories, as the review's p10-p14 had them, and
+/// a mode change on a directory a restored file goes back into.
+fn diverge_dirs(fx: &Fx) {
+    let chmod = |p: &std::path::Path, m| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap()
+    };
+    let (h, l) = (fx.home_work(), fx.leaf());
+    // p10: directory to file.
+    write(&h.join("dir-to-file/b/x"), "home's");
+    chmod(&h.join("dir-to-file/b"), 0o750);
+    write(&l.join("dir-to-file"), "a file now");
+    // p11: file to directory.
+    write(&h.join("file-to-dir"), "home's");
+    write(&l.join("file-to-dir/b/x"), "a directory now");
+    // p12: a private directory, deleted with its file.
+    write(&h.join("priv/secret"), "home's");
+    chmod(&h.join("priv"), 0o700);
+    // p13: an empty directory, deleted.
+    std::fs::create_dir_all(h.join("empty-gone/inner")).unwrap();
+    // p14: only the mode changes.
+    write(&h.join("modes/same"), "same");
+    write(&l.join("modes/same"), "same");
+    crate::native::manifest::tests::set_mtime(&h.join("modes/same"), 1_650_000_000, 7);
+    crate::native::manifest::tests::set_mtime(&l.join("modes/same"), 1_650_000_000, 7);
+    chmod(&h.join("modes"), 0o700);
+    chmod(&l.join("modes"), 0o755);
+    // Pushed read-only, with its file replaced: the file must get back in.
+    write(&h.join("ro/f"), "home's");
+    write(&l.join("ro/f"), "the leaf's");
+    chmod(&l.join("ro"), 0o555);
+}
+
 #[test]
 fn a_native_push_rolled_back_puts_home_back_exactly() {
     let fx = Fx::new();
     diverge(&fx);
+    diverge_dirs(&fx);
     let (before, before_m) = (print(&fx.home_work()), manifest(&fx.home_work()));
     let lease = fx.lease();
     let id = fx.begin_push(lease);
@@ -92,8 +126,37 @@ fn a_native_push_rolled_back_puts_home_back_exactly() {
     assert_eq!(
         manifest(&fx.home_work()),
         before_m,
-        "links and nanoseconds too"
+        "links, nanoseconds and directories' modes too"
     );
+    // The tempdir cleans up after a read-only directory only if it can.
+    std::fs::set_permissions(fx.leaf().join("ro"), std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_run_that_never_reported_still_gets_its_directories_back() {
+    let fx = Fx::new();
+    let chmod = |p: &std::path::Path, m| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap()
+    };
+    let (h, l) = (fx.home_work(), fx.leaf());
+    write(&h.join("kind/b/x"), "home's");
+    chmod(&h.join("kind/b"), 0o750);
+    write(&l.join("kind"), "a file now");
+    std::fs::create_dir_all(h.join("priv")).unwrap();
+    chmod(&h.join("priv"), 0o700);
+    std::fs::create_dir_all(l.join("made-by-the-run/inner")).unwrap();
+    let before = manifest(&h);
+    let lease = fx.lease();
+    let id = fx.begin_push(lease);
+    let t = fx.transfer(Direction::Push);
+    let ack = Duration::from_secs(20);
+    let (_, ran, _) = run(&fx.link(), &t, lease, 1, &Abort::default(), ack);
+    assert!(ran.ok(), "{ran:?}");
+    // No Settle: the leaf died before it said what it did.
+    fx.release(lease);
+    let r = fx.home.rollback(&id).unwrap();
+    assert_eq!(r.unreported, [1], "{r:?}");
+    assert_eq!(manifest(&fx.home_work()), before);
 }
 
 #[test]

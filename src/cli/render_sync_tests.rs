@@ -192,6 +192,7 @@ fn pushes_list_their_state_and_backups() {
         runs: vec![Run {
             started_at: 100,
             backed_up: vec!["a".into(), "b".into()],
+            dirs: vec![],
             absent: vec![],
             changes: vec![],
             reported: true,

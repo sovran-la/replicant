@@ -58,3 +58,77 @@ fn a_single_file_units_backup_is_kept_under_its_name() {
         "old"
     );
 }
+
+#[test]
+fn every_directory_a_run_changes_is_noted_before_it_does() {
+    use crate::native::backup::{DirWas, dirs_noted};
+    use crate::native::manifest::{Entry, EntryKind};
+    use std::os::unix::fs::PermissionsExt;
+    let t = tempfile::tempdir().unwrap();
+    let (root, run) = (t.path().join("unit"), t.path().join("backup/run-1"));
+    let dir = |rel: &str, mode| Entry {
+        rel: rel.into(),
+        kind: EntryKind::Dir,
+        size: 0,
+        mtime_ns: 0,
+        mode,
+        link: None,
+    };
+    let chmod = |p: &str, m| {
+        std::fs::set_permissions(root.join(p), std::fs::Permissions::from_mode(m)).unwrap()
+    };
+    write(&root.join("gone/x"), "x");
+    chmod("gone", 0o700);
+    std::fs::create_dir(root.join("empties")).unwrap();
+    chmod("empties", 0o750);
+    std::fs::create_dir(root.join("opened")).unwrap();
+    chmod("opened", 0o555);
+    std::fs::create_dir(root.join("same")).unwrap();
+    chmod("same", 0o755);
+    write(&root.join("holds/.env"), "kept");
+    chmod("holds", 0o711);
+    let rx = Receiver::open(&root, false, None, Some(Backup::new(run.clone()))).unwrap();
+    rx.delete(&[("gone/x".to_string(), false), ("gone".to_string(), true)])
+        .unwrap();
+    rx.replace("empties", EntryKind::Dir, &[]).unwrap();
+    rx.mkdir(&dir("opened", 0o755)).unwrap();
+    rx.mkdir(&dir("made", 0o500)).unwrap();
+    rx.dir_modes(&[dir("same", 0o755), dir("made", 0o500), dir("opened", 0o555)])
+        .unwrap();
+    let kept = rx.delete(&[("holds".to_string(), true)]).unwrap();
+    assert_eq!(
+        kept,
+        ["holds"],
+        "still holding a path the unit does not sync"
+    );
+    chmod("made", 0o755);
+    let m = |rel: &str, mode| DirWas {
+        rel: rel.into(),
+        mode,
+    };
+    assert_eq!(
+        dirs_noted(&run).unwrap(),
+        [
+            m("gone", Some(0o700)),
+            m("empties", Some(0o750)),
+            m("opened", Some(0o555)),
+            m("made", None),
+            m("holds", Some(0o711)),
+        ],
+        "the first line of each; `same` did not change"
+    );
+}
+
+#[test]
+fn a_leaf_keeps_no_notes() {
+    let t = tempfile::tempdir().unwrap();
+    write(&t.path().join("unit/d/x"), "x");
+    let rx = Receiver::open(&t.path().join("unit"), false, None, None).unwrap();
+    rx.delete(&[("d/x".to_string(), false), ("d".to_string(), true)])
+        .unwrap();
+    assert_eq!(
+        std::fs::read_dir(t.path()).unwrap().count(),
+        1,
+        "just the unit"
+    );
+}
