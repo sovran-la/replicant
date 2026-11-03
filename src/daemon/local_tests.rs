@@ -188,3 +188,6 @@ fn another_version_is_refused_by_name() {
         .to_string();
     assert!(err.contains("wire version 5 and this daemon 6"), "{err}");
 }
+
+#[path = "local_watch_tests.rs"]
+mod watch;

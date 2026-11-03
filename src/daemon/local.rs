@@ -19,8 +19,8 @@ use crate::abort::Abort;
 use crate::config::Dirs;
 use crate::plan::apply::{Progress, ProgressEvent};
 use crate::{Error, Result};
-use std::io::{BufRead, BufReader, ErrorKind, Read};
-use std::net::Shutdown;
+use std::io::{self, BufRead, BufReader, ErrorKind, PipeReader};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -28,8 +28,8 @@ use std::time::Duration;
 /// Why a request was stopped when the CLI went away.
 pub const HANGUP: &str = "the CLI hung up (Ctrl-C, or it was killed)";
 
-/// How often the watch on the CLI's end looks up to see whether the request
-/// is over (it is normally woken at once instead).
+/// The longest the watch on the CLI's end sleeps before looking up to see
+/// whether the request is over (it is normally woken at once instead).
 const WATCH_POLL: Duration = Duration::from_millis(250);
 
 /// Send one request to this machine's daemon.
@@ -101,40 +101,84 @@ fn watched<T>(s: &UnixStream, f: impl FnOnce(&Progress<'_>) -> T) -> T {
             abort.raise_because(HANGUP);
         }
     };
+    // Out of descriptors, there is no pipe: the watch still ends, within
+    // WATCH_POLL.
+    let (woken, wake) = io::pipe().ok().unzip();
     std::thread::scope(|scope| {
-        scope.spawn(|| watch_hangup(s, &over, &abort));
+        scope.spawn(|| watch_hangup(s, woken.as_ref(), &over, &abort));
         let out = f(&Progress::new(&emit, abort.clone()));
         over.store(true, Ordering::SeqCst);
-        // Wakes the watch's read; the answer still goes out.
-        let _ = s.shutdown(Shutdown::Read);
+        // Closing the writer wakes the watch; so does `f` panicking, which
+        // drops it too. The socket is untouched, and the answer still goes out.
+        drop(wake);
         out
     })
 }
 
-/// Read the CLI's end, which sends nothing after its request, until the
+/// Watch the CLI's end, which sends nothing after its request, until the
 /// request is `over` or the CLI hangs up.
-fn watch_hangup(s: &UnixStream, over: &AtomicBool, abort: &Abort) {
-    // Only a fallback for the wake below; it fails on a socket whose peer
-    // is already gone, and the read then says so at once.
-    let _ = s.set_read_timeout(Some(WATCH_POLL));
-    let mut r = s;
-    let mut buf = [0u8; 64];
+///
+/// Never a blocking read with a timeout, woken by `shutdown`: on macOS such
+/// a read on a Unix socket can stay blocked forever, if the `shutdown` lands
+/// as the timeout expires, and `shutdown` fails once the peer has closed.
+fn watch_hangup(s: &UnixStream, woken: Option<&PipeReader>, over: &AtomicBool, abort: &Abort) {
+    let entry = |fd| libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let mut fds = [
+        entry(s.as_raw_fd()),
+        entry(woken.map_or(-1, |w| w.as_raw_fd())),
+    ];
+    let watching = 1 + libc::nfds_t::from(woken.is_some());
     while !over.load(Ordering::SeqCst) {
-        let gone = match r.read(&mut buf) {
-            Ok(0) => true,
-            // Nothing is expected; something is not a hangup.
-            Ok(_) => false,
-            Err(e) => !matches!(
-                e.kind(),
-                ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-            ),
-        };
-        if gone {
+        // SAFETY: `fds` is live, and holds at least `watching` entries.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), watching, WATCH_POLL.as_millis() as _) };
+        if ready < 0 {
+            // Not word of the CLI. Out of kernel memory, say: look again.
+            if io::Error::last_os_error().kind() != ErrorKind::Interrupted {
+                std::thread::sleep(WATCH_POLL);
+            }
+        } else if fds[1].revents != 0 {
+            return;
+        } else if hung_up(s, fds[0].revents) {
             if !over.load(Ordering::SeqCst) {
                 abort.raise_because(HANGUP);
             }
             return;
         }
+    }
+}
+
+/// Whether `revents`, what `poll` said of the CLI's end, means it has gone.
+fn hung_up(s: &UnixStream, revents: libc::c_short) -> bool {
+    if revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+        return true;
+    }
+    if revents & libc::POLLIN == 0 {
+        return revents & libc::POLLHUP != 0;
+    }
+    // Per call, not O_NONBLOCK: that would also hold for the frames going out
+    // on this socket. And readable is no promise: this must not block.
+    let mut buf = [0u8; 64];
+    // SAFETY: `buf` is live and `buf.len()` long; `s` is an open socket.
+    let n = unsafe {
+        libc::recv(
+            s.as_raw_fd(),
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            libc::MSG_DONTWAIT,
+        )
+    };
+    match n {
+        0 => true,
+        // Nothing is expected; something is not a hangup.
+        1.. => false,
+        _ => !matches!(
+            io::Error::last_os_error().kind(),
+            ErrorKind::WouldBlock | ErrorKind::Interrupted
+        ),
     }
 }
 
