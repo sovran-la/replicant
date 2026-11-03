@@ -130,6 +130,9 @@ fn the_check_sees_a_write_it_was_not_told_about() {
         ("unsafe { libc::symlink(a, b) }", "libc::symlink("),
         ("unsafe { libc::chmod(p, m) }", "libc::chmod("),
         ("unsafe { libc::rmdir(p) }", "libc::rmdir("),
+        ("f.set_times(times)", "set_times("),
+        ("unsafe { libc::utimensat(d, p, t, f) }", "libc::utimensat("),
+        ("unsafe { libc::futimens(fd, t) }", "libc::futimens("),
     ] {
         assert_eq!(
             count(&format!("fn f() {{ {call}; }}\n")).get(pat),

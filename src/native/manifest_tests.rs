@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, SystemTime};
 
 pub(crate) fn set_mtime(p: &Path, secs: u64, ns: u32) {
-    let f = fs::File::options().write(true).open(p).unwrap();
+    let f = fs::File::open(p).unwrap();
     f.set_times(
         fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH + Duration::new(secs, ns)),
     )

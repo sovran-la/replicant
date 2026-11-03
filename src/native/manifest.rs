@@ -264,4 +264,4 @@ fn walk_dir(base: &Path, ex: &Excludes) -> Result<Manifest> {
 
 #[cfg(test)]
 #[path = "manifest_tests.rs"]
-mod tests;
+pub(crate) mod tests;

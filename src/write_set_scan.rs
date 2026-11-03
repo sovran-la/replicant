@@ -28,6 +28,8 @@ pub(super) const PATTERNS: &[&str] = &[
     ".delete(",
     "append_raw(",
     "set_modified(",
+    // A file's times (the native receiver gives each its source's mtime).
+    "set_times(",
     // rsync's entry points (review A4): every run is a potential write.
     // Each in both spellings (re-review R3): `transfer.apply(r)` and
     // `Transfer::apply(&transfer, r)`; `runner.run(a)` and
@@ -61,6 +63,9 @@ pub(super) const PATTERNS: &[&str] = &[
     "libc::truncate(",
     "libc::ftruncate(",
     "libc::write(",
+    "libc::utimensat(",
+    "libc::futimens(",
+    "libc::utimes(",
 ];
 
 pub(super) fn is_test_file(rel: &str) -> bool {

@@ -13,10 +13,12 @@
 //!
 //! [`Itemized`]: crate::changes::Itemized
 
+pub mod backup;
 pub mod conn;
 pub mod diff;
 pub mod frame;
 pub mod manifest;
+pub mod receive;
 pub mod serve;
 pub mod session;
 
