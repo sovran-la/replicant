@@ -60,6 +60,39 @@ fn a_pull_stops_at_leaf_work_made_after_the_plan() {
     stopped_by("work/notes.txt", &hook, &|b: &Bed| b.leaf_hd.join("work"));
 }
 
+/// The failure table's "a push changed since the plan" row: checked against
+/// the mutant with the comparison off, where it comes to `Done`.
+#[test]
+fn a_push_stops_at_leaf_work_made_after_the_plan() {
+    let bed = Bed::enrolled();
+    tree(&bed.home_hd.join("work"));
+    let home = bed.home();
+    assert_eq!(yes(&bed, &home).outcome, Outcome::Done);
+    testutil::next_second();
+    testutil::write(&bed.leaf_hd.join("work/notes.txt"), "pushed\n");
+    let hook = |bed: &Bed| testutil::write(&bed.leaf_hd.join("work/late.txt"), "not planned\n");
+    let before = fingerprint(&bed.home_hd.join("work"));
+    let on = |e: &ProgressEvent, _: &crate::abort::Abort| {
+        if let ProgressEvent::UnitStarted { rel, .. } = e
+            && rel == "work"
+        {
+            hook(&bed);
+        }
+    };
+    let (r, _) = sync_watched(&bed, &home, &on);
+    assert!(
+        matches!(&r.outcome, Outcome::Failed { why, .. } if why.contains("changed since the plan")),
+        "{:?}",
+        r.outcome
+    );
+    assert_eq!(
+        fingerprint(&bed.home_hd.join("work")),
+        before,
+        "nothing written"
+    );
+    assert!(home.pushes().unwrap().is_empty(), "no push begun");
+}
+
 #[test]
 fn a_pull_stops_at_a_home_change_made_after_the_plan() {
     let hook = |bed: &Bed| testutil::write(&bed.home_hd.join("work/late.txt"), "not planned\n");

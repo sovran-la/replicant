@@ -273,6 +273,10 @@ mod tests;
 mod fault_tests;
 
 #[cfg(test)]
+#[path = "transfer_order_tests.rs"]
+mod order_tests;
+
+#[cfg(test)]
 #[path = "transfer_limits_tests.rs"]
 mod limits_tests;
 
