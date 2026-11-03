@@ -133,3 +133,96 @@ fn a_repos_refs_go_in_a_round_after_everything_else() {
         ])]
     );
 }
+
+mod a_pull_takes_only_what_it_asked_for {
+    use super::super::*;
+    use crate::native::tests_fixture::bounded;
+    use crate::testutil::write;
+    use std::path::Path;
+    use std::time::Duration;
+
+    fn file(rel: &str, bytes: &[u8]) -> Entry {
+        Entry {
+            rel: rel.into(),
+            kind: EntryKind::File,
+            size: bytes.len() as u64,
+            mtime_ns: 1,
+            mode: 0o644,
+            link: None,
+        }
+    }
+
+    /// Pull `asked` into `root`, `home` answering the one `Get`; the pull's
+    /// result.
+    fn pull_from(
+        root: &Path,
+        asked: Vec<&str>,
+        home: impl FnOnce(&mut Conn) + Send + 'static,
+    ) -> Result<()> {
+        let (mut leaf, mut far) = Conn::pair().unwrap();
+        let t = std::thread::spawn(move || {
+            far.recv().unwrap().expect(Kind::Get).unwrap();
+            home(&mut far);
+            far
+        });
+        let rx = Receiver::open(root, false, None, None).unwrap();
+        let sh = Shared::new(vec![Item::Batch(
+            asked.into_iter().map(String::from).collect(),
+        )]);
+        let r = pull(&mut leaf, &rx, &sh, &Abort::default());
+        drop(leaf);
+        drop(t.join());
+        r
+    }
+
+    /// p09: home answers `Get ["asked"]` with the leaf's only copy of something.
+    #[test]
+    fn a_batch_entry_not_asked_for_is_refused_and_not_written() {
+        bounded(Duration::from_secs(30), || {
+            let t = tempfile::tempdir().unwrap();
+            write(&t.path().join("leaf-only.txt"), "leaf-only work");
+            let r = pull_from(t.path(), vec!["asked"], |c| {
+                let e = [file("asked", b"a"), file("leaf-only.txt", b"home's")];
+                let _ = c.send(&frame::batch(&e, b"ahome's").unwrap());
+            });
+            let e = r.unwrap_err().to_string();
+            assert!(e.contains("not asked for"), "{e}");
+            let got = std::fs::read(t.path().join("leaf-only.txt")).unwrap();
+            assert_eq!(got, b"leaf-only work");
+            assert!(
+                !t.path().join("asked").exists(),
+                "the batch is refused whole"
+            );
+        });
+    }
+
+    #[test]
+    fn a_large_file_not_asked_for_is_refused_and_not_written() {
+        bounded(Duration::from_secs(30), || {
+            let t = tempfile::tempdir().unwrap();
+            write(&t.path().join("leaf-only.txt"), "leaf-only work");
+            let r = pull_from(t.path(), vec!["asked"], |c| {
+                let f = Frame::json(Kind::FileStart, &file("leaf-only.txt", b"home's")).unwrap();
+                let _ = c.send(&f);
+            });
+            assert!(r.unwrap_err().to_string().contains("not asked for"));
+            let got = std::fs::read(t.path().join("leaf-only.txt")).unwrap();
+            assert_eq!(got, b"leaf-only work");
+        });
+    }
+
+    #[test]
+    fn what_was_asked_for_is_written() {
+        bounded(Duration::from_secs(30), || {
+            let t = tempfile::tempdir().unwrap();
+            let r = pull_from(t.path(), vec!["asked"], |c| {
+                c.send(&frame::batch(&[file("asked", b"a")], b"a").unwrap())
+                    .unwrap();
+                c.recv().unwrap().expect(Kind::Ack).unwrap();
+                c.send(&Frame::new(Kind::Done, vec![])).unwrap();
+            });
+            r.unwrap();
+            assert_eq!(std::fs::read(t.path().join("asked")).unwrap(), b"a");
+        });
+    }
+}

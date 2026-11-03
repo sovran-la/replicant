@@ -215,3 +215,6 @@ fn a_discarded_file_leaves_its_target_as_it_was() {
         "no temporary left"
     );
 }
+
+#[path = "serve_hostile_tests.rs"]
+mod hostile;

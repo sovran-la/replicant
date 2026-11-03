@@ -94,9 +94,12 @@ impl Receiver<'_> {
         dirs.sort_by(|a, b| b.rel.cmp(&a.rel));
         for e in dirs {
             let abs = self.path(&e.rel, true)?;
-            if let Ok(m) = fs::symlink_metadata(&abs)
-                && mode_of(&m) != e.mode & 0o7777
-            {
+            // set_permissions follows a link: only a real directory gets here.
+            let m = fs::symlink_metadata(&abs).map_err(|why| bad(&e.rel, why))?;
+            if !m.is_dir() {
+                return Err(bad(&e.rel, "is not a directory; no mode was set"));
+            }
+            if mode_of(&m) != e.mode & 0o7777 {
                 self.note_dir(&e.rel, Some(mode_of(&m)))?;
             }
             fs::set_permissions(&abs, fs::Permissions::from_mode(e.mode & 0o7777))?;

@@ -13,6 +13,7 @@ use super::source::Source;
 use super::{BATCH_BYTES, SMALL};
 use crate::abort::Abort;
 use crate::{Error, Result};
+use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -178,6 +179,16 @@ pub fn pull(conn: &mut Conn, rx: &Receiver<'_>, sh: &Shared, abort: &Abort) -> R
             Item::Batch(rels) => rels,
             Item::Big(rel) => vec![rel],
         };
+        // What was asked for, and nothing else: a path home answers with
+        // that the diff did not list could be leaf-only work.
+        let wanted: HashSet<&str> = asked.iter().map(String::as_str).collect();
+        let check = |e: &Entry| match wanted.contains(e.rel.as_str()) {
+            true => Ok(()),
+            false => Err(Error::Transfer(format!(
+                "home sent {:?}, which was not asked for; nothing of it was written",
+                e.rel
+            ))),
+        };
         conn.send(&Frame::json(Kind::Get, &asked)?)?;
         let mut got: Vec<Entry> = Vec::new();
         let mut open: Option<(Entry, Incoming<'_, '_>)> = None;
@@ -188,6 +199,7 @@ pub fn pull(conn: &mut Conn, rx: &Receiver<'_>, sh: &Shared, abort: &Abort) -> R
                 Kind::Done => break,
                 Kind::Batch => {
                     let (entries, bytes) = frame::unbatch(&f)?;
+                    entries.iter().try_for_each(&check)?;
                     let mut at = 0usize;
                     for e in entries {
                         match e.kind {
@@ -203,6 +215,7 @@ pub fn pull(conn: &mut Conn, rx: &Receiver<'_>, sh: &Shared, abort: &Abort) -> R
                 }
                 Kind::FileStart => {
                     let e: Entry = f.parse()?;
+                    check(&e)?;
                     let inc = rx.begin(&e)?;
                     open = Some((e, inc));
                 }

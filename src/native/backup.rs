@@ -98,9 +98,27 @@ impl Backup {
         Ok(())
     }
 
+    /// Nothing between the run's directory and `rel` is a file or link: the
+    /// run keeps links as links, and one must never be followed out of here.
+    fn real_parents(&self, rel: &str) -> Result<()> {
+        let mut d = self.dir.clone();
+        let comps: Vec<&str> = rel.split('/').collect();
+        for c in &comps[..comps.len() - 1] {
+            d.push(c);
+            if fs::symlink_metadata(&d).is_ok_and(|m| !m.is_dir()) {
+                return Err(Error::Transfer(format!(
+                    "could not back up {rel}: {c} is already kept in this run as something that \
+                     is not a directory"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Move `abs` (the unit-relative `rel`, a file, link or directory) out of
     /// the way into the backup.
     pub fn keep(&self, abs: &Path, rel: &str) -> Result<()> {
+        self.real_parents(rel)?;
         let dest = self.dir.join(rel);
         if fs::symlink_metadata(&dest).is_ok() {
             // Kept earlier in this run: that copy is the original.

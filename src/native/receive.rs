@@ -37,9 +37,7 @@ pub struct Receiver<'a> {
     backup: Option<Backup>,
     /// The target as the diff saw it, if this receiver is held to it.
     expect: Option<&'a Manifest>,
-    /// Directories already checked to be real, and those written into
-    /// (fsynced at the end).
-    real: Mutex<HashSet<PathBuf>>,
+    /// Directories written into (fsynced at the end).
     touched: Mutex<HashSet<PathBuf>>,
 }
 
@@ -74,7 +72,6 @@ impl<'a> Receiver<'a> {
             policy,
             backup,
             expect: None,
-            real: Mutex::default(),
             touched: Mutex::default(),
         })
     }
@@ -127,12 +124,11 @@ impl<'a> Receiver<'a> {
     }
 
     /// `dir` and every directory between it and the root are directories,
-    /// not links to one.
+    /// not links to one. Looked at every time: what was a directory a moment
+    /// ago may be a link now, by a frame or by anyone else on this machine.
     fn real_dir(&self, dir: &Path) -> Result<()> {
-        let mut real = self.real.lock().unwrap_or_else(|e| e.into_inner());
         let mut d = dir;
-        let mut new = Vec::new();
-        while d != self.root && !real.contains(d) {
+        while d != self.root {
             let m = fs::symlink_metadata(d).map_err(|e| {
                 Error::Transfer(format!("{} cannot be written into: {e}", d.display()))
             })?;
@@ -142,7 +138,6 @@ impl<'a> Receiver<'a> {
                     d.display()
                 )));
             }
-            new.push(d.to_path_buf());
             d = match d.parent() {
                 Some(p) if p.starts_with(&self.root) => p,
                 _ => {
@@ -153,7 +148,6 @@ impl<'a> Receiver<'a> {
                 }
             };
         }
-        real.extend(new);
         Ok(())
     }
 
