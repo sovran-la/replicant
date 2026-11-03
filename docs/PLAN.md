@@ -8,6 +8,7 @@ rev 9 2026-11-02 (apply review fixed: a marker resumes only its own unit; a resu
 rev 10 2026-11-02 (sync shows each unit as it applies, with its time and the total; Ctrl-C at the CLI stops the running rsync, leaving its unit interrupted with its marker).
 rev 11 2026-11-02 (a confirmed plan is what each unit will do and what it would delete, not the bytes it carries: an edit or a touch between the plan shown and the `y` no longer voids it).
 rev 12 2026-11-03 (rsync removed: the daemons move the bytes over their mTLS link, the native transport; a dry run is the diff of both sides' manifests; home backs up by rename; per-unit progress; `[daemon] streams`. Built on `bsneed/v0.4-native`, release 0.4.0; record: `docs/v0.4-native-notes.md`).
+rev 13 2026-11-03 (the v0.4-native review fixed: every unit diffs again and stops if that is not the plan, a pull too; sockets, FIFOs and devices are skipped on both sides; no frame too large and no panic can wedge a transfer; rollback is a round trip for directories and kind changes; a repo's index goes with its refs; home's `Done` is acked once its names are durable. Known limits restated. Record: "Review fixes" in the notes).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -124,17 +125,28 @@ certificates and pins as the control plane; there is no ssh. Per unit:
   8 in flight per connection. A side that waits longer than the ack timeout
   (60 s, carried in `Hello`) for an ack or a frame calls the connection dead,
   and the unit ends `Interrupted` (marker kept, no baseline, journaled), as a
-  failed rsync did. Home checks before every frame that the lease is still
-  the head of its queue. An abort (a lost lease, the CLI gone) shuts every
-  connection at once.
+  failed rsync did. Home checks that the lease is still the head of its queue
+  before every frame of a push, and before every `Get` of a pull (a pull's
+  reads harm nothing). An abort (a lost lease, the CLI gone) shuts every
+  connection at once, and no failure, a panic included, leaves a transfer
+  waiting on anything but a timeout.
 - **Writes.** Small files (< 64 KiB) travel many to a frame, larger ones in
   1 MiB chunks, one file per worker (never split). The receiver writes
   `.replicant-tmp-<name>` in the file's directory, gives it the source's
   mode and mtime, fsyncs it and renames it over the target: a target file is
   never torn. Order per unit: kind changes and directories first, files (a
-  repo's refs last), and only once every file arrived the deletions and the
-  directories' final modes. Then the leaf diffs both sides again: nothing
-  may differ but directories still holding what the unit does not sync.
+  repo's refs and index last), and only once every file arrived the deletions
+  and the directories' final modes. Long lists go in several frames. On a push
+  the leaf then waits for home's ack of its `Done`, sent once the names are
+  fsynced. Then the leaf diffs both sides again: nothing may differ but
+  directories still holding what the unit does not sync.
+- **Fresh diff, either way** (rev 13). Before anything of a unit is written, its
+  marker included, it diffs again and stops ("it changed since the plan was
+  made") if that is not the plan: minutes can pass between the plan and a unit's
+  turn, and on a pull a leaf has no backup. A pull's receiver also lstats each
+  path against that diff right before it overwrites or deletes it, and fails
+  the unit if the path moved. What remains is the moment between that lstat and
+  the write. A push's receiver is on home and backs up what it replaces.
 
 ### One command
 
@@ -597,8 +609,8 @@ a leaf that dies while waiting holds its place for up to the full lease
 ## Interrupted sync
 
 A transfer can die at 60%. Single files are never torn (the receiver writes
-a temporary name and renames), and a repo's refs go last, after its
-objects, but the *set* is incomplete. So:
+a temporary name and renames), and a repo's refs and index go last, after its
+objects and worktree, but the *set* is incomplete. So:
 
 - Before the transfer starts, the target side writes an **in-progress marker**
   for the path (direction, source host, source state, started-at).
@@ -648,12 +660,14 @@ resume until `--confirm-delete` (rev 9).
 
 Push and local agents are the only things that write home, so a bad push
 is the one way to damage the backup from outside. As a push replaces or
-deletes a path on home, home *renames* what was there into
-`~/.sovran/replicant/backup/<host>/<YYYYMMDDTHHMMSSZ>/run-<n>/` (rev 12; a
-copy and a delete when the backup is on another filesystem) and keeps a
-manifest of the push (`state/pushes/`). The run's directory is the record
-of what it kept, so a run whose leaf died before reporting can still be
-rolled back. `replicant rollback <push-id>` undoes
+deletes a path on home, what was there goes into
+`~/.sovran/replicant/backup/<host>/<YYYYMMDDTHHMMSSZ>/run-<n>/` (rev 12): a
+deleted path by rename, a replaced one by a hard link until the rename takes
+its name (rev 13; a whole copy when the backup is on another filesystem), and
+home keeps a manifest of the push (`state/pushes/`). The run's directory, and
+`run-<n>.dirs` beside it for what each directory was (rev 13), are the record of
+what it kept, so a run whose leaf died before reporting can still be rolled
+back. `replicant rollback <push-id>` undoes
 one push; backups older than `[daemon] backup_days` (default 14) are swept
 daily, except a push whose marker is still open. A bad push is recoverable
 and the backup role of thistledown survives replicant.
@@ -907,30 +921,68 @@ Home logs per-snapshot timing — discover and unit phases, worker count, and
 its five slowest units — so the next regression names itself (decided
 2026-11-01). Discovery is going parallel (in flight).
 
-## Known limits (rev 12)
+## Known limits (rev 13)
 
 - **Sockets, FIFOs and devices** are never listed, opened, sent or deleted, on
   either side: they count in the unit's notes (`--verbose`). A file whose name
   one holds on the target fails its unit, saying so; nothing replaces one.
+- **`.replicant-tmp-*` is a reserved name.** A real file so named on a target is
+  taken for a dead transfer's temporary: never listed, never sent, and removed
+  at the next transfer of its unit, without a backup.
 - **Hardlinks** arrive as independent files; **xattrs, ACLs and file flags**
   are not carried. Neither is in the state hash.
 - **Directories' mtimes** are not kept (they are not state either); their
   modes are.
 - **A symlink's own mode** is never compared or set (macOS keeps one, Linux
   has 0777): a link changes only by its target.
-- **Case-insensitive targets:** guardrail 4 refuses a pull of names that
-  differ only by case into a macOS leaf, as before. NFC/NFD pairs (F7) are
-  still not checked.
+- **Case-insensitive targets:** guardrail 4 refuses a pull of names that differ
+  only by case into a macOS leaf, as before. NFC/NFD pairs (F7) are still not
+  checked. **A case-only rename** (home `foo.txt`, leaf `FOO.txt`) is not
+  caught, since the guardrail sees home's names only, and takes three syncs to
+  settle on such a leaf: the first stops at a deletion that would take what just
+  arrived, the second lets it (both spellings then match) and the third sends
+  the file under its new name. Home's copy is never at risk, and the leaf's old
+  copy was the plan's to replace. Documented, not fixed (review m3); a directory
+  rename whose old directory holds an excluded path may never settle (inspection,
+  not run).
+- **Names and link targets that are not UTF-8:** a name is skipped silently,
+  subtree included, as discovery does; a link's target is carried lossily and
+  both sides then compare equal, so verification passes while the link differs.
+  Documented, not fixed (review m4).
+- **The ack timeout also times the work.** A frame is acked after its work is
+  done, so one taking over 60 s (a large file's fsync, an `EXDEV` copy, a frame
+  of deletions on a slow disk) reads as a dead peer, and can do so every run;
+  home keeps writing until that frame ends. Lists are split at about 1 MiB,
+  which narrows it. Documented, not fixed (review m8).
 - **A `.git` without `HEAD` is not a repo** (rev 12): what an interrupted pull
   of a new repo leaves is plain content until its refs arrive (last).
-- **Durability:** each file is `fsync(2)`ed before its rename and each
-  directory renamed into is fsynced at the end of the unit; on macOS that is
-  not `F_FULLFSYNC` (a drive-cache flush), which cost 4 ms a file.
+- **Durability:** each file is `fsync(2)`ed before its rename, each directory
+  renamed into (or removed from) is fsynced at the end of the unit, and a push
+  waits for that. So, as far as it goes:
+  - *Process death, any platform:* a final name is the old file or the whole new
+    one, never torn, and absent only where a kind change was under way (the old
+    kind goes first; on home it is in the backup). A temporary is cleaned next
+    run.
+  - *Power loss on Linux, or a kernel panic on either:* the bytes of a renamed
+    file are durable.
+  - *Power loss on macOS:* `fsync(2)` is not `F_FULLFSYNC` (a drive-cache flush,
+    4 ms a file), so a file can survive under its final name with the right size
+    and mtime and **wrong bytes**, and nothing will ever look: the diff and the
+    hash read metadata. Accepted for 0.4: the macOS side is a laptop with a
+    battery, home is Linux, and rsync never fsynced at all. One `F_FULLFSYNC` per
+    unit before its baseline would close it at about 4 ms a unit; not done.
 - **No deltas:** a changed file is sent whole; a file is never split across
   connections, so one large file uses one stream.
 - **A file changing while it is read** is not installed; the unit's
   verification then fails it (`Interrupted`) and the next sync sends it
-  again. A live tree can do this every time, as rsync's exit 24 could (N4).
+  again. A live tree can do this every time, as rsync's exit 24 could (N4). A
+  small file grown past 64 KiB since the diff is the same case.
+- **The window on a pull:** between a path's last lstat and its write, a change
+  is still overwritten. On a push, home's receiver is not held to a manifest at
+  all, since whatever it replaces is in the backup.
+- **A rollback of a run that never reported** restores what its directory and
+  notes hold; files it created stay, and if it turned a file into a directory,
+  the rollback fails loudly with the original safe in `backup/`.
 
 ## Known data quality issues on home
 
