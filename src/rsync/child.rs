@@ -14,13 +14,12 @@
 //! group id stays reserved while anything is left in it, as the pipe-drain
 //! kill below has always assumed.)
 
+pub use crate::abort::Abort;
 use crate::{Error, Result};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How often the child is checked for exit (and the abort flag read).
@@ -32,41 +31,6 @@ pub(super) const GRACE: Duration = Duration::from_secs(2);
 
 /// How long output is still collected after the group was killed.
 const DRAIN: Duration = Duration::from_secs(5);
-
-/// A flag that stops running rsyncs. Cloned into whatever runs them; raised
-/// once, never lowered. It may say why ([`Abort::raise_because`]); the
-/// first raise decides, so a reason never relabels an earlier stop.
-#[derive(Debug, Clone, Default)]
-pub struct Abort(Arc<Raised>);
-
-#[derive(Debug, Default)]
-struct Raised {
-    flag: AtomicBool,
-    why: Mutex<Option<String>>,
-}
-
-impl Abort {
-    /// Raise it without a reason: a stopped rsync reads as a lost lease.
-    pub fn raise(&self) {
-        let _first = self.0.why.lock().unwrap_or_else(|e| e.into_inner());
-        self.0.flag.store(true, Ordering::SeqCst);
-    }
-    /// Raise it, saying why, unless it was already raised.
-    pub fn raise_because(&self, why: &str) {
-        let mut first = self.0.why.lock().unwrap_or_else(|e| e.into_inner());
-        if !self.0.flag.load(Ordering::SeqCst) {
-            *first = Some(why.into());
-        }
-        self.0.flag.store(true, Ordering::SeqCst);
-    }
-    pub fn raised(&self) -> bool {
-        self.0.flag.load(Ordering::SeqCst)
-    }
-    /// Why it was raised, if whoever raised it first said.
-    pub fn why(&self) -> Option<String> {
-        self.0.why.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-}
 
 /// Why a child did not finish on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

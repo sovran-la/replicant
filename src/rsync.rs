@@ -19,8 +19,10 @@ mod parse;
 mod scratch;
 mod spill;
 
+pub use crate::abort::Abort;
+pub use crate::changes::{Change, ChangeKind, Itemized};
 pub use apply::{Ran, copy_listed, delete_listed};
-pub use child::{Abort, Stopped};
+pub use child::Stopped;
 pub use client::Client;
 pub use parse::parse;
 
@@ -121,58 +123,6 @@ pub struct Transfer {
     /// Use an empty directory as the source: the source unit does not exist
     /// (a deletion being pushed or pulled).
     pub source_absent: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChangeKind {
-    Create,
-    Update,
-    /// Metadata only (permissions, times).
-    Attr,
-    Delete,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Change {
-    pub kind: ChangeKind,
-    /// Relative to the unit, without a trailing slash.
-    pub path: String,
-    pub is_dir: bool,
-}
-
-/// A parsed dry run.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Itemized {
-    pub changes: Vec<Change>,
-    /// Lines rsync printed that were not itemized changes.
-    pub notes: Vec<String>,
-}
-
-impl Itemized {
-    /// Files (and links) created or updated.
-    pub fn files_changed(&self) -> usize {
-        self.count(|c| !c.is_dir && matches!(c.kind, ChangeKind::Create | ChangeKind::Update))
-    }
-    /// Files (and links) deleted.
-    pub fn deleted(&self) -> usize {
-        self.count(|c| !c.is_dir && c.kind == ChangeKind::Delete)
-    }
-    /// Whether anything at all would change.
-    pub fn is_empty(&self) -> bool {
-        self.changes
-            .iter()
-            .all(|c| c.kind == ChangeKind::Attr && c.is_dir)
-    }
-    fn count(&self, f: impl Fn(&Change) -> bool) -> usize {
-        self.changes.iter().filter(|c| f(c)).count()
-    }
-    /// Paths whose bytes would be replaced or removed on the target.
-    pub fn touched(&self) -> impl Iterator<Item = &str> {
-        self.changes
-            .iter()
-            .filter(|c| !c.is_dir && c.kind != ChangeKind::Attr)
-            .map(|c| c.path.as_str())
-    }
 }
 
 impl Transfer {

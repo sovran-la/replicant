@@ -6,7 +6,9 @@
 //! written only by rsync, and only after the whole plan may go
 //! (`plan::apply`).
 
+pub mod abort;
 pub mod baseline;
+pub mod changes;
 pub mod cli;
 pub mod config;
 pub mod daemon;
@@ -16,6 +18,7 @@ pub mod exclude;
 pub mod git;
 pub mod guard;
 pub mod marker;
+pub mod native;
 pub mod paths;
 pub mod plan;
 pub mod record;

@@ -44,7 +44,15 @@ use std::sync::OnceLock;
 /// `target/`, `node_modules/` and friends are per-root (fleet.toml's `exclude`)
 /// rather than built in, because `bin/` and `.build/` are real source in some
 /// trees and the plan's example config lists them per root.
-pub const BUILTIN: &[&str] = &["**/.git/**/*.lock", "**/.git/worktrees/"];
+///
+/// `.replicant-tmp-*` is a file the native receiver is still writing (or a
+/// dead transfer left): never state, never sent, removed by the next
+/// transfer of its unit (`native::TEMP_PREFIX`).
+pub const BUILTIN: &[&str] = &[
+    "**/.git/**/*.lock",
+    "**/.git/worktrees/",
+    ".replicant-tmp-*",
+];
 
 #[derive(Debug, Clone)]
 struct Pattern {
