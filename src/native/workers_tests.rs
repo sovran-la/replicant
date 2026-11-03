@@ -95,7 +95,6 @@ fn a_repos_refs_go_in_a_round_after_everything_else() {
     }
     for r in [
         ".git/objects/ab/cd",
-        ".git/index",
         "HEAD",
         "refs/x",
         ".git/HEAD.lock",
@@ -224,5 +223,22 @@ mod a_pull_takes_only_what_it_asked_for {
             r.unwrap();
             assert_eq!(std::fs::read(t.path().join("asked")).unwrap(), b"a");
         });
+    }
+}
+
+#[test]
+fn a_repos_index_goes_with_its_refs_and_nothing_like_it_does() {
+    use super::is_ref;
+    for rel in [".git/index", "sub/repo/.git/index"] {
+        assert!(is_ref(rel), "{rel}");
+    }
+    for rel in [
+        ".git/index.lock",
+        ".git/objects/index",
+        "index",
+        "src/index",
+        ".git/modules/x/hooks/index",
+    ] {
+        assert!(!is_ref(rel), "{rel}");
     }
 }

@@ -182,3 +182,51 @@ fn an_own_push_marker_on_home_does_not_push_its_loose_unit_over_a_home_only_chan
         );
     }
 }
+
+/// The review's h1: a repo pull cut after a first round's `.git` content
+/// arrived and before the worktree file did. That state is placed by hand,
+/// from what the transfer's own first round holds, so it is whatever this
+/// transfer can really leave. An index in that round makes `git status` call
+/// the not-yet-arrived file dirty, and guardrail 1 refuses the resume.
+#[test]
+fn a_repo_pull_cut_before_its_worktree_files_resumes_rather_than_blocks() {
+    use crate::native::{Manifest, diff, local, workers};
+    let (bed, home) = interrupted("work/alpha", "/work/alpha/", "work/alpha/README");
+    let (from, to) = (
+        bed.home_hd.join("work/alpha"),
+        bed.leaf_hd.join("work/alpha"),
+    );
+    let none = crate::exclude::Excludes::default();
+    let source = Manifest::walk(&from, &none, false).unwrap();
+    let target = Manifest::walk(&to, &none, false).unwrap();
+    let changes = diff(&source, &target);
+    let [first, _] = workers::rounds(&changes.send);
+    let arrived: Vec<String> = first
+        .into_iter()
+        .flat_map(|item| match item {
+            workers::Item::Batch(rels) => rels,
+            workers::Item::Big(rel) => vec![rel],
+        })
+        .filter(|rel| rel.starts_with(".git/"))
+        .collect();
+    assert!(
+        arrived.iter().any(|r| r.starts_with(".git/objects/")),
+        "{arrived:?}"
+    );
+    local::copy_listed(&from, &to, &arrived).unwrap();
+    let readme = std::fs::read(to.join("README")).unwrap();
+    assert_ne!(
+        readme,
+        std::fs::read(from.join("README")).unwrap(),
+        "not yet"
+    );
+
+    let r = yes(&bed, &home);
+    assert_eq!(r.outcome, Outcome::Done, "resumes: {:#?}", r.plan.units);
+    assert_eq!(
+        std::fs::read(to.join("README")).unwrap(),
+        std::fs::read(from.join("README")).unwrap()
+    );
+    assert_eq!(head(&to), head(&from));
+    assert_eq!(testutil::git(&to, &["status", "--porcelain"]), "");
+}

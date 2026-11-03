@@ -58,19 +58,25 @@ pub fn items(send: &[Entry]) -> Vec<Item> {
     out
 }
 
-/// Whether `rel` is one of a repo's refs: `.git/HEAD`, `.git/packed-refs`,
-/// or under `.git/refs/`. They go in a round of their own, after everything
-/// else arrived, so a transfer stopped partway never leaves a ref pointing
-/// at an object that did not arrive (nor a new repo with a `HEAD` and
-/// nothing behind it).
+/// Whether `rel` is one of a repo's refs or its index: `.git/HEAD`,
+/// `.git/packed-refs`, `.git/index`, or under `.git/refs/`. They go in a round
+/// of their own, after everything else arrived, so a transfer stopped partway
+/// never leaves a ref pointing at an object that did not arrive (nor a new
+/// repo with a `HEAD` and nothing behind it). The index is here because of
+/// guardrail 1: ahead of the worktree it says the new content while the file
+/// is still old, so `git status` calls a file dirty that the resume has yet to
+/// send, and the resume is refused. Behind the worktree, what arrived is dirty
+/// but no longer touched, and what did not is clean.
 pub fn is_ref(rel: &str) -> bool {
     let comps: Vec<&str> = rel.split('/').collect();
     comps.iter().position(|c| *c == ".git").is_some_and(|i| {
-        matches!(&comps[i + 1..], ["HEAD"] | ["packed-refs"]) || comps.get(i + 1) == Some(&"refs")
+        matches!(&comps[i + 1..], ["HEAD"] | ["packed-refs"] | ["index"])
+            || comps.get(i + 1) == Some(&"refs")
     })
 }
 
-/// The send list in its two rounds: everything but refs, then refs.
+/// The send list in its two rounds: everything but refs and the index, then
+/// those.
 pub fn rounds(send: &[Entry]) -> [Vec<Item>; 2] {
     let (refs, rest): (Vec<Entry>, Vec<Entry>) = send.iter().cloned().partition(|e| is_ref(&e.rel));
     [items(&rest), items(&refs)]
