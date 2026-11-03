@@ -26,7 +26,12 @@ fn dir_entry(rel: &str, mode: u32) -> Entry {
 }
 
 /// Make each of `dirs` (`(path, mode)`) exist and be fillable, parents first.
+/// None: nothing is touched, `root` included (a receiver makes a missing one,
+/// and a single-file unit's root is no directory).
 pub fn open_dirs(root: &Path, dirs: &[(String, u32)]) -> Result<()> {
+    if dirs.is_empty() {
+        return Ok(());
+    }
     let rx = Receiver::open(root, false, None, None)?;
     let mut sorted: Vec<&(String, u32)> = dirs.iter().collect();
     sorted.sort();
@@ -38,6 +43,9 @@ pub fn open_dirs(root: &Path, dirs: &[(String, u32)]) -> Result<()> {
 
 /// Give each of `dirs` its final mode, deepest first.
 pub fn set_dir_modes(root: &Path, dirs: &[(String, u32)]) -> Result<()> {
+    if dirs.is_empty() {
+        return Ok(());
+    }
     let rx = Receiver::open(root, false, None, None)?;
     let list: Vec<Entry> = dirs.iter().map(|(r, m)| dir_entry(r, *m)).collect();
     rx.dir_modes(&list)?;

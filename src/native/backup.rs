@@ -8,7 +8,8 @@
 //!
 //! A path about to be replaced by a rename stays where it is until then: the
 //! backup gets a hard link to it ([`Backup::keep_beside`]), so the target is
-//! never absent, not after a crash and not after a failed rename.
+//! there throughout, after a crash or a failed rename too. A kind change is
+//! the exception by its nature: the old kind goes before the new one arrives.
 //!
 //! A path already kept in this run is not kept again: the run's copy is
 //! the one from before the run touched it, which is what rollback needs.
@@ -83,6 +84,10 @@ pub fn dirs_noted(run_dir: &Path) -> Result<Vec<DirWas>> {
     Ok(out)
 }
 
+fn cannot(rel: &str, e: io::Error) -> Error {
+    Error::Transfer(format!("could not back up {rel} before replacing it: {e}"))
+}
+
 #[derive(Debug, Clone)]
 pub struct Backup {
     dir: PathBuf,
@@ -122,14 +127,12 @@ impl Backup {
             return Ok(());
         }
         if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).map_err(|e| cannot(rel, e))?;
         }
         // A link's own name, not a second name for what it points at: rebuilt.
-        let linked = fs::symlink_metadata(abs)?.is_file() && (self.link)(abs, &dest).is_ok();
-        if !linked {
-            copy_whole(abs, &dest).map_err(|e| {
-                Error::Transfer(format!("could not back up {rel} before replacing it: {e}"))
-            })?;
+        let meta = fs::symlink_metadata(abs).map_err(|e| cannot(rel, e))?;
+        if !(meta.is_file() && (self.link)(abs, &dest).is_ok()) {
+            copy_whole(abs, &dest).map_err(|e| cannot(rel, e))?;
         }
         Ok(())
     }
@@ -183,7 +186,7 @@ impl Backup {
             return remove_tree(abs);
         }
         if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).map_err(|e| cannot(rel, e))?;
         }
         match (self.rename)(abs, &dest) {
             Ok(()) => Ok(()),
@@ -195,9 +198,7 @@ impl Backup {
                 })?;
                 remove_tree(abs)
             }
-            Err(e) => Err(Error::Transfer(format!(
-                "could not back up {rel} before replacing it: {e}"
-            ))),
+            Err(e) => Err(cannot(rel, e)),
         }
     }
 }

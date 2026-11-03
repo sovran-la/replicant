@@ -161,3 +161,12 @@ fn copy_listed_refuses_what_it_cannot_copy_faithfully() {
         assert!(copy_listed(&from, &to, &[bad.into()]).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn no_directories_to_bring_back_touches_nothing() {
+    let t = tempfile::tempdir().unwrap();
+    let missing = t.path().join("missing");
+    open_dirs(&missing, &[]).unwrap();
+    set_dir_modes(&missing, &[]).unwrap();
+    assert!(!missing.exists());
+}

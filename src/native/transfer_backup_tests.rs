@@ -187,3 +187,43 @@ fn a_push_whose_leaf_died_mid_unit_is_still_rolled_back_from_its_directory() {
         assert_eq!(back, Some(was), "{path} restored from the run's directory");
     }
 }
+
+/// A single-file unit a push created, rolled back: gone, with nothing in its
+/// place. (A rollback has no directories to bring back here; opening a receiver
+/// on the unit's path anyway would make one.)
+#[test]
+fn rolling_back_a_single_file_the_push_created_leaves_nothing_there() {
+    let fx = Fx::new();
+    let (leaf, home) = (
+        fx.bed.leaf_hd.join("work/one.txt"),
+        fx.home_work().join("one.txt"),
+    );
+    write(&leaf, "pushed");
+    std::fs::create_dir_all(home.parent().unwrap()).unwrap();
+    let lease = fx.lease();
+    let id = match fx.link().call(HomeRequest::BeginPush {
+        lease,
+        rel: "work/one.txt".into(),
+        source_state: crate::state::UnitState::Empty,
+        is_file: true,
+    }) {
+        Ok(HomeReply::Begun { push }) => push,
+        other => panic!("{other:?}"),
+    };
+    write(&home, "pushed");
+    let settled = fx.link().call(HomeRequest::Settle {
+        lease,
+        rel: "work/one.txt".into(),
+        direction: Some(Direction::Push),
+        detail: "push ok".into(),
+        changes: vec!["+ ".into()],
+    });
+    assert!(settled.is_ok(), "{settled:?}");
+    fx.release(lease);
+    fx.home.rollback(&id).unwrap();
+    assert!(
+        std::fs::symlink_metadata(&home).is_err(),
+        "{:?}",
+        std::fs::symlink_metadata(&home)
+    );
+}
