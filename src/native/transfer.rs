@@ -78,6 +78,9 @@ pub struct Diffed {
     pub changes: ChangeList,
     /// The target's temporaries from a dead transfer, to remove first.
     pub temps: Vec<String>,
+    /// The target as this diff saw it: what a pull's receiver checks each
+    /// path against before it overwrites or deletes it.
+    pub target: Manifest,
 }
 
 /// What applying a transfer did.
@@ -153,7 +156,8 @@ impl Transfer {
         Ok(Diffed {
             itemized: itemize(&changes, &target),
             changes,
-            temps: target.temps,
+            temps: target.temps.clone(),
+            target,
         })
     }
 

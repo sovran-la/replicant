@@ -13,6 +13,16 @@ pub(super) fn sync_watched(
     home: &Home,
     on: &(dyn Fn(&ProgressEvent, &crate::abort::Abort) + Sync),
 ) -> (SyncReport, Vec<ProgressEvent>) {
+    sync_watched_with(bed, home, &SyncOpts::default(), on)
+}
+
+/// [`sync_watched`], with `opts`.
+pub(super) fn sync_watched_with(
+    bed: &Bed,
+    home: &Home,
+    opts: &SyncOpts,
+    on: &(dyn Fn(&ProgressEvent, &crate::abort::Abort) + Sync),
+) -> (SyncReport, Vec<ProgressEvent>) {
     let link = InProcess {
         home,
         host: "leaf".into(),
@@ -32,7 +42,7 @@ pub(super) fn sync_watched(
     };
     let progress = Progress::new(&emit, abort.clone());
     let ctx = ctx(bed, &cfg, &dirs);
-    let r = sync_with_progress(&link, ctx, &SyncOpts::default(), &progress).unwrap();
+    let r = sync_with_progress(&link, ctx, opts, &progress).unwrap();
     (r, seen.into_inner().unwrap())
 }
 

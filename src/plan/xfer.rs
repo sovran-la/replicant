@@ -96,23 +96,13 @@ impl<'a> Ops<'a> {
         x.dry_run(&self.env())
     }
 
-    /// Carry the transfer out; `fresh` is its dry run just before, if there
-    /// was one (a push's), else one is taken now.
-    pub fn apply(&self, x: &Xfer, fresh: Option<&Diffed>) -> Result<Applied> {
-        let env = self.env();
-        let taken;
-        let d = match fresh {
-            Some(d) => d,
-            None => {
-                taken = x.dry_run(&env)?;
-                &taken
-            }
-        };
-        let ran = x.apply(&env, d);
-        Ok(Applied {
+    /// Carry the transfer out, as `fresh`, its dry run just before, says.
+    pub fn apply(&self, x: &Xfer, fresh: &Diffed) -> Applied {
+        let ran = x.apply(&self.env(), fresh);
+        Applied {
             failure: (!ran.ok()).then(|| ran.why()),
             stopped: ran.stopped,
             itemized: ran.itemized,
-        })
+        }
     }
 }

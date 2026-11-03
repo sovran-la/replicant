@@ -27,6 +27,8 @@ mod hangup_tests;
 pub(crate) mod marker_tests;
 #[path = "apply_more_tests.rs"]
 mod more;
+#[path = "apply_plan_compare_tests.rs"]
+mod plan_compare_tests;
 #[path = "apply_progress_tests.rs"]
 pub(crate) mod progress_tests;
 #[path = "apply_resume_tests.rs"]

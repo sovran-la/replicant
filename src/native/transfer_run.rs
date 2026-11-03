@@ -238,7 +238,7 @@ impl Transfer {
     /// Pull: home sends what the leaf asks for; the leaf writes it.
     pub(super) fn pull(&self, env: &Env<'_>, d: &Diffed, done: &mut Done) -> Result<()> {
         let c = &d.changes;
-        let rx = Receiver::open(&self.leaf_path, self.is_file, None, None)?;
+        let rx = Receiver::open(&self.leaf_path, self.is_file, None, None)?.expecting(&d.target);
         rx.clean(&d.temps)?;
         for (rel, kind) in &c.replace {
             rx.replace(rel, *kind, &under(rel, &c.delete))?;

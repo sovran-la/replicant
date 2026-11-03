@@ -88,8 +88,26 @@ fn transfer(
         (false, Direction::Pull) => u.home.clone(),
         (false, Direction::Push) => u.leaf.clone(),
     };
+    // What is about to happen must still be what was planned: a dry run now,
+    // ahead of every write of this unit, compared to the plan the person
+    // confirmed. Either way: a pull must not delete or overwrite leaf work
+    // made since (a leaf has no backup), and home backs up what a push
+    // replaces from this very list.
+    let fresh = ops.dry_run(t)?;
+    let planned = u.diff.as_ref().map(|d| &d.changes);
+    if planned != Some(&diff::summarize(&fresh.itemized).changes) {
+        return Ok(Done::Stopped(Outcome::Failed {
+            rel: u.rel.clone(),
+            why: "it changed since the plan was made; nothing of it was written. Run \
+                  `replicant sync` again"
+                .into(),
+        }));
+    }
+    // The marker (or home's) is the unit's first write.
+    if watch.abort().raised() {
+        return Ok(Done::Stopped(stopped_before(u, watch)));
+    }
     let mut push = None;
-    let mut fresh = None;
     match direction {
         Direction::Pull => {
             // A resumed pull keeps the marker it is resuming.
@@ -106,23 +124,6 @@ fn transfer(
             }
         }
         Direction::Push => {
-            // Home backs up what this push will replace or delete, so it
-            // needs the list as of now, and it must be what was planned.
-            let d = ops.dry_run(t)?;
-            let planned = u.diff.as_ref().map(|d| &d.changes);
-            if planned != Some(&diff::summarize(&d.itemized).changes) {
-                return Ok(Done::Stopped(Outcome::Failed {
-                    rel: u.rel.clone(),
-                    why: "it changed since the plan was made; nothing of it was written. Run \
-                          `replicant sync` again"
-                        .into(),
-                }));
-            }
-            fresh = Some(d);
-            // Home's marker and backup are the push's first writes.
-            if watch.abort().raised() {
-                return Ok(Done::Stopped(stopped_before(u, watch)));
-            }
             let reply = link.call(HomeRequest::BeginPush {
                 lease,
                 rel: u.rel.clone(),
@@ -138,7 +139,7 @@ fn transfer(
         }
     }
 
-    let ran = ops.apply(t, fresh.as_ref())?;
+    let ran = ops.apply(t, &fresh);
     let changes = diff::summarize(&ran.itemized).changes;
     if !ran.ok() {
         // Stopped by whoever raised the abort and said why (the CLI hung

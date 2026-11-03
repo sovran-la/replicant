@@ -1,6 +1,7 @@
 use super::*;
 use crate::native::manifest::Manifest;
 use crate::testutil::write;
+use std::os::unix::fs::PermissionsExt;
 
 pub(super) fn file(rel: &str, size: u64, mtime_ns: i64, mode: u32) -> Entry {
     Entry {

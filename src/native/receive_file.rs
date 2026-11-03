@@ -87,12 +87,14 @@ impl<'a> Receiver<'a> {
     /// Rename a finished temporary over its target, the old one displaced
     /// first on home (into the backup).
     fn commit(&self, temp: &Path, target: &Path, rel: &str) -> Result<()> {
-        let r = match fs::symlink_metadata(target) {
-            Ok(m) if m.is_dir() => Err(bad(rel, "is a directory, and was not replaced")),
-            Ok(_) if self.backup.is_some() => self.displace(target, rel),
-            _ => Ok(()),
-        }
-        .and_then(|()| Ok(fs::rename(temp, target)?));
+        let r = self
+            .guard(target, rel)
+            .and_then(|()| match fs::symlink_metadata(target) {
+                Ok(m) if m.is_dir() => Err(bad(rel, "is a directory, and was not replaced")),
+                Ok(_) if self.backup.is_some() => self.displace(target, rel),
+                _ => Ok(()),
+            })
+            .and_then(|()| Ok(fs::rename(temp, target)?));
         if r.is_err() {
             let _ = fs::remove_file(temp);
         }
