@@ -40,3 +40,27 @@ impl Abort {
         self.0.why.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_abort_keeps_the_first_raiser_s_reason() {
+        let a = Abort::default();
+        assert!(!a.raised() && a.why().is_none());
+        a.raise_because("the CLI hung up");
+        a.raise_because("something later");
+        a.raise();
+        assert!(a.raised());
+        assert_eq!(a.why().as_deref(), Some("the CLI hung up"));
+    }
+
+    #[test]
+    fn a_reason_never_relabels_an_abort_raised_without_one() {
+        let a = Abort::default();
+        a.raise();
+        a.raise_because("something later");
+        assert_eq!(a.why(), None);
+    }
+}

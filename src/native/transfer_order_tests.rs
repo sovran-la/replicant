@@ -102,3 +102,37 @@ fn a_write_to_a_silent_peer_fails_at_the_timeout() {
         assert!(e.contains("connection is dead"), "{e}");
     });
 }
+
+/// The review's nit: a single-file unit never collected its temporary.
+#[test]
+fn a_single_file_units_dead_temporary_is_collected_and_removed() {
+    use crate::native::manifest::Manifest;
+    use crate::native::receive::Receiver;
+    let t = tempfile::tempdir().unwrap();
+    let f = t.path().join("settings.json");
+    let dead = t.path().join(".replicant-tmp-settings.json");
+    let none = crate::exclude::Excludes::default();
+    write(&dead, "a dead run's");
+    // Whether or not the file itself is there.
+    assert_eq!(
+        Manifest::walk(&f, &none, true).unwrap().temps,
+        [".replicant-tmp-settings.json"]
+    );
+    write(&f, "the file");
+    let m = Manifest::walk(&f, &none, true).unwrap();
+    assert_eq!(m.temps, [".replicant-tmp-settings.json"]);
+    assert_eq!(m.entries.len(), 1, "and it is no entry");
+    // Only that one: another file's, and a directory unit's walk, are not.
+    write(&t.path().join(".replicant-tmp-other"), "x");
+    let rx = Receiver::open(&f, true, None, None).unwrap();
+    assert!(rx.clean(&[".replicant-tmp-other".to_string()]).is_err());
+    assert!(
+        rx.clean(&["../.replicant-tmp-settings.json".to_string()])
+            .is_err()
+    );
+    assert!(t.path().join(".replicant-tmp-other").exists());
+    rx.clean(&m.temps).unwrap();
+    assert!(!dead.exists());
+    assert_eq!(std::fs::read(&f).unwrap(), b"the file");
+    assert!(Manifest::walk(&f, &none, true).unwrap().temps.is_empty());
+}

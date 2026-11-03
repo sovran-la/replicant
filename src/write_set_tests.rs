@@ -234,3 +234,17 @@ fn the_check_refuses_a_write_through_an_alias() {
         assert_eq!(forbidden(fine), Vec::<String>::new(), "refused: {fine}");
     }
 }
+
+/// The review's m9: each of these creates, empties or gives away a file, and a
+/// text gate that does not know the spelling cannot see it.
+#[test]
+fn every_way_to_write_a_file_is_counted() {
+    for call in [
+        "let f = std::fs::File::create_new(p)?;",
+        "f.set_len(0)?;",
+        "std::os::unix::fs::chown(p, None, None)?;",
+        "std::os::unix::fs::lchown(p, None, None)?;",
+    ] {
+        assert!(!count(call).is_empty(), "not counted: {call}");
+    }
+}

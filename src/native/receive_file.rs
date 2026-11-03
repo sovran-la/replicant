@@ -125,14 +125,16 @@ impl Incoming<'_, '_> {
                 format!("{} of its {} bytes arrived", self.written, e.size),
             ));
         }
-        let f = self.file.take().expect("open until finished");
+        // Still `self.file` until it is finished: if not, `Drop` takes the
+        // temporary with it.
+        let f = self.file.as_ref().expect("open until finished");
         let when = mtime(e.mtime_ns);
         let finished = f
             .set_permissions(fs::Permissions::from_mode(e.mode & 0o7777))
             .and_then(|()| f.set_times(fs::FileTimes::new().set_modified(when)))
-            .and_then(|()| crate::native::fsync(&f));
+            .and_then(|()| crate::native::fsync(f));
         finished.map_err(|why| bad(&e.rel, why))?;
-        drop(f);
+        self.file = None;
         let (temp, target) = (self.temp.clone(), self.target.clone());
         self.rx.commit(&temp, &target, &e.rel)
     }
@@ -155,3 +157,7 @@ fn mtime(ns: i64) -> SystemTime {
         false => SystemTime::UNIX_EPOCH - d,
     }
 }
+
+#[cfg(test)]
+#[path = "receive_file_tests.rs"]
+mod tests;

@@ -28,6 +28,11 @@ pub(super) const PATTERNS: &[&str] = &[
     ".delete(",
     "append_raw(",
     "set_modified(",
+    // Ways to create or empty a file, or give it away (review m9).
+    "File::create_new(",
+    "set_len(",
+    "chown(",
+    "lchown(",
     // A file's times (the native receiver gives each its source's mtime).
     "set_times(",
     // A transfer's and the list operations' entry points (review A4): every

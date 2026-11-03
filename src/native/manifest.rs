@@ -13,9 +13,10 @@
 //! The receiver's temporary names are never listed; they are collected in
 //! [`Manifest::temps`] so the next transfer can remove them. Sockets, FIFOs
 //! and devices are never listed either ([`Manifest::skipped`] names them, for
-//! the unit's notes), so the diff never asks for one.
+//! the unit's notes), so the diff never asks for one. A single-file unit's
+//! temporary lies beside it, not under it, and is collected just the same.
 
-use super::is_temp;
+use super::{is_temp, temp_name};
 use crate::exclude::Excludes;
 use crate::repos::is_special;
 use crate::{Error, Result};
@@ -122,6 +123,14 @@ impl Manifest {
     /// Walk the unit at `root`. `is_file`: a single-file unit, whose root is
     /// an entry and never followed. A root that does not exist lists nothing.
     pub fn walk(root: &Path, ex: &Excludes, is_file: bool) -> Result<Self> {
+        let mut m = Self::walked(root, ex, is_file)?;
+        if is_file && let Some(t) = beside(root) {
+            m.temps.push(t);
+        }
+        Ok(m)
+    }
+
+    fn walked(root: &Path, ex: &Excludes, is_file: bool) -> Result<Self> {
         let meta = match fs::symlink_metadata(root) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
@@ -173,6 +182,16 @@ impl Manifest {
         let files = self.entries.iter().filter(|e| !e.is_dir());
         files.fold((0, 0), |(n, b), e| (n + 1, b + e.size))
     }
+}
+
+/// A single-file unit's temporary, a dead transfer's, if it is there: named as
+/// it is in the unit's directory, since it is in no directory of the unit's.
+fn beside(root: &Path) -> Option<String> {
+    let t = temp_name(root.file_name()?.to_str()?);
+    let found = fs::symlink_metadata(root.with_file_name(&t));
+    found
+        .is_ok_and(|m| !m.is_dir() && !is_special(&m))
+        .then_some(t)
 }
 
 #[derive(Default)]

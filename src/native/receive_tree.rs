@@ -3,8 +3,8 @@
 //! durable.
 
 use super::{Receiver, bad};
-use crate::native::is_temp;
 use crate::native::manifest::{Entry, EntryKind};
+use crate::native::{is_temp, temp_name};
 use crate::{Error, Result};
 use std::fs;
 use std::io;
@@ -23,7 +23,17 @@ impl Receiver<'_> {
             if !is_temp(name) {
                 return Err(bad(t, "is not a temporary name; nothing removed"));
             }
-            let abs = self.checked(t, false, false)?;
+            // A single-file unit's lies beside it, and only that name will do.
+            let abs = match self.is_file {
+                true => self
+                    .root
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .filter(|n| temp_name(n) == *t)
+                    .map(|_| self.root.with_file_name(t))
+                    .ok_or_else(|| bad(t, "is not this single file's temporary"))?,
+                false => self.checked(t, false, false)?,
+            };
             match fs::remove_file(&abs) {
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(bad(t, e)),
                 _ => {}
