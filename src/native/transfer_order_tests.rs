@@ -136,3 +136,38 @@ fn a_single_file_units_dead_temporary_is_collected_and_removed() {
     assert_eq!(std::fs::read(&f).unwrap(), b"the file");
     assert!(Manifest::walk(&f, &none, true).unwrap().temps.is_empty());
 }
+
+/// The review's m3, documented and not fixed: a case-only rename onto a leaf
+/// whose filesystem folds case. The rename keeps the old spelling, so the diff
+/// asks again; the first run stops at a deletion that would take what just
+/// arrived, the second takes it (both spellings now match), and the third sends
+/// it under the new name. It settles, and home's copy was never at risk.
+#[test]
+fn a_case_only_rename_on_a_pull_settles_within_three_runs() {
+    let fx = Fx::new();
+    write(&fx.leaf().join("probe"), "x");
+    if !fx.leaf().join("PROBE").exists() {
+        return;
+    }
+    std::fs::remove_file(fx.leaf().join("probe")).unwrap();
+    write(&fx.home_work().join("foo.txt"), "home's");
+    write(&fx.leaf().join("FOO.txt"), "older");
+    let lease = fx.lease();
+    let t = fx.transfer(Direction::Pull);
+    let ack = Duration::from_secs(20);
+    let ran = |_| run(&fx.link(), &t, lease, 1, &Abort::default(), ack).1;
+    let runs: Vec<_> = (0..3).map(ran).collect();
+    assert!(!runs[0].ok() && !runs[1].ok(), "{runs:?}");
+    assert!(runs[2].ok(), "{runs:?}");
+    assert_eq!(std::fs::read(fx.leaf().join("foo.txt")).unwrap(), b"home's");
+    let names: Vec<_> = std::fs::read_dir(fx.leaf())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name())
+        .collect();
+    assert_eq!(names, ["foo.txt"], "under the new name");
+    assert_eq!(
+        std::fs::read(fx.home_work().join("foo.txt")).unwrap(),
+        b"home's"
+    );
+}
