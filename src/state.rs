@@ -11,7 +11,7 @@
 //! - **Loose**: the sorted manifest of (path, kind, size, mtime, mode, link
 //!   target).
 //!
-//! Neither reads file contents. rsync `-a` preserves mtimes, and a baseline is
+//! Neither reads file contents. A transfer keeps mtimes, and a baseline is
 //! compared with the same machine's next hash, so metadata is enough. Content
 //! was tried first for dirty repo files and cost 1.7 GB of reads per `status`
 //! on thistledown (2026-11-01): a modified 400 MB zip is still a modified
@@ -22,7 +22,7 @@
 //! **Decision: `refs/remotes/*` is not state** (v0.1 review, Q3). An IDE that
 //! autofetches moves remote-tracking refs on both machines independently, which
 //! made every such repo a "both changed" conflict for no reason. They are a
-//! cache of another server, refetchable, and rsync still carries them with
+//! cache of another server, refetchable, and a transfer still carries them with
 //! `.git`. Everything else `for-each-ref` lists is hashed, including anything
 //! outside `refs/heads`, `refs/tags` and `refs/stash` (notes, replace refs).
 //!

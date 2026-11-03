@@ -16,8 +16,6 @@ pub enum Error {
     Io(std::io::Error),
     /// A git invocation failed or produced output this build cannot read.
     Git(String),
-    /// rsync failed or produced output this build cannot read.
-    Rsync(String),
     /// A native transfer failed: a dead or stalled data connection, a
     /// frame that makes no sense, a file the receiver could not write.
     Transfer(String),
@@ -43,7 +41,6 @@ impl fmt::Display for Error {
             Error::Path(m) => write!(f, "path: {m}"),
             Error::Io(e) => write!(f, "io: {e}"),
             Error::Git(m) => write!(f, "git: {m}"),
-            Error::Rsync(m) => write!(f, "rsync: {m}"),
             Error::Transfer(m) => write!(f, "transfer: {m}"),
             Error::Tls(m) => write!(f, "tls: {m}"),
             Error::Remote(m) => write!(f, "remote: {m}"),

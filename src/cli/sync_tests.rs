@@ -24,7 +24,7 @@ struct Run {
 fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) -> Run {
     let sent = RefCell::new(Vec::new());
     let cfg = bed.leaf_cfg();
-    let (state, scratch) = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let state = bed.leaf_dirs.state();
     let link = InProcess {
         home,
         host: "leaf".into(),
@@ -35,8 +35,7 @@ fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) ->
         home_dir: &bed.leaf_hd,
         cfg: &cfg,
         state_dir: &state,
-        scratch_dir: &scratch,
-        plane: crate::plan::xfer::test_plane(),
+        plane: Default::default(),
         accept_rollback: &[],
     };
     let call = |req: LocalRequest, on: &mut dyn FnMut(ProgressEvent)| -> Result<LocalReply> {

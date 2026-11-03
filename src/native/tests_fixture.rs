@@ -121,7 +121,6 @@ impl Fx {
                 lease,
                 rel: "work".into(),
                 source_state: crate::state::UnitState::Empty,
-                backup: vec![],
                 is_file: false,
             })
             .unwrap()

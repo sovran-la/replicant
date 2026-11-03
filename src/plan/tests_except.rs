@@ -1,4 +1,4 @@
-//! Review P1: a carve-out (`except`) is invisible to the table *and* to rsync,
+//! Review P1: a carve-out (`except`) is invisible to the table *and* to the transfer,
 //! whether it names a directory or a single file.
 
 use super::*;

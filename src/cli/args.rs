@@ -10,7 +10,7 @@ use std::path::PathBuf;
 #[command(
     name = "replicant",
     version,
-    about = "Home-base-mediated rsync for ~/work"
+    about = "Home-base-mediated sync for ~/work"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -33,9 +33,6 @@ pub enum Cmd {
         /// Home's daemon address, host:port.
         #[arg(long)]
         address: Option<String>,
-        /// The ssh destination rsync uses for home ("local" for same machine).
-        #[arg(long)]
-        rsync_host: Option<String>,
         /// Home's bundle, if not ~/.sovran/replicant/home.pem.
         #[arg(long)]
         credentials: Option<String>,
@@ -60,11 +57,12 @@ pub enum Cmd {
     /// On a terminal the plan is shown and `y` asked for (each deletion
     /// first, by itself); --yes skips the question. Nothing is written
     /// while anything needs a human: a conflict, a quarantine, a guardrail
-    /// refusal, an unconfirmed deletion (exit 2). An rsync that does not
-    /// finish stops the sync at its unit; its marker stays and the next
-    /// sync resumes it (exit 1). Pushes are backed up on home first.
+    /// refusal, an unconfirmed deletion (exit 2). A unit whose transfer does
+    /// not finish stops the sync there; its marker stays and the next sync
+    /// resumes it (exit 1). What a push replaces on home is kept as its
+    /// backup.
     Sync {
-        /// Show the decision and the itemized rsync diff; write nothing.
+        /// Show the decision and each unit's itemized diff; write nothing.
         #[arg(long)]
         dry_run: bool,
         /// Apply without asking. Does not confirm deletions.
@@ -94,7 +92,7 @@ pub enum Cmd {
         /// Print the plan (--dry-run) or the report (--yes) as JSON.
         #[arg(long)]
         json: bool,
-        /// Show every line of each unit's rsync diff.
+        /// Show every line of each unit's diff.
         #[arg(short, long)]
         verbose: bool,
     },

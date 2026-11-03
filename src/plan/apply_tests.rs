@@ -1,6 +1,6 @@
 //! `sync` end to end: a home and a leaf in one tempdir (`Bed`), home
-//! in-process, the system rsync over local paths. What is written is
-//! exactly what rsync itemized, baselines and markers land where PLAN.md
+//! in-process, data connections over socket pairs. What is written is
+//! exactly what the dry run itemized, baselines and markers land where PLAN.md
 //! says, and every failure path leaves what it promises.
 
 use super::*;
@@ -32,47 +32,31 @@ pub(crate) mod progress_tests;
 #[path = "apply_resume_tests.rs"]
 mod resume_tests;
 
-/// The plane a test asks for: [`crate::plan::RSYNC`] is the suite's plane
-/// (`xfer::test_plane`), anything else a script standing in for rsync.
-pub(crate) fn plane(rsync: &str) -> crate::plan::Plane<'_> {
-    match rsync == crate::plan::RSYNC {
-        true => crate::plan::xfer::test_plane(),
-        false => crate::plan::Plane::Rsync(rsync),
-    }
-}
-
 pub(crate) fn ctx<'a>(
     bed: &'a Bed,
     cfg: &'a crate::config::LeafConfig,
-    dirs: &'a (std::path::PathBuf, std::path::PathBuf),
-    rsync: &'a str,
+    state: &'a Path,
 ) -> LeafCtx<'a> {
     LeafCtx {
         me: "leaf",
         home_dir: &bed.leaf_hd,
         cfg,
-        state_dir: &dirs.0,
-        scratch_dir: &dirs.1,
-        plane: plane(rsync),
+        state_dir: state,
+        plane: Default::default(),
         accept_rollback: &[],
     }
 }
 
-/// `sync` as `leaf`, with `rsync` as the program.
-pub(crate) fn sync_with(
-    bed: &Bed,
-    home: &Home,
-    opts: &SyncOpts,
-    rsync: &str,
-) -> Result<SyncReport> {
+/// `sync` as `leaf`.
+pub(crate) fn sync_with(bed: &Bed, home: &Home, opts: &SyncOpts) -> Result<SyncReport> {
     let link = InProcess {
         home,
         host: "leaf".into(),
         home_dir: bed.leaf_hd.clone(),
     };
     let cfg = bed.leaf_cfg();
-    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
-    sync(&link, ctx(bed, &cfg, &dirs, rsync), opts)
+    let dirs = bed.leaf_dirs.state();
+    sync(&link, ctx(bed, &cfg, &dirs), opts)
 }
 
 /// `sync` as `leaf`, with `inj`'s failure injected into its unit.
@@ -82,30 +66,21 @@ pub(crate) fn sync_inject(
     opts: &SyncOpts,
     inj: &crate::plan::tests::inject::Inject,
 ) -> Result<SyncReport> {
-    use crate::plan::tests::inject::How;
     let link = inj.link(bed, home);
     let cfg = bed.leaf_cfg();
-    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
-    let ctx = LeafCtx {
-        plane: inj.plane(),
-        ..ctx(bed, &cfg, &dirs, crate::plan::RSYNC)
-    };
-    // Natively, a deletion carried out here (home has nothing to send) is
-    // local, with no connection to cut: it fails as a deletion does, on a
-    // directory it may not write, put back as it was afterwards.
+    let dirs = bed.leaf_dirs.state();
+    let ctx = ctx(bed, &cfg, &dirs);
+    // A deletion carried out here (home has nothing to send) is local, with
+    // no connection to cut: it fails as a deletion does, on a directory it
+    // may not write, put back as it was afterwards.
     use std::os::unix::fs::PermissionsExt;
     let unit_dir = bed.leaf_hd.join(&inj.unit);
-    let local = inj.native() && inj.deleting && unit_dir.is_dir();
+    let local = inj.deleting && unit_dir.is_dir();
     let mode = |m| std::fs::set_permissions(&unit_dir, std::fs::Permissions::from_mode(m)).unwrap();
     if local {
         mode(0o555);
     }
-    let r = std::thread::scope(|s| {
-        if inj.how == How::Killed && !inj.native() {
-            s.spawn(|| inj.wait_running(&link));
-        }
-        sync(&link, ctx, opts)
-    });
+    let r = sync(&link, ctx, opts);
     if local {
         mode(0o755);
     }
@@ -113,7 +88,7 @@ pub(crate) fn sync_inject(
 }
 
 pub(crate) fn yes(bed: &Bed, home: &Home) -> SyncReport {
-    sync_with(bed, home, &SyncOpts::default(), crate::plan::RSYNC).unwrap()
+    sync_with(bed, home, &SyncOpts::default()).unwrap()
 }
 
 pub(crate) fn plan_of(bed: &Bed, home: &Home, dry: bool) -> Plan {
@@ -123,8 +98,8 @@ pub(crate) fn plan_of(bed: &Bed, home: &Home, dry: bool) -> Plan {
         home_dir: bed.leaf_hd.clone(),
     };
     let cfg = bed.leaf_cfg();
-    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
-    crate::plan::plan(&link, ctx(bed, &cfg, &dirs, crate::plan::RSYNC), dry, false).unwrap()
+    let dirs = bed.leaf_dirs.state();
+    crate::plan::plan(&link, ctx(bed, &cfg, &dirs), dry, false).unwrap()
 }
 
 pub(crate) fn unit<'p>(p: &'p Plan, rel: &str, kind: UnitKind) -> &'p PlannedUnit {
@@ -168,17 +143,16 @@ pub(crate) fn changed(before: &Print, after: &Print) -> BTreeSet<String> {
     out
 }
 
-/// The target changed in exactly the paths rsync itemized. A unit's own
-/// directory is the one exception: rsync reports creating the transfer
-/// root as `./`, which the parser drops, so a unit root may appear (or
-/// vanish) without an itemized line of its own.
+/// The target changed in exactly the paths the transfer itemized. A unit's own
+/// directory is the one exception: it is not an entry of its manifest, so a
+/// unit root may appear (or vanish) without an itemized line of its own.
 pub(crate) fn wrote_exactly(before: &Print, after: &Print, r: &SyncReport) {
     let roots: BTreeSet<String> = r.applied.iter().map(|a| a.rel.clone()).collect();
     let got: BTreeSet<String> = changed(before, after).difference(&roots).cloned().collect();
     assert_eq!(got, itemized(r));
 }
 
-/// What the report says rsync changed, as paths under the tree root
+/// What the report says the transfer changed, as paths under the tree root
 /// (`work/alpha/README`), attribute changes of directories left out.
 pub(crate) fn itemized(r: &SyncReport) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -205,7 +179,7 @@ fn markers(state: &Path) -> Vec<Marker> {
 }
 
 #[test]
-fn a_pull_writes_exactly_what_rsync_itemized_and_records_both_baselines() {
+fn a_pull_writes_exactly_what_its_dry_run_itemized_and_records_both_baselines() {
     let bed = Bed::enrolled();
     tree(&bed.home_hd.join("work"));
     let home = bed.home();
@@ -289,7 +263,7 @@ fn a_pull_writes_exactly_what_rsync_itemized_and_records_both_baselines() {
 }
 
 #[test]
-fn a_push_writes_exactly_what_rsync_itemized_on_home() {
+fn a_push_writes_exactly_what_its_dry_run_itemized_on_home() {
     let bed = Bed::enrolled();
     tree(&bed.leaf_hd.join("work"));
     let home = bed.home();

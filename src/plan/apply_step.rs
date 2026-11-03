@@ -60,6 +60,6 @@ pub(super) fn step<'p>(
         t,
         action,
         resumed,
-        deleting: t.source_absent(),
+        deleting: t.source_absent,
     }
 }

@@ -118,7 +118,7 @@ fn loss_overrides_whatever_f_returned() {
     let link = Scripted::new(vec![gone()], ok);
     let r: Result<()> = with_heartbeat(&link, Some((7, 1)), Abort::default(), |w| {
         until("the loss", || w.check().is_err());
-        Err(Error::Rsync("something else".into()))
+        Err(Error::Transfer("something else".into()))
     });
     assert!(r.unwrap_err().to_string().contains("lease lost"));
 }
@@ -170,7 +170,7 @@ fn an_outside_abort_is_the_watch_s_and_does_not_void_the_plan() {
         let r = with_heartbeat(&link, lease, hangup.clone(), |w| {
             assert!(!w.abort().raised());
             hangup.raise_because("the CLI hung up");
-            assert!(w.abort().raised(), "the rsync's flag is the one raised");
+            assert!(w.abort().raised(), "the transfer's flag is the one raised");
             assert_eq!(w.abort().why().as_deref(), Some("the CLI hung up"));
             w.check()?;
             Ok(1)

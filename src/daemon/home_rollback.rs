@@ -38,7 +38,7 @@ pub(super) struct Undo {
     pub restore: Vec<Vec<String>>,
     pub delete: Vec<(String, bool)>,
     pub unbacked: Vec<String>,
-    /// Runs rsync never reported on: what they created is not known.
+    /// Runs never reported on: what they created is not known.
     pub unreported: Vec<usize>,
 }
 
@@ -170,7 +170,7 @@ impl Home {
             ));
         }
         if !unreported.is_empty() {
-            detail.push_str("; a run rsync never reported on may have added files that stay");
+            detail.push_str("; a run never reported on may have added files that stay");
         }
         let mut j = Vec::new();
         self.journal(&mut j, Line::new("rollback", &f_name, &push.unit, detail));

@@ -6,7 +6,7 @@
 use super::*;
 use crate::marker::Direction;
 
-/// `sync` as `leaf` with the system rsync, collecting every event; `on`
+/// `sync` as `leaf`, collecting every event; `on`
 /// sees each as it is announced, with the sync's abort.
 pub(super) fn sync_watched(
     bed: &Bed,
@@ -19,7 +19,7 @@ pub(super) fn sync_watched(
         home_dir: bed.leaf_hd.clone(),
     };
     let cfg = bed.leaf_cfg();
-    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let dirs = bed.leaf_dirs.state();
     let seen = std::sync::Mutex::new(Vec::new());
     let abort = crate::abort::Abort::default();
     // A unit's live counters come between its start and its end; these
@@ -31,7 +31,7 @@ pub(super) fn sync_watched(
         }
     };
     let progress = Progress::new(&emit, abort.clone());
-    let ctx = ctx(bed, &cfg, &dirs, crate::plan::RSYNC);
+    let ctx = ctx(bed, &cfg, &dirs);
     let r = sync_with_progress(&link, ctx, &SyncOpts::default(), &progress).unwrap();
     (r, seen.into_inner().unwrap())
 }
@@ -218,12 +218,6 @@ fn an_abort_between_units_begins_no_other_and_writes_nothing_of_it() {
 
 #[test]
 fn counters_run_between_a_units_start_and_end_and_end_at_its_totals() {
-    if !matches!(
-        crate::plan::xfer::test_plane(),
-        crate::plan::Plane::Native { .. }
-    ) {
-        return; // rsync reports no counters
-    }
     let bed = Bed::enrolled();
     tree(&bed.home_hd.join("work"));
     let home = bed.home();

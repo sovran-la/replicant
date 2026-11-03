@@ -118,7 +118,7 @@ fn baseline_both_changed_to_the_same_state_is_nothing() {
 }
 
 /// F4: this test used to assert `Push`, i.e. a vanished leaf unit sent a
-/// whole-unit `rsync --delete` into home. PLAN rev 5's table makes it
+/// whole-unit delete into home. PLAN rev 5's table makes it
 /// "deleted on X", never a plain push.
 #[test]
 fn baseline_with_deletion_on_leaf_is_deleted_on_the_leaf_not_a_push() {

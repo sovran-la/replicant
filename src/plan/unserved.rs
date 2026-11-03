@@ -17,7 +17,7 @@ use crate::units::{self, Discovered, SubSpec, UnitKind};
 use crate::{Result, paths};
 
 /// The planned units, and the leaf repos found under them: a loose unit's
-/// rsync must exclude those, or removing it would delete them too.
+/// the transfer must exclude those, or removing it would delete them too.
 pub(super) struct Unserved {
     pub units: Vec<PlannedUnit>,
     pub repos: Vec<String>,

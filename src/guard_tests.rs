@@ -1,10 +1,26 @@
 use super::*;
+use crate::changes::{Change, ChangeKind, Itemized};
 use crate::exclude::Excludes;
-use crate::rsync::{self, Transfer};
+use crate::native::{Manifest, diff, itemize};
 use crate::state::UnitState;
 use crate::testutil;
 use crate::units::{Discovered, SubSpec, snapshot};
 use std::path::Path;
+
+/// A dry run's changes, each `(kind, path)`.
+fn items(list: &[(ChangeKind, &str)]) -> Itemized {
+    Itemized {
+        changes: list
+            .iter()
+            .map(|(kind, path)| Change {
+                kind: *kind,
+                path: path.to_string(),
+                is_dir: false,
+            })
+            .collect(),
+        notes: vec![],
+    }
+}
 
 fn unit(rel: &str) -> SideUnit {
     SideUnit {
@@ -37,7 +53,7 @@ fn units_at(base: &Path, rel: &str, case_check: bool) -> Vec<SideUnit> {
 // ---- guardrail 1 ----
 
 #[test]
-fn g1_dirty_target_file_that_rsync_would_overwrite_is_refused() {
+fn g1_dirty_target_file_that_a_pull_would_overwrite_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home/work/r");
     let leaf = tmp.path().join("leaf/work/r");
@@ -61,23 +77,19 @@ fn g1_dirty_target_file_that_rsync_would_overwrite_is_refused() {
     testutil::write(&leaf.join("café.txt"), "non-ASCII, untracked\n");
 
     let leaf_units = units_at(&tmp.path().join("leaf"), "work/r", false);
-    let diff = Transfer {
-        direction: Direction::Pull,
-        leaf_path: leaf.clone(),
-        home_path: home.clone(),
-        home_host: None,
-        is_file: false,
-        excludes: Excludes::for_root(&[]).unwrap(),
-        source_absent: false,
-    }
-    .dry_run(&testutil::runner())
-    .unwrap();
+    // The pull's dry run: home's tree diffed against the leaf's.
+    let ex = Excludes::for_root(&[]).unwrap();
+    let target = Manifest::walk(&leaf, &ex, false).unwrap();
+    let diff = itemize(
+        &diff(&Manifest::walk(&home, &ex, false).unwrap(), &target),
+        &target,
+    );
     let r = dirty_target(&leaf_units[0], &diff).expect("refused");
     assert_eq!(r.guard, Guard::DirtyTarget);
     assert!(r.detail.contains(&"README".to_string()), "{r:?}");
     assert!(
         r.detail.contains(&"scratch.txt".to_string()),
-        "--delete would remove it: {r:?}"
+        "the pull would delete it: {r:?}"
     );
     assert!(
         r.detail.contains(&"café.txt".to_string()),
@@ -87,16 +99,16 @@ fn g1_dirty_target_file_that_rsync_would_overwrite_is_refused() {
 }
 
 #[test]
-fn g1_dirty_path_rsync_leaves_alone_is_not_refused() {
+fn g1_dirty_path_the_transfer_leaves_alone_is_not_refused() {
     let mut u = unit("work/r");
     u.dirty = vec!["notes.md".into()];
-    let diff = rsync::parse(">f.s..... other.rs\n");
+    let diff = items(&[(ChangeKind::Update, "other.rs")]);
     assert_eq!(dirty_target(&u, &diff), None);
 }
 
 #[test]
 fn g1_clean_target_and_loose_units_pass() {
-    let diff = rsync::parse(">f.s..... a\n*deleting b\n");
+    let diff = items(&[(ChangeKind::Update, "a"), (ChangeKind::Delete, "b")]);
     assert_eq!(dirty_target(&unit("work/r"), &diff), None);
     let mut loose = unit("work");
     loose.kind = UnitKind::Loose;
@@ -112,7 +124,7 @@ fn g1_clean_target_and_loose_units_pass() {
 fn g1_untracked_directory_entry_covers_files_beneath_it() {
     let mut u = unit("work/r");
     u.dirty = vec!["build-notes/".into()];
-    let diff = rsync::parse("*deleting build-notes/a.txt\n");
+    let diff = items(&[(ChangeKind::Delete, "build-notes/a.txt")]);
     assert!(dirty_target(&u, &diff).is_some());
 }
 
@@ -182,12 +194,12 @@ fn g5_bounds_subscription_except_and_cap() {
 #[test]
 fn g5_diff_paths_must_stay_inside_the_unit() {
     assert_eq!(
-        diff_bounds("work/r", &rsync::parse(">f+++++++ a/b\n")),
+        diff_bounds("work/r", &items(&[(ChangeKind::Create, "a/b")])),
         None
     );
-    let r = diff_bounds("work/r", &rsync::parse(">f+++++++ ../evil\n")).expect("refused");
+    let r = diff_bounds("work/r", &items(&[(ChangeKind::Create, "../evil")])).expect("refused");
     assert!(r.detail[0].contains("../evil"));
-    assert!(diff_bounds("work/r", &rsync::parse(">f+++++++ /etc/x\n")).is_some());
+    assert!(diff_bounds("work/r", &items(&[(ChangeKind::Create, "/etc/x")])).is_some());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! `sync`'s progress through the real daemons: the CLI's request over the
 //! Unix socket, the leaf daemon applying against home over mTLS with the
-//! system rsync, and each unit's start and end arriving on the socket
+//! native transfer, and each unit's start and end arriving on the socket
 //! before the report, in plan order.
 
 use super::test_certs::pair;

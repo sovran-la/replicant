@@ -3,7 +3,7 @@
 //!
 //! "Everything became empty" is far more often a renamed `~/work2`, an
 //! unmounted volume or an `--as` pointed at nothing than a real delete. Read
-//! as empty, every unit under it would plan a whole-unit `rsync --delete`.
+//! as empty, every unit under it would plan a whole-unit delete.
 //! A base may be absent only when no baseline lies under it: the first pull
 //! onto a fresh leaf, or the first push of something home has never had.
 

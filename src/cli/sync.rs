@@ -19,7 +19,7 @@
 //! stdout at a terminal, on stderr without one (stdout then carries only the
 //! report, as before). With `--json`, one object per line: each event, then
 //! the report. Ctrl-C here hangs up on the daemon, which stops the running
-//! rsync and leaves its unit interrupted, its marker kept.
+//! transfer and leaves its unit interrupted, its marker kept.
 
 use super::render::{self, Style};
 use crate::Result;

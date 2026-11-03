@@ -33,18 +33,7 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// The rsync runner tests use: real ssh options, a bound no test reaches, and
-/// rsync 3's quoting so argument assertions do not depend on the machine.
-/// Its scratch dir cannot be created: a test that needs one sets its own.
-pub fn runner() -> crate::rsync::Runner {
-    crate::rsync::Runner::new(
-        std::time::Duration::from_secs(60),
-        crate::rsync::Client::Rsync,
-        "/nonexistent/replicant-scratch".into(),
-    )
-}
-
-/// An executable `sh` script at `dir/name`, for standing in for ssh.
+/// An executable `sh` script at `dir/name`.
 pub fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let p = dir.join(name);
@@ -164,7 +153,7 @@ impl Bed {
                 name: "home".into(),
                 address: "127.0.0.1:1".into(),
                 credentials: None,
-                rsync_host: Some(crate::config::leaf::LOCAL_RSYNC.into()),
+                rsync_host: None,
                 rsync_timeout_secs: None,
                 streams: None,
             },

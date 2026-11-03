@@ -134,11 +134,8 @@ fn a_lost_lease_stops_the_units_transfer_and_the_sync() {
     let inj = Inject::new(&bed, "work/beta", How::Stalls);
     let link = inj.link(&bed, &home);
     let cfg = bed.leaf_cfg();
-    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
-    let ctx = LeafCtx {
-        plane: inj.plane(),
-        ..ctx(&bed, &cfg, &dirs, crate::plan::RSYNC)
-    };
+    let dirs = bed.leaf_dirs.state();
+    let ctx = ctx(&bed, &cfg, &dirs);
     let started = std::time::Instant::now();
     let r = std::thread::scope(|s| {
         s.spawn(|| {

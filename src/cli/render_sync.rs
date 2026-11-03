@@ -59,7 +59,7 @@ pub fn rolled_back(r: &crate::daemon::wire::RolledBack) -> String {
     if !r.unreported.is_empty() {
         let _ = writeln!(
             s,
-            "rsync never reported on run {:?}: files it created (if any) are still there.",
+            "no report ever came for run {:?}: files it created (if any) are still there.",
             r.unreported
         );
     }

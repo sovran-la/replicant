@@ -217,8 +217,8 @@ pub fn plan(p: &Plan, verbose: bool, st: Style) -> String {
         s,
         "{}",
         st.dim(&format!(
-            "timing: total {}ms (discover {}ms, queue {}ms, home state {}ms, leaf state {}ms, rsync {}ms)",
-            t.total_ms, t.discover_ms, t.queue_ms, t.home_state_ms, t.leaf_state_ms, t.rsync_ms
+            "timing: total {}ms (discover {}ms, queue {}ms, home state {}ms, leaf state {}ms, dry runs {}ms)",
+            t.total_ms, t.discover_ms, t.queue_ms, t.home_state_ms, t.leaf_state_ms, t.dry_run_ms
         ))
     );
     if p.dry_run {

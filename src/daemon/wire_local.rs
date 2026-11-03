@@ -32,7 +32,6 @@ pub enum LocalRequest {
     Subscribe {
         home: String,
         address: Option<String>,
-        rsync_host: Option<String>,
         credentials: Option<String>,
         paths: Vec<String>,
         as_local: Option<PathBuf>,
@@ -140,7 +139,7 @@ pub struct RolledBack {
     /// Files the push changed that were not backed up (it wrote more than
     /// its dry run said): left as pushed.
     pub unbacked: Vec<String>,
-    /// Runs rsync never reported on; what they created stays.
+    /// Runs never reported on; what they created stays.
     pub unreported: Vec<usize>,
     /// Where what the push had written was kept before it was undone.
     pub kept: PathBuf,

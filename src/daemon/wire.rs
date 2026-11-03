@@ -87,23 +87,19 @@ pub enum HomeRequest {
         sync_ok: Option<bool>,
     },
     FleetState,
-    /// Apply, before a push's real rsync: home is the target, so home writes
-    /// the in-progress marker (or keeps this host's own, resuming).
-    /// Requires the caller to hold the head of the queue.
+    /// Apply, before a push's transfer: home is the target, so home writes
+    /// the in-progress marker (or keeps this host's own, resuming) and opens
+    /// the push's run, whose backup directory the receiver renames what it
+    /// replaces into. Requires the caller to hold the head of the queue.
     BeginPush {
         lease: u64,
         rel: String,
         source_state: UnitState,
-        /// The files (unit-relative) the push will replace or delete, from
-        /// its dry run just before: home copies them to the push's backup
-        /// before it answers.
-        #[serde(default)]
-        backup: Vec<String>,
         /// The unit is a single file.
         #[serde(default)]
         is_file: bool,
     },
-    /// Apply, after a push's rsync exited 0: home's state of the unit now,
+    /// Apply, after a push's transfer finished: home's state of the unit now,
     /// hashed as the plan hashed it. `union` is the plan's repos within the
     /// unit.
     Rehash {
@@ -131,21 +127,21 @@ pub enum HomeRequest {
         rel: String,
         direction: Option<Direction>,
         detail: String,
-        /// What rsync reported writing (a push's manifest keeps it).
+        /// What the transfer reported writing (a push's manifest keeps it).
         #[serde(default)]
         changes: Vec<String>,
     },
-    /// Apply: a unit's rsync failed or was stopped. Journaled; every marker
+    /// Apply: a unit's transfer failed or was stopped. Journaled; every marker
     /// stays. No lease needed: it is evidence, also after the lease is lost.
     Interrupted {
         rel: String,
         direction: Direction,
         why: String,
-        /// What rsync reported writing before it stopped.
+        /// What the transfer reported writing before it stopped.
         #[serde(default)]
         changes: Vec<String>,
     },
-    /// Apply: a journal line about this host that is not an rsync:
+    /// Apply: a journal line about this host that is not a transfer:
     /// [`NOTE_EVENTS`] only.
     Note {
         event: String,

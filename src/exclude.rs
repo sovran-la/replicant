@@ -1,9 +1,9 @@
-//! Exclude patterns: globset matching, translated faithfully to rsync.
+//! Exclude patterns: globset matching.
 //!
-//! The same list is handed to rsync and used by replicant's own walkers
-//! (discovery, the manifest, porcelain filtering). Guardrail 1 compares rsync's
-//! itemized output with replicant's dirty lists, so the two must agree on what
-//! is excluded, exactly.
+//! One list serves every walker of a unit (discovery, the state hash's
+//! porcelain filtering, the case walk, and the transfer's manifests on both
+//! sides), so they all agree on what is excluded, exactly. Guardrail 1
+//! compares the dry run's changes with the dirty lists on that basis.
 //!
 //! Patterns are globset globs with `*` kept inside one component
 //! (`literal_separator`), matched the way the sibling `filesystem` crate's
@@ -20,18 +20,15 @@
 //! - `[a-z0-9]`: a positive ASCII class
 //!
 //! The filesystem crate also tries the absolute path. Replicant does not: one
-//! unit lives at `/Users/...` on a Mac and `/home/...` on Linux, and rsync only
-//! ever sees paths below the transfer root, so an absolute match would make
-//! the two sides, and rsync, disagree.
+//! unit lives at `/Users/...` on a Mac and `/home/...` on Linux, so an
+//! absolute match would make the two sides disagree.
 //!
-//! [`Excludes::rsync_args`] emits rules with the same meaning; `pattern.rs`
-//! documents the translation and refuses at config load what has none: `?` and
-//! negated classes (globset matches characters, rsync bytes), `{a,b}`, `**`
-//! inside a component, `***`, unterminated classes and rsync's rule prefixes.
-//! `rsync_diff_tests.rs` checks the agreement against the system rsync.
+//! `pattern.rs` refuses at config load what is outside the accepted subset:
+//! `?` and negated classes, `{a,b}`, `**` inside a component, `***`,
+//! unterminated classes and filter-rule prefixes.
 //!
-//! rsync does not descend into an excluded directory, so a path is excluded if
-//! it or any ancestor matches; [`Excludes::path_excluded`] checks that.
+//! No walker descends into an excluded directory, so a path is excluded if it
+//! or any ancestor matches; [`Excludes::path_excluded`] checks that.
 
 mod pattern;
 
@@ -61,7 +58,6 @@ struct Pattern {
     glob: globset::Glob,
     anchored: bool,
     dir_only: bool,
-    rsync: Vec<String>,
 }
 
 /// The four sets one entry is tested against, built on first use.
@@ -159,8 +155,7 @@ impl Excludes {
         Ok(e)
     }
 
-    /// Add one pattern, or say why it cannot be matched the same way by
-    /// replicant and rsync.
+    /// Add one pattern, or say why it is refused.
     pub fn push(&mut self, raw: &str) -> Result<()> {
         self.add(parsed(raw)?);
         Ok(())
@@ -187,7 +182,6 @@ impl Excludes {
         }
         self.patterns.push(Pattern {
             key,
-            rsync: p.rsync_rules(),
             glob: compile(&glob),
             anchored: p.anchored,
             dir_only: p.dir_only,
@@ -244,29 +238,6 @@ impl Excludes {
         self.matches(rel, is_dir)
     }
 
-    /// The rsync rule text matching exactly `rel` (relative to the transfer
-    /// root, every character literal), as [`Excludes::push_exact`] would
-    /// write it: for an `--include=` of one path.
-    pub fn literal_rule(rel: &str, is_dir: bool) -> String {
-        pattern::literal(rel, is_dir)
-            .rsync_rules()
-            .into_iter()
-            .next()
-            .unwrap_or_default()
-    }
-
-    /// The patterns as rsync arguments, one `--exclude=` per rule.
-    pub fn rsync_args(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        for r in self.patterns.iter().flat_map(|p| &p.rsync) {
-            let a = format!("--exclude={r}");
-            if !out.contains(&a) {
-                out.push(a);
-            }
-        }
-        out
-    }
-
     pub fn is_empty(&self) -> bool {
         self.patterns.is_empty()
     }
@@ -286,7 +257,3 @@ fn compile(text: &str) -> globset::Glob {
 #[cfg(test)]
 #[path = "exclude_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "exclude/rsync_diff_tests.rs"]
-mod rsync_diff_tests;

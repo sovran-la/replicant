@@ -1,14 +1,14 @@
 //! Review P1: an abort raised while a unit is being announced, or during
 //! the confirm-delete note before its marker, stops that unit before any of
-//! it is written: no marker, no rsync, its trees untouched, and the journal
+//! it is written: no marker, no transfer, its trees untouched, and the journal
 //! says it stopped before it began.
 
 use super::progress_tests::sync_watched;
 use super::*;
+use crate::abort::Abort;
 use crate::daemon::local::HANGUP;
 use crate::daemon::wire::{HomeReply, HomeRequest};
 use crate::plan::HomeLink;
-use crate::rsync::Abort;
 
 /// The sync stopped at `rel` before it began: `Failed`, saying so.
 fn stopped_before(r: &SyncReport, rel: &str) {
@@ -63,7 +63,7 @@ fn an_abort_raised_as_a_unit_is_announced_writes_nothing_of_it() {
     assert_eq!(rels, ["work", "work/alpha"]);
     let markers: Vec<Marker> = crate::marker::store(&bed.leaf_dirs.state()).all().unwrap();
     assert!(markers.is_empty(), "not even a marker: {markers:?}");
-    assert!(!bed.leaf_hd.join("work/beta").exists(), "no rsync ran");
+    assert!(!bed.leaf_hd.join("work/beta").exists(), "no transfer ran");
     assert!(!bed.leaf_hd.join("work/nested/gamma").exists());
     assert_eq!(
         testutil::fingerprint(&bed.home_hd.join("work/beta")),
@@ -138,7 +138,7 @@ fn raised_on_the_note(bed: &Bed, home: &Home, confirm: &str) -> (SyncReport, Vec
         when: |r| matches!(r, HomeRequest::Note { event, .. } if event == "confirm-delete"),
     };
     let cfg = bed.leaf_cfg();
-    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let dirs = bed.leaf_dirs.state();
     let seen = std::sync::Mutex::new(Vec::new());
     let emit = |e: ProgressEvent| {
         if !matches!(e, ProgressEvent::UnitProgress { .. }) {
@@ -150,7 +150,7 @@ fn raised_on_the_note(bed: &Bed, home: &Home, confirm: &str) -> (SyncReport, Vec
         confirm_delete: vec![confirm.into()],
         ..Default::default()
     };
-    let ctx = ctx(bed, &cfg, &dirs, crate::plan::RSYNC);
+    let ctx = ctx(bed, &cfg, &dirs);
     let r = crate::plan::apply::sync_with(&link, ctx, &opts, &progress).unwrap();
     (r, seen.into_inner().unwrap())
 }

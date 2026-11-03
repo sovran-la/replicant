@@ -18,7 +18,7 @@ pub enum ProgressEvent {
         /// As [`super::apply::AppliedUnit::action`]: `pull`, `push`,
         /// `remove`, `delete on home`, `delete here`, `adopt`, `forget`.
         action: String,
-        /// `None` for an adoption or a forgotten baseline: no rsync.
+        /// `None` for an adoption or a forgotten baseline: no transfer.
         direction: Option<Direction>,
         /// 1-based, of `total`.
         index: usize,
@@ -55,19 +55,19 @@ pub enum ProgressEvent {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UnitOutcome {
     Applied,
-    /// Its rsync did not finish (failed, timed out, or stopped: the lease
+    /// Its transfer did not finish (failed, a dead connection, or stopped: the lease
     /// lost, the CLI gone). Its marker stays; the next `sync` resumes it.
     Interrupted {
         why: String,
     },
-    /// A step around its rsync failed, or it changed since the plan.
+    /// A step around its transfer failed, or it changed since the plan.
     Failed {
         why: String,
     },
 }
 
 /// Where a sync sends its events, and the flag that stops it: raised, the
-/// running rsync is stopped and the unit left interrupted, and no further
+/// running transfer is stopped and the unit left interrupted, and no further
 /// unit begins.
 pub struct Progress<'a> {
     emit: &'a (dyn Fn(ProgressEvent) + Sync),

@@ -3,8 +3,7 @@
 //! `.sovran/agents/state` for a host subscribed to `.sovran`, to
 //! `.sovran/agents`, or to anything else under the root.
 //!
-//! Matching happens inside one unit, and rsync only sees paths below its
-//! transfer root, so each such pattern is rewritten per unit by stripping the
+//! Matching happens inside one unit, against paths below its root, so each such pattern is rewritten per unit by stripping the
 //! unit's root-relative prefix from its front, component by component:
 //!
 //! - in `.sovran/agents`, `agents/state` becomes the anchored `/state`;
@@ -14,8 +13,7 @@
 //! A wildcard component strips a prefix component it matches; `**` strips
 //! any number of them, so `a/**/b` in unit `a/x` is `/**/b`. Bare names and
 //! `**/…` patterns already match at any depth and are not rewritten. The
-//! rewritten patterns are ordinary [`Parsed`] values, so globset and rsync
-//! still render from the same tokens.
+//! rewritten patterns are ordinary [`Parsed`] values.
 
 use super::{Comp, Parsed, comp_glob};
 

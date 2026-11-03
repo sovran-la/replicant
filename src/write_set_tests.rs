@@ -1,22 +1,22 @@
 //! The write set, held to the code: every place outside the tests that
-//! starts a process, calls into rsync or writes to the filesystem, counted
+//! starts a process, runs a transfer or writes to the filesystem, counted
 //! per file, against a list that says which part of the write set each one
-//! is. A new spawn, rsync run or write anywhere fails this test until it is
+//! is. A new spawn, transfer or write anywhere fails this test until it is
 //! added here, with its reason.
 //!
 //! The scan matches text, so the ways around a text match are forbidden
 //! outright (review A4): importing a function (or a `*` glob) from under
 //! any `fs::` segment, `std::fs` or `std::os::unix::fs`, at any depth of
 //! `{…}` nesting (`use std::{fs::write}` too; re-review R3), a
-//! `Command as` alias, any renamed `use … as …`, `libc` item imports, and
-//! importing rsync's `child::run`. Types and traits from them are fine.
+//! `Command as` alias, any renamed `use … as …`, and `libc` item imports.
+//! Types and traits from them are fine.
 //! With those gone, every write is spelled as one of `scan::PATTERNS`.
 //!
-//! The write set (docs/v0.2-prep-notes.md, "Apply"): synced paths only
-//! through rsync; markers, baselines, contacts and the journal under the
-//! state and config dirs; private scratch files under the config dir;
-//! home's own identity files and fleet.toml. The v0.1 review checked this by
-//! hand.
+//! The write set (docs/v0.4-native-notes.md, "The write set"): synced paths
+//! only through the native receiver (`native/receive*.rs`, and home's
+//! backup by rename); markers, baselines, contacts and the journal under
+//! the state and config dirs; home's own identity files and fleet.toml.
+//! The v0.1 review checked this by hand.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -120,9 +120,8 @@ fn the_check_sees_a_write_it_was_not_told_about() {
     let text = "fn dry() { let _ = transfer.apply(&runner); t.dry_run(&runner) }\n";
     assert_eq!(count(text).get(".apply("), Some(&1));
     for (call, pat) in [
-        ("child::run(&p, &a, t, &ab)", "child::run("),
-        ("rsync::copy_listed(&r, a, b, &l)", "copy_listed("),
-        ("rsync::delete_listed(&r, None, a, &l)", "delete_listed("),
+        ("local::copy_listed(a, b, &l)", "copy_listed("),
+        ("local::delete_listed(a, &l)", "delete_listed("),
         ("unsafe { libc::unlink(p) }", "libc::unlink("),
         ("unsafe { libc::rename(a, b) }", "libc::rename("),
         ("unsafe { libc::open(p, f) }", "libc::open("),
@@ -144,14 +143,10 @@ fn the_check_sees_a_write_it_was_not_told_about() {
     // Re-review R3's mutant M6: the same real transfer, spelled as a path.
     let m6 = "fn dry() { let _ = Transfer::apply(&transfer, &runner); }\n";
     assert_eq!(count(m6).get("::apply("), Some(&1), "{:?}", count(m6));
-    // Runner::run takes any arguments, so both its spellings count.
-    let run = "fn f() { runner.run(&args); Runner::run(&runner, &args); }\n";
-    assert_eq!(count(run).get(".run("), Some(&1));
-    assert_eq!(count(run).get("::run("), Some(&1));
     // Every spelling of the listed copies and deletions already counts.
     for call in [
-        "Self::copy_listed(&r, a, b, &l)",
-        "crate::rsync::delete_listed(&r, None, a, &l)",
+        "Self::copy_listed(a, b, &l)",
+        "crate::native::local::delete_listed(a, &l)",
     ] {
         let n = count(&format!("fn f() {{ {call}; }}\n"));
         assert!(
@@ -217,11 +212,9 @@ fn the_check_refuses_a_write_through_an_alias() {
         "use std::os::unix::fs::symlink;\n",
         "use libc::unlink;\n",
         "use libc::{rename, unlink};\n",
-        "use super::child::run;\n",
-        "use super::child::{run, Abort};\n",
-        "use crate::rsync::copy_listed as cp;\n",
-        "use crate::rsync::{\n    copy_listed as cp,\n    Runner,\n};\n",
-        "pub(crate) use crate::rsync::delete_listed as dl;\n",
+        "use crate::native::local::copy_listed as cp;\n",
+        "use crate::native::local::{\n    copy_listed as cp,\n    Receiver,\n};\n",
+        "pub(crate) use crate::native::local::delete_listed as dl;\n",
     ] {
         assert!(!forbidden(bad).is_empty(), "not refused: {bad}");
     }
@@ -230,8 +223,8 @@ fn the_check_refuses_a_write_through_an_alias() {
         "use std::fs::File;\n",
         "use std::os::unix::fs::{MetadataExt, PermissionsExt};\n",
         "use std::process::{Command, Stdio};\n",
-        "pub use child::{Abort, Stopped};\n",
-        "use super::{Itemized, Runner, child, parse};\n",
+        "pub use transfer::{Counts, Transfer};\n",
+        "use super::{Itemized, Receiver, frame};\n",
         "use std::io::Write as _;\n",
         "// use std::fs::write as w;\n",
     ] {

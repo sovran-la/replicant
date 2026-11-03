@@ -75,12 +75,6 @@ impl Dirs {
     pub fn backup(&self) -> PathBuf {
         self.root.join("backup")
     }
-    /// Private scratch space: the empty directory an absent source stands in
-    /// with. Never the shared temp dir, where whatever is planted becomes an
-    /// rsync source.
-    pub fn scratch(&self) -> PathBuf {
-        self.root.join("tmp")
-    }
     pub fn credentials(&self) -> PathBuf {
         self.root.join("credentials.pem")
     }

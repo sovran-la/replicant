@@ -1,7 +1,7 @@
 //! The sending side's reads: the leaf on a push, home on a pull.
 //!
 //! What is sent is what is there when it is sent, with the metadata it has
-//! then (rsync's behaviour too), never followed through a link: an entry
+//! then (as rsync did), never followed through a link: an entry
 //! that is no longer a file or link of that name is skipped, and the
 //! transfer's verification then finds the difference. A file that changes
 //! while it is read is not sent at all ([`Read::Changed`]).

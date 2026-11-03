@@ -1,4 +1,4 @@
-//! After a unit's transfer: the baseline it leaves, an adoption (no rsync at
+//! After a unit's transfer: the baseline it leaves, an adoption (no transfer at
 //! all), and what the report says it did.
 
 use super::super::AppliedUnit;

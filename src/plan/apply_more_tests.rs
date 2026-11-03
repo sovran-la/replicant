@@ -1,10 +1,10 @@
-//! Apply without an rsync (adoption, nothing to do), and deletions inside
+//! Apply without a transfer (adoption, nothing to do), and deletions inside
 //! a unit.
 
 use super::*;
 
 #[test]
-fn identical_sides_are_adopted_as_the_baseline_without_an_rsync() {
+fn identical_sides_are_adopted_as_the_baseline_without_a_transfer() {
     let bed = Bed::enrolled();
     testutil::repo(&bed.home_hd.join("work/r"));
     let copy = std::process::Command::new("cp")

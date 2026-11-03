@@ -93,9 +93,7 @@ fn a_deletion_needs_its_confirmation_and_yes_is_not_one() {
         confirm_delete: vec!["work/r".into(), "work/elsewhere".into()],
         ..Default::default()
     };
-    let r = untouched(&bed, || {
-        sync_with(&bed, &home, &opts, crate::plan::RSYNC).unwrap()
-    });
+    let r = untouched(&bed, || sync_with(&bed, &home, &opts).unwrap());
     assert!(blocked_why(&r).contains("--confirm-delete work/elsewhere"));
 }
 
@@ -110,7 +108,7 @@ fn a_confirmed_deletion_on_the_leaf_deletes_home_and_drops_the_baselines() {
         ..Default::default()
     };
     let before = testutil::fingerprint(&bed.home_hd);
-    let r = sync_with(&bed, &home, &opts, crate::plan::RSYNC).unwrap();
+    let r = sync_with(&bed, &home, &opts).unwrap();
     assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
     assert_eq!(r.applied[0].action, "delete on home");
     let gone = changed(&before, &testutil::fingerprint(&bed.home_hd));
@@ -156,7 +154,7 @@ fn a_confirmed_deletion_on_home_deletes_the_leaf_copy() {
         ..Default::default()
     };
     let before = testutil::fingerprint(&bed.leaf_hd);
-    let r = sync_with(&bed, &home, &opts, crate::plan::RSYNC).unwrap();
+    let r = sync_with(&bed, &home, &opts).unwrap();
     assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
     assert_eq!(r.applied[0].action, "delete here");
     let gone = changed(&before, &testutil::fingerprint(&bed.leaf_hd));
@@ -178,9 +176,7 @@ fn a_plan_that_changed_since_it_was_confirmed_writes_nothing() {
         expect: Some(seen.digest()),
         ..Default::default()
     };
-    let r = untouched(&bed, || {
-        sync_with(&bed, &home, &opts, crate::plan::RSYNC).unwrap()
-    });
+    let r = untouched(&bed, || sync_with(&bed, &home, &opts).unwrap());
     assert_eq!(r.outcome, Outcome::Changed);
     assert_eq!(r.outcome.exit_code(), 1);
 
@@ -189,7 +185,7 @@ fn a_plan_that_changed_since_it_was_confirmed_writes_nothing() {
         expect: Some(plan_of(&bed, &home, true).digest()),
         ..Default::default()
     };
-    let r = sync_with(&bed, &home, &opts, crate::plan::RSYNC).unwrap();
+    let r = sync_with(&bed, &home, &opts).unwrap();
     assert_eq!(r.outcome, Outcome::Done);
 }
 

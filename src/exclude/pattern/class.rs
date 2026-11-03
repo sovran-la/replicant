@@ -1,8 +1,8 @@
-//! `[...]` classes: the only ones globset and rsync read alike.
+//! `[...]` classes: positive, ASCII, never across a `/`.
 
 /// The body of a `[...]` class, after the `[`. Positive, ASCII, no specials,
-/// no range across `/`: the only classes globset and rsync both read
-/// byte-for-byte the same.
+/// no range across `/`: a class that means the same byte for byte whatever
+/// the names hold (the subset fleet.toml has always accepted).
 pub(super) fn class(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<String, String> {
     let mut body = String::new();
     loop {
@@ -11,8 +11,8 @@ pub(super) fn class(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<
             Some(']') if !body.is_empty() => break,
             Some(c @ ('!' | '^')) if body.is_empty() => {
                 return Err(format!(
-                    "negated classes (`[{c}...]`) are refused: globset excludes one character, \
-                     rsync one byte, so they disagree on non-ASCII names"
+                    "negated classes (`[{c}...]`) are refused: on a non-ASCII name it is \
+                     unclear whether they exclude one character or one byte"
                 ));
             }
             Some(']') => return Err("an empty `[]` class".into()),
@@ -37,7 +37,7 @@ pub(super) fn class(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<
         if lo <= b'/' && b'/' <= hi {
             return Err(format!(
                 "`[{body}]` has a range that spans `/`: globset would match it across \
-                 path components, rsync never does"
+                 path components"
             ));
         }
     }

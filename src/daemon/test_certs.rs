@@ -5,7 +5,7 @@ use super::certs;
 use super::remote::Dialer;
 use super::tls::Identity;
 use super::wire::{HomeAnswer, HomeCall, HomeReply, HomeRequest, WIRE_VERSION};
-use crate::config::{HomeEntry, LeafConfig, leaf::LOCAL_RSYNC};
+use crate::config::{HomeEntry, LeafConfig};
 use crate::testutil::Bed;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -51,7 +51,7 @@ pub fn leaf_toml(bed: &Bed, address: &str) {
             name: "home".into(),
             address: address.into(),
             credentials: None,
-            rsync_host: Some(LOCAL_RSYNC.into()),
+            rsync_host: None,
             rsync_timeout_secs: None,
             streams: None,
         },
@@ -139,7 +139,6 @@ pub fn apply_requests() -> Vec<HomeRequest> {
             lease: 1,
             rel: "work".into(),
             source_state: crate::state::UnitState::Empty,
-            backup: vec![],
             is_file: false,
         },
         HomeRequest::Rehash {

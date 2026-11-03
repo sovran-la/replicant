@@ -1,82 +1,43 @@
 //! The data-plane seam: how a unit's dry run and transfer run. Everything
 //! around it (markers, baselines, guardrails, the digest, the journal)
-//! reads only [`Itemized`] and [`Applied`], whichever plane produced them.
+//! reads only [`Itemized`] and [`Applied`].
 
 use super::{HomeLink, LeafCtx};
+use crate::Result;
 use crate::abort::Abort;
 use crate::changes::Itemized;
-use crate::marker::Direction;
 use crate::native::transfer::{Counts, Diffed, Env};
-use crate::rsync::{self, Client, Runner, Stopped};
-use crate::{Error, Result};
 use std::time::Duration;
 
-/// Which data plane moves the bytes.
-#[derive(Debug, Clone, Copy)]
-pub enum Plane<'a> {
-    /// rsync, this program (`rsync` on `PATH`; tests stand a script in).
-    Rsync(&'a str),
-    /// The daemons, over their mTLS link.
-    Native { ack_timeout: Duration },
+/// How the data plane runs: the daemons move the bytes over their mTLS
+/// link (`native`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Plane {
+    /// How long a side waits for an ack before it calls a data connection
+    /// dead. [`crate::native::ACK_TIMEOUT`]; tests may shorten it.
+    pub ack_timeout: Duration,
 }
 
-impl Plane<'_> {
-    pub fn native() -> Self {
-        Plane::Native {
+impl Default for Plane {
+    fn default() -> Self {
+        Self {
             ack_timeout: crate::native::ACK_TIMEOUT,
         }
     }
 }
 
-/// The plane a test runs on unless it says: native, or rsync when
-/// `REPLICANT_TEST_PLANE=rsync` (both planes pass the suite).
-#[cfg(test)]
-pub fn test_plane() -> Plane<'static> {
-    match std::env::var("REPLICANT_TEST_PLANE").as_deref() {
-        Ok("rsync") => Plane::Rsync(super::RSYNC),
-        _ => Plane::native(),
-    }
-}
-
-/// One unit's transfer on one plane.
-#[derive(Debug, Clone)]
-pub enum Xfer {
-    Rsync(rsync::Transfer),
-    Native(crate::native::transfer::Transfer),
-}
-
-impl Xfer {
-    pub fn direction(&self) -> Direction {
-        match self {
-            Xfer::Rsync(t) => t.direction,
-            Xfer::Native(t) => t.direction,
-        }
-    }
-    pub fn is_file(&self) -> bool {
-        match self {
-            Xfer::Rsync(t) => t.is_file,
-            Xfer::Native(t) => t.is_file,
-        }
-    }
-    pub fn source_absent(&self) -> bool {
-        match self {
-            Xfer::Rsync(t) => t.source_absent,
-            Xfer::Native(t) => t.source_absent,
-        }
-    }
-}
+/// One unit's transfer.
+pub type Xfer = crate::native::transfer::Transfer;
 
 /// What a transfer did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applied {
     /// What it changed on the target, also when it then failed.
     pub itemized: Itemized,
-    /// Why it did not finish; `None`: done.
+    /// Why it did not finish; `None`: done and verified.
     pub failure: Option<String>,
     /// Stopped by its abort (a lost lease, the CLI gone).
     pub stopped: bool,
-    /// What the plane calls being stopped: `rsync stopped`.
-    pub stop_word: &'static str,
 }
 
 impl Applied {
@@ -118,79 +79,40 @@ impl<'a> Ops<'a> {
         }
     }
 
-    fn runner(&self, program: &str) -> Result<Runner> {
-        Ok(Runner {
-            program: program.into(),
-            abort: self.abort.clone(),
-            ..Runner::new(
-                self.ctx.cfg.rsync_timeout(),
-                Client::detect()?,
-                self.ctx.scratch_dir.to_path_buf(),
-            )
-        })
-    }
-
-    fn env(&self, ack_timeout: Duration) -> Env<'_> {
+    fn env(&self) -> Env<'_> {
         Env {
             link: self.link,
             me: self.ctx.me,
             lease: self.lease,
             abort: self.abort,
             streams: self.streams,
-            ack_timeout,
+            ack_timeout: self.ctx.plane.ack_timeout,
             progress: self.progress,
         }
     }
 
-    /// The transfer's dry run, and for the native plane the change list it
-    /// would carry out.
-    pub fn dry_run(&self, x: &Xfer) -> Result<(Itemized, Option<Diffed>)> {
-        match (x, self.ctx.plane) {
-            (Xfer::Rsync(t), Plane::Rsync(p)) => Ok((t.dry_run(&self.runner(p)?)?, None)),
-            (Xfer::Native(t), Plane::Native { ack_timeout }) => {
-                let d = t.dry_run(&self.env(ack_timeout))?;
-                Ok((d.itemized.clone(), Some(d)))
-            }
-            _ => Err(Error::Transfer(
-                "a transfer planned on another plane".into(),
-            )),
-        }
+    /// The transfer's dry run: what it would change, and the change list.
+    pub fn dry_run(&self, x: &Xfer) -> Result<Diffed> {
+        x.dry_run(&self.env())
     }
 
-    /// Carry the transfer out; `fresh` is its native dry run just before,
-    /// if there was one (a push's), else one is taken now.
+    /// Carry the transfer out; `fresh` is its dry run just before, if there
+    /// was one (a push's), else one is taken now.
     pub fn apply(&self, x: &Xfer, fresh: Option<&Diffed>) -> Result<Applied> {
-        match (x, self.ctx.plane) {
-            (Xfer::Rsync(t), Plane::Rsync(p)) => {
-                let ran = t.apply(&self.runner(p)?)?;
-                Ok(Applied {
-                    failure: (!ran.ok()).then(|| ran.why()),
-                    stopped: ran.stopped == Some(Stopped::Aborted),
-                    itemized: ran.itemized,
-                    stop_word: "rsync stopped",
-                })
+        let env = self.env();
+        let taken;
+        let d = match fresh {
+            Some(d) => d,
+            None => {
+                taken = x.dry_run(&env)?;
+                &taken
             }
-            (Xfer::Native(t), Plane::Native { ack_timeout }) => {
-                let env = self.env(ack_timeout);
-                let taken;
-                let d = match fresh {
-                    Some(d) => d,
-                    None => {
-                        taken = t.dry_run(&env)?;
-                        &taken
-                    }
-                };
-                let ran = t.apply(&env, d);
-                Ok(Applied {
-                    failure: (!ran.ok()).then(|| ran.why()),
-                    stopped: ran.stopped,
-                    itemized: ran.itemized,
-                    stop_word: "transfer stopped",
-                })
-            }
-            _ => Err(Error::Transfer(
-                "a transfer planned on another plane".into(),
-            )),
-        }
+        };
+        let ran = x.apply(&env, d);
+        Ok(Applied {
+            failure: (!ran.ok()).then(|| ran.why()),
+            stopped: ran.stopped,
+            itemized: ran.itemized,
+        })
     }
 }

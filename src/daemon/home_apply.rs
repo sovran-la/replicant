@@ -82,14 +82,11 @@ impl Home {
                 lease,
                 rel,
                 source_state,
-                backup,
                 is_file,
             } => {
                 self.at_head(lease, host)?;
                 let (_, _) = self.spec_of(host, &rel)?;
-                let unit_path = self.fleet()?.home_dir.join(&rel);
-                let push =
-                    self.begin_push(host, &rel, &unit_path, is_file, source_state, &backup)?;
+                let push = self.begin_push(host, &rel, is_file, source_state)?;
                 Ok(HomeReply::Begun { push })
             }
             HomeRequest::Rehash {
@@ -194,10 +191,8 @@ impl Home {
         &self,
         host: &str,
         rel: &str,
-        unit_path: &std::path::Path,
         is_file: bool,
         source_state: UnitState,
-        backup: &[String],
     ) -> Result<String> {
         let store = marker::store(&self.dirs.state());
         let all: Vec<Marker> = store.all()?;
@@ -211,8 +206,8 @@ impl Home {
             )));
         }
         let own = all.into_iter().find(|m| m.rel == rel);
-        // The backup first: if it fails, nothing is marked.
-        let push = self.back_up(host, rel, unit_path, is_file, backup, own.as_ref())?;
+        // The run first: if it cannot be opened, nothing is marked.
+        let push = self.open_run(host, rel, is_file, own.as_ref())?;
         store.put(&Marker {
             version: RECORD_VERSION,
             rel: rel.into(),

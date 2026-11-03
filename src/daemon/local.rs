@@ -8,16 +8,16 @@
 //! frame per unit started and finished, then the report. While a request
 //! runs, the daemon watches the CLI's end: once it hangs up (Ctrl-C, or the
 //! CLI killed), the request's abort is raised, which stops a sync's running
-//! rsync (the unit left interrupted, its marker kept) and starts no other
+//! transfer (the unit left interrupted, its marker kept) and starts no other
 //! unit (review N1).
 
 use super::remote::{recv, recv_buffered, send};
 use super::wire::{
     LOCAL_WIRE_VERSION, LocalAnswer, LocalCall, LocalFrame, LocalReply, LocalRequest,
 };
+use crate::abort::Abort;
 use crate::config::Dirs;
 use crate::plan::apply::{Progress, ProgressEvent};
-use crate::rsync::Abort;
 use crate::{Error, Result};
 use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::net::Shutdown;

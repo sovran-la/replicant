@@ -27,11 +27,8 @@ fn the_cli_hanging_up_stops_the_units_transfer_and_the_sync() {
     let inj = Inject::new(&bed, "work/beta", How::Stalls);
     let link = inj.link(&bed, &home);
     let cfg = bed.leaf_cfg();
-    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
-    let ctx = LeafCtx {
-        plane: inj.plane(),
-        ..ctx(&bed, &cfg, &dirs, crate::plan::RSYNC)
-    };
+    let dirs = bed.leaf_dirs.state();
+    let ctx = ctx(&bed, &cfg, &dirs);
     let report = Mutex::new(None);
     let (mut cli, daemon) = UnixStream::pair().unwrap();
     let started = Instant::now();
@@ -91,11 +88,10 @@ fn the_cli_hanging_up_stops_the_units_transfer_and_the_sync() {
     let Outcome::Interrupted { why, .. } = &r.outcome else {
         unreachable!()
     };
-    let stop = match inj.native() {
-        true => "transfer stopped",
-        false => "rsync stopped",
-    };
-    assert!(why.ends_with(stop) && !why.contains("lease"), "{why}");
+    assert!(
+        why.ends_with("transfer stopped") && !why.contains("lease"),
+        "{why}"
+    );
     // What the CLI saw before it left: work and alpha whole, beta begun.
     let started: Vec<&str> = seen
         .iter()
@@ -110,76 +106,40 @@ fn the_cli_hanging_up_stops_the_units_transfer_and_the_sync() {
     resumes(&bed, &home);
 }
 
-/// Review P2: the CLI hanging up after a unit's rsync exited 0 does not
-/// undo it. The rsync finished whole and no exclusivity was lost, so the
-/// unit finishes (baselines, marker cleared, journaled ok) and the sync
-/// stops before the next one.
+/// Review P2: the CLI hanging up after a unit's transfer finished whole
+/// does not undo it. No exclusivity was lost, so the unit finishes
+/// (baselines, marker cleared, journaled ok) and the sync stops before the
+/// next one. The hangup lands as beta's transfer is done and verified and
+/// the leaf tells home they agree.
 #[test]
 fn a_hangup_after_the_transfer_finished_lets_the_unit_finish() {
     let bed = Bed::enrolled();
     tree(&bed.home_hd.join("work"));
     let home = bed.home();
-    let (exited, go) = (bed.tmp.path().join("exited"), bed.tmp.path().join("go"));
+    let landed = std::sync::atomic::AtomicBool::new(false);
     let abort = crate::abort::Abort::default();
-    let native = crate::plan::tests::inject::Inject::new(&bed, "work/beta", How::Fails).native();
-    // rsync: beta's real rsync, then exit 0 with a background shell holding
-    // stdout open, so `transfer` is still collecting output when, only
-    // after the rsync has been reaped, the shell says so and waits to be
-    // let go. Native: the hangup lands as beta's transfer is done and
-    // verified and the leaf tells home they agree.
-    let fake = testutil::script(
-        bed.tmp.path(),
-        "rsync-p2",
-        &format!(
-            "for a in \"$@\"; do [ \"$a\" = --dry-run ] && exec rsync \"$@\"; done\n\
-             for a in \"$@\"; do case \"$a\" in */work/beta/) \
-             rsync \"$@\"; code=$?; me=$$; \
-             ( while kill -0 $me 2>/dev/null; do sleep 0.02; done; : > {exited}; \
-               n=0; while [ ! -e {go} ] && [ $n -lt 1500 ]; do sleep 0.02; n=$((n+1)); done ) & \
-             exit $code ;; esac; done\nexec rsync \"$@\"",
-            exited = exited.display(),
-            go = go.display(),
-        ),
-    )
-    .display()
-    .to_string();
     let inner = InProcess {
         home: &home,
         host: "leaf".into(),
         home_dir: bed.leaf_hd.clone(),
     };
     let link = Faulty::new(inner, Fault::None).on_call(Box::new(|r, _| {
-        if native && matches!(r, HomeRequest::Agree { rel, .. } if rel == "work/beta") {
-            testutil::write(&exited, "");
+        if matches!(r, HomeRequest::Agree { rel, .. } if rel == "work/beta") {
+            landed.store(true, std::sync::atomic::Ordering::SeqCst);
             abort.raise_because(HANGUP);
         }
         Ok(())
     }));
     let cfg = bed.leaf_cfg();
-    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
-    let ctx = LeafCtx {
-        plane: match native {
-            true => crate::plan::xfer::test_plane(),
-            false => crate::plan::Plane::Rsync(&fake),
-        },
-        ..ctx(&bed, &cfg, &dirs, crate::plan::RSYNC)
-    };
+    let dirs = bed.leaf_dirs.state();
+    let ctx = ctx(&bed, &cfg, &dirs);
     let emit = |_: ProgressEvent| {};
     let progress = Progress::new(&emit, abort.clone());
-    let r = std::thread::scope(|s| {
-        s.spawn(|| {
-            let by = Instant::now() + Duration::from_secs(30);
-            while !exited.exists() && Instant::now() < by {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            if exited.exists() {
-                abort.raise_because(HANGUP);
-            }
-            testutil::write(&go, "");
-        });
-        crate::plan::apply::sync_with(&link, ctx, &SyncOpts::default(), &progress).unwrap()
-    });
-    assert!(exited.exists(), "beta's transfer never ran");
+    let r = crate::plan::apply::sync_with(&link, ctx, &SyncOpts::default(), &progress).unwrap();
+    assert!(
+        landed.load(std::sync::atomic::Ordering::SeqCst),
+        "beta's transfer never finished"
+    );
     assert!(abort.raised());
     match &r.outcome {
         Outcome::Failed { rel, why } => {

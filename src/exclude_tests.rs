@@ -62,8 +62,8 @@ fn builtins_cover_git_locks_and_worktrees_at_any_depth() {
 }
 
 /// The filesystem crate's rule: a pattern with a `/` is matched against the
-/// unit-relative path, so it is rooted at the unit. (rsync's own unanchored
-/// rule matched it at any depth; `**/` says that now.)
+/// unit-relative path, so it is rooted at the unit (`**/` matches at any
+/// depth).
 #[test]
 fn slash_pattern_is_rooted_at_the_unit() {
     let e = ex(&["agents/state"]);
@@ -84,7 +84,11 @@ fn anchored_matches_only_from_root() {
     assert!(!e.matches("x/tundra/beacon", true));
     assert!(!e.matches("tundra/beacon", false), "pushed as a directory");
     assert!(e.path_excluded("tundra/beacon/src/main.rs", false));
-    assert_eq!(e.rsync_args(), vec!["--exclude=/tundra/beacon/"]);
+    assert_eq!(e, {
+        let mut one = Excludes::default();
+        one.push("/tundra/beacon/").unwrap();
+        one
+    });
     let e = ex(&["/top"]);
     assert!(e.matches("top", false));
     assert!(!e.matches("app/top", false), "never the bare name");
@@ -113,7 +117,7 @@ fn push_exact_renders_every_ascii_character() {
             e.push_exact(&name, false);
             assert!(e.matches(&name, false), "{name:?}");
             assert!(!e.matches("plain", false), "{name:?}");
-            assert_eq!(e.rsync_args().len(), 1, "{name:?}");
+            assert!(!e.is_empty(), "{name:?}");
         }
     }
 }
@@ -133,7 +137,7 @@ fn positive_ascii_classes() {
 }
 
 /// Review P2: globset's class matches `/` even with `literal_separator`, and
-/// rsync's never does, so a range that includes 0x2F would disagree.
+/// a path's never does, so a range that includes 0x2F is refused.
 #[test]
 fn class_ranges_spanning_the_separator_are_refused() {
     for pat in ["[+-0]", "x/a[+-0]b", "[.-0]", "[ -~]", "a[0-9 -~]"] {
@@ -176,7 +180,7 @@ fn refused_patterns_say_why() {
         ("**a", "whole path component"),
         ("a/**b/c", "whole path component"),
         (".git/**.lock", "whole path component"),
-        ("***", "rsync-only"),
+        ("***", "not supported"),
         ("a//b", "empty path component"),
         ("a[b", "unterminated"),
         ("a]", "unmatched"),
@@ -225,51 +229,18 @@ fn plan_examples_are_accepted() {
     }
 }
 
-/// The translation table in `docs/v0.2-prep-notes.md`, held to the code.
-#[test]
-fn rsync_rules_follow_the_translation_table() {
-    let rules = |p: &str| {
-        let e = ex(&[p]);
-        e.rsync_args()
-            .into_iter()
-            .map(|a| a.trim_start_matches("--exclude=").to_string())
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(rules("target"), ["target"]);
-    assert_eq!(rules("*.log"), ["*.log"]);
-    assert_eq!(rules("build/"), ["build/"]);
-    assert_eq!(rules("/top"), ["/top"]);
-    assert_eq!(rules("agents/state"), ["/agents/state"]);
-    assert_eq!(rules("**/x"), ["/x", "/**/x"]);
-    assert_eq!(rules("a/**/b/"), ["/a/b/", "/a/**/b/"]);
-    assert_eq!(rules("a/**"), ["/a/**"]);
-    assert_eq!(rules("**"), ["/**"]);
-    assert_eq!(
-        rules("**/.git/**/*.lock"),
-        [
-            "/.git/*.lock",
-            "/**/.git/*.lock",
-            "/.git/**/*.lock",
-            "/**/.git/**/*.lock"
-        ]
-    );
-    assert_eq!(rules("v[0-9]"), ["v[0-9]"]);
-    assert_eq!(rules("\\*lit"), ["\\*lit"]);
-    // No wildcard anywhere: rsync reads a backslash literally.
-    assert_eq!(rules("we\\\\ird"), ["we\\ird"]);
-    // A wildcard elsewhere turns escapes on, so the backslash is doubled.
-    assert_eq!(rules("we\\\\ird*"), ["we\\\\ird*"]);
-    assert_eq!(rules("\\{x\\}"), ["{x}"]);
-}
-
 #[test]
 fn for_root_adds_builtins_and_dedupes() {
     let twice = Excludes::for_root(&["target".into(), "target".into()]).unwrap();
     let once = Excludes::for_root(&["target".into()]).unwrap();
     assert_eq!(twice, once);
-    assert_eq!(twice.rsync_args(), once.rsync_args());
-    let builtins = Excludes::new(BUILTIN).unwrap().rsync_args().len();
-    assert_eq!(once.rsync_args().len(), builtins + 1);
+    let mut all: Vec<&str> = BUILTIN.to_vec();
+    all.push("target");
+    assert_eq!(
+        once,
+        Excludes::new(&all).unwrap(),
+        "the built-ins, then the root's"
+    );
 }
 
 #[test]
@@ -300,7 +271,6 @@ fn empty_excludes_match_nothing() {
     let e = Excludes::default();
     assert!(e.is_empty());
     assert!(!e.path_excluded("a/b", false));
-    assert!(e.rsync_args().is_empty());
     let mut e = Excludes::default();
     e.push_exact("", true);
     assert!(e.is_empty(), "an empty exact path is no pattern");

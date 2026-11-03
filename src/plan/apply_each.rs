@@ -1,7 +1,7 @@
 //! Apply's loop: every unit of the plan in order, each announced as it
 //! starts and as it ends ([`Progress`]), stopping at the first that does not
 //! finish. Once the abort is raised (the lease lost, the CLI gone), the
-//! running rsync is stopped and no later unit begins; a unit it is raised
+//! running transfer is stopped and no later unit begins; a unit it is raised
 //! for before its marker (as it is announced) writes nothing at all.
 
 use super::super::{AppliedUnit, Outcome, Progress, ProgressEvent, Stash, UnitOutcome};
@@ -49,7 +49,7 @@ pub(in crate::plan) fn apply_all(
             Err(e) => return failed(u, e),
         };
         let (action, direction) = match &s {
-            Step::Transfer { t, action, .. } => (*action, Some(t.direction())),
+            Step::Transfer { t, action, .. } => (*action, Some(t.direction)),
             Step::Adopt => ("adopt", None),
             Step::Forget => ("forget", None),
             Step::Skip => unreachable!("skipped units are not in the work"),

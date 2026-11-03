@@ -35,7 +35,7 @@ fn every_event() -> Vec<ProgressEvent> {
         started(1),
         done(UnitOutcome::Applied),
         done(UnitOutcome::Interrupted {
-            why: "the CLI hung up; rsync stopped".into(),
+            why: "the CLI hung up; transfer stopped".into(),
         }),
         done(UnitOutcome::Failed {
             why: "home unreachable\nsecond line".into(),

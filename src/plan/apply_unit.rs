@@ -1,16 +1,16 @@
 //! One unit of a sync, in the order PLAN.md's "Interrupted sync" fixes: the
-//! target side's marker, the real rsync, and only after exit 0 the
-//! baselines on both sides, the marker cleared, the journal line.
+//! target side's marker, the transfer, and only once it finished and was
+//! verified the baselines on both sides, the marker cleared, the journal
+//! line.
 //!
 //! The target writes the marker: this leaf for a pull (a removal, a
 //! deletion confirmed on home's behalf), home for a push (`BeginPush`).
 //! Each side's state in a new baseline is the one it was planned with for
 //! the source (a change since is then still a change), and hashed again
-//! after the rsync for the target.
+//! after the transfer for the target.
 
 use super::{AppliedUnit, Outcome};
 use crate::baseline;
-use crate::changes::ChangeKind;
 use crate::daemon::wire::{HomeReply, HomeRequest};
 use crate::marker::{self, Direction, Marker};
 use crate::plan::lease::Watch;
@@ -81,8 +81,8 @@ fn transfer(
     if watch.abort().raised() {
         return Ok(Done::Stopped(stopped_before(u, watch)));
     }
-    // The marker: before the rsync, on the target.
-    let direction = t.direction();
+    // The marker: before the transfer, on the target.
+    let direction = t.direction;
     let source_state = match (deleting, direction) {
         (true, _) => UnitState::Empty,
         (false, Direction::Pull) => u.home.clone(),
@@ -108,9 +108,9 @@ fn transfer(
         Direction::Push => {
             // Home backs up what this push will replace or delete, so it
             // needs the list as of now, and it must be what was planned.
-            let (it, native) = ops.dry_run(t)?;
+            let d = ops.dry_run(t)?;
             let planned = u.diff.as_ref().map(|d| &d.changes);
-            if planned != Some(&diff::summarize(&it).changes) {
+            if planned != Some(&diff::summarize(&d.itemized).changes) {
                 return Ok(Done::Stopped(Outcome::Failed {
                     rel: u.rel.clone(),
                     why: "it changed since the plan was made; nothing of it was written. Run \
@@ -118,18 +118,7 @@ fn transfer(
                         .into(),
                 }));
             }
-            // The native receiver renames what it replaces into the backup
-            // as it goes; rsync's push needs home to copy it first.
-            let backup: Vec<String> = match native {
-                Some(_) => vec![],
-                None => it
-                    .changes
-                    .iter()
-                    .filter(|c| !c.is_dir && c.kind != ChangeKind::Create)
-                    .map(|c| c.path.clone())
-                    .collect(),
-            };
-            fresh = native;
+            fresh = Some(d);
             // Home's marker and backup are the push's first writes.
             if watch.abort().raised() {
                 return Ok(Done::Stopped(stopped_before(u, watch)));
@@ -138,8 +127,7 @@ fn transfer(
                 lease,
                 rel: u.rel.clone(),
                 source_state,
-                backup,
-                is_file: t.is_file(),
+                is_file: t.is_file,
             })?;
             let HomeReply::Begun { push: id } = reply else {
                 return Err(Error::Remote(format!(
@@ -156,8 +144,8 @@ fn transfer(
         // Stopped by whoever raised the abort and said why (the CLI hung
         // up); without a reason, a lost lease.
         let why = match (ran.stopped, watch.abort().why()) {
-            (true, Some(w)) => format!("{w}; {}", ran.stop_word),
-            (true, None) => format!("lease lost; {}", ran.stop_word),
+            (true, Some(w)) => format!("{w}; transfer stopped"),
+            (true, None) => "lease lost; transfer stopped".to_string(),
             _ => ran.why(),
         };
         let journaled = link
@@ -174,10 +162,10 @@ fn transfer(
             journaled,
         }));
     }
-    // A lease lost while rsync ran means another entry may have run beside
+    // A lease lost while the transfer ran means another entry may have run beside
     // it: what arrived is not known to be whole. The marker stays. The
     // lease only, not the abort: a hangup after exit 0 lost no exclusivity
-    // and the rsync finished whole, so the unit finishes (review P2).
+    // and the transfer finished whole, so the unit finishes (review P2).
     if let Err(e) = watch.check() {
         let why = e.to_string();
         let journaled = link

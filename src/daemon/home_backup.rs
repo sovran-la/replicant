@@ -4,14 +4,12 @@
 //! each run's backed-up files and what the push reported writing. That is
 //! what `replicant rollback` undoes.
 //!
-//! The native receiver renames each path into the run's directory at the
-//! moment it replaces or deletes it (`native::backup`), so `BeginPush` only
-//! opens the run. A list sent with `BeginPush` is copied first, as before
-//! (the rsync plane's way: openrsync given `--backup` silently skips
-//! `--delete`). Either way the run's directory *is* the record: what it
-//! holds is what the run backed up ([`kept`]), read again when the run is
-//! reported and when it is rolled back, so even a run whose leaf died
-//! before reporting can be restored.
+//! The receiver renames each path into the run's directory at the moment it
+//! replaces or deletes it (`native::backup`), so `BeginPush` only opens the
+//! run. The run's directory *is* the record: what it holds is what the run
+//! backed up ([`kept`]), read again when the run is reported and when it is
+//! rolled back, so even a run whose leaf died before reporting can be
+//! restored.
 //!
 //! A push that is resumed is the same push: each attempt is a run, so a
 //! file the first run already replaced keeps its original copy in run 1.
@@ -51,21 +49,23 @@ pub struct Push {
     pub rollback_settled_at: Option<u64>,
 }
 
-/// One rsync of a push: the first, or a resume.
+/// One transfer of a push: the first, or a resume.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Run {
     pub started_at: u64,
-    /// Unit-relative files copied into `run-<n>/` before the rsync wrote.
+    /// Unit-relative files the run kept in `run-<n>/`: what it replaced or
+    /// deleted, read from the directory when the run is reported.
     pub backed_up: Vec<String>,
-    /// Files the push said it would replace that did not exist yet (openrsync
-    /// itemizes a file bound for a new directory as an update): created by
-    /// the push, so a rollback deletes them.
+    /// Files a v0.2-v0.3 push said it would replace that did not exist yet
+    /// (openrsync itemized a file bound for a new directory as an update):
+    /// created by the push, so a rollback deletes them. Empty since 0.4,
+    /// whose diff says `+` for those; kept for older manifests.
     #[serde(default)]
     pub absent: Vec<String>,
-    /// What rsync reported writing, in the dry run's notation (`~ a`,
+    /// What the transfer reported writing, in the dry run's notation (`~ a`,
     /// `+ d/`, `- b`); partial for a run that failed.
     pub changes: Vec<String>,
-    /// Whether rsync's report arrived. A leaf that died mid-push never
+    /// Whether the transfer's report arrived. A leaf that died mid-push never
     /// sends one, so what that run added is not known.
     pub reported: bool,
 }
@@ -102,7 +102,7 @@ pub(super) fn check_id(id: &str) -> Result<()> {
     }
 }
 
-/// Where rsync's list operations on a unit run, and what the listed paths
+/// Where the list operations on a unit run, and what the listed paths
 /// are called there: the unit itself, or for a unit that is a single file,
 /// its directory, with the file's name as the one entry.
 pub(super) fn list_root(
@@ -140,26 +140,16 @@ impl Home {
         self.dirs.backup().join(id)
     }
 
-    /// Back up `files` (unit-relative) of `rel` before `host` pushes it, as
-    /// a new run of the push its marker names, or of a new push. Returns
-    /// the push id. On failure nothing is recorded and the run's directory
-    /// is removed.
-    pub(super) fn back_up(
+    /// Open a run for `host`'s push of `rel`: a new run of the push its
+    /// marker names, or of a new push, with its (empty) backup directory.
+    /// Returns the push id.
+    pub(super) fn open_run(
         &self,
         host: &str,
         rel: &str,
-        unit_path: &Path,
         is_file: bool,
-        files: &[String],
         resuming: Option<&Marker>,
     ) -> Result<String> {
-        for f in files {
-            if !f.is_empty() && paths::check_rel(f).is_err() {
-                return Err(Error::Refused(format!(
-                    "{f:?} is not a path inside {rel}; nothing backed up"
-                )));
-            }
-        }
         let store = pushes(&self.dirs.state());
         let now = crate::now_secs();
         let mut push = match resuming.and_then(|m| m.push.clone()) {
@@ -185,25 +175,10 @@ impl Home {
             .push_dir(&push.id)
             .join(format!("run-{}", push.runs.len() + 1));
         std::fs::create_dir_all(&run_dir)?;
-        let exists = |f: &String| {
-            let (root, names) = list_root(unit_path, push.is_file, std::slice::from_ref(f));
-            std::fs::symlink_metadata(root.join(&names[0])).is_ok_and(|m| !m.is_dir())
-        };
-        let (present, absent): (Vec<String>, Vec<String>) =
-            files.iter().cloned().partition(|f| exists(f));
-        if !present.is_empty() {
-            let (from, list) = list_root(unit_path, push.is_file, &present);
-            if let Err(e) = crate::native::local::copy_listed(&from, &run_dir, &list) {
-                let _ = std::fs::remove_dir_all(&run_dir);
-                return Err(Error::Transfer(format!(
-                    "could not back up {rel} before the push: {e}"
-                )));
-            }
-        }
         push.runs.push(Run {
             started_at: now,
-            backed_up: present,
-            absent,
+            backed_up: vec![],
+            absent: vec![],
             changes: vec![],
             reported: false,
         });
@@ -223,7 +198,7 @@ impl Home {
         id
     }
 
-    /// rsync's report for the current run of `host`'s push of `rel`: the
+    /// The transfer's report for the current run of `host`'s push of `rel`: the
     /// changes it wrote, and whether the push is finished.
     pub(super) fn record_run(
         &self,
@@ -232,7 +207,7 @@ impl Home {
         changes: &[String],
         finished: bool,
     ) -> Result<Option<String>> {
-        // What the leaf says rsync wrote becomes rollback's delete list
+        // What the leaf says the push wrote becomes rollback's delete list
         // (review N2): every path must stay inside the unit, as the backup
         // list must (empty: a single-file unit itself).
         for c in changes {

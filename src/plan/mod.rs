@@ -1,10 +1,11 @@
 //! The leaf's `status`, `sync --dry-run` and `sync`: discover, exchange state
 //! with home, decide every unit, and (for a dry run or a sync) take a queue
-//! entry, run the rsync dry runs and the guardrails.
+//! entry, run the dry runs (the diff of both sides' manifests) and the
+//! guardrails.
 //!
-//! Planning is read-only end to end: git runs without optional locks, rsync
-//! runs with `--dry-run`, and nothing here writes a baseline, a marker, or a
-//! synced path. A real `sync` then applies under the same queue entry
+//! Planning is read-only end to end: git runs without optional locks, a dry
+//! run only walks and asks home for its manifest, and nothing here writes a
+//! baseline, a marker, or a synced path. A real `sync` then applies under the same queue entry
 //! ([`apply`]); that is the only code that writes.
 
 pub mod apply;
@@ -62,17 +63,12 @@ pub struct LeafCtx<'a> {
     pub home_dir: &'a Path,
     pub cfg: &'a LeafConfig,
     pub state_dir: &'a Path,
-    /// [`crate::config::Dirs::scratch`].
-    pub scratch_dir: &'a Path,
     /// Which data plane moves the bytes.
-    pub plane: Plane<'a>,
+    pub plane: Plane,
     /// `--accept-rollback`: units (by unit path or this leaf's path) whose
     /// rolled-back push this host takes home's copy for (review A2).
     pub accept_rollback: &'a [String],
 }
-
-/// The rsync a leaf runs on the rsync plane: whatever `rsync` is on `PATH`.
-pub const RSYNC: &str = "rsync";
 
 fn ms(since: Instant) -> u64 {
     since.elapsed().as_millis() as u64
@@ -87,7 +83,7 @@ pub fn subscriptions(link: &dyn HomeLink) -> Result<SubscriptionsView> {
     }
 }
 
-/// What a plan is for: `status` (no queue entry, no rsync), `sync
+/// What a plan is for: `status` (no queue entry, no dry runs), `sync
 /// --dry-run`, or a real `sync` (the same as a dry run, and then apply under
 /// the same queue entry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +116,7 @@ pub(crate) struct Planned<'a> {
     pub streams: u32,
 }
 
-/// Plan every unit. `dry_run` adds the queue entry, rsync diffs and guards.
+/// Plan every unit. `dry_run` adds the queue entry, the dry runs and guards.
 pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool) -> Result<Plan> {
     let mode = if dry_run { Mode::DryRun } else { Mode::Status };
     let (plan, ()) = run(link, ctx, mode, no_wait, Default::default(), |_, _| Ok(()))?;
@@ -137,7 +133,7 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
 
 /// Plan, and then run `then` under the same queue entry, its lease still
 /// heartbeated. A lost lease fails the result whatever `then` returned.
-/// `abort` stops every rsync the plan runs once raised, by a lost lease or
+/// `abort` stops the plan's dry runs once raised, by a lost lease or
 /// by whoever else holds it.
 pub(crate) fn run<T>(
     link: &dyn HomeLink,
@@ -240,7 +236,7 @@ pub(crate) fn run<T>(
         t.leaf_state_ms = ms(started);
         let mut transfers = vec![None; planned.len()];
         if dry_run {
-            // Do not start an rsync on a lease that is already gone.
+            // Do not start a dry run on a lease that is already gone.
             watch.check()?;
             let started = Instant::now();
             union.extend(gone.repos);
@@ -256,7 +252,7 @@ pub(crate) fn run<T>(
                 &mut planned,
                 &leaf_markers,
             )?;
-            t.rsync_ms = ms(started);
+            t.dry_run_ms = ms(started);
         }
         let plan = Plan {
             me: ctx.me.into(),

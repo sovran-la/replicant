@@ -99,7 +99,8 @@ pub struct Timings {
     pub queue_ms: u64,
     pub home_state_ms: u64,
     pub leaf_state_ms: u64,
-    pub rsync_ms: u64,
+    #[serde(alias = "rsync_ms")]
+    pub dry_run_ms: u64,
     pub total_ms: u64,
 }
 

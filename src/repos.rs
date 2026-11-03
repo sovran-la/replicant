@@ -13,8 +13,8 @@
 //! Everything else is **loose**: a file, symlink or directory that belongs to
 //! no repo, recorded with enough metadata for the manifest in [`crate::state`].
 //!
-//! Symlinks inside the tree are never followed: they are entries, and rsync
-//! `-a` copies them as links. The one exception is a subscription's base
+//! Symlinks inside the tree are never followed: they are entries, and a
+//! transfer makes them as links. The one exception is a subscription's base
 //! ([`discover_base`], review P4): `~/work2 → /Volumes/data/work2` is the
 //! directory it names, and a dangling one is missing. The walk is parallel
 //! ([`walk`]); every list in a [`Discovery`] is sorted, so the result is the

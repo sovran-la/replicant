@@ -1,5 +1,5 @@
 //! One unit's transfer as the leaf runs it: the native data plane behind
-//! the same seam rsync's `Transfer` was. A dry run is the diff of the two
+//! the seam rsync's `Transfer` was until v0.4. A dry run is the diff of the two
 //! sides' manifests; applying it carries the change list out over data
 //! connections to home and then checks the result: a fresh diff of source
 //! against target must leave nothing but directories that hold what the

@@ -89,7 +89,7 @@ fn anchored_exclude_is_refused() {
     assert!(err.to_string().contains("anchored"), "{err}");
 }
 
-/// A pattern rsync cannot read the same way is refused when fleet.toml loads,
+/// A pattern outside the accepted subset is refused when fleet.toml loads,
 /// not discovered later as a sync that moves what replicant thought excluded.
 #[test]
 fn untranslatable_exclude_is_refused_at_load() {

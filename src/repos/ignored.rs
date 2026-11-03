@@ -4,15 +4,18 @@
 //! Only the repo's own `.gitignore` files count, nested ones included: never
 //! the user's global gitignore (it differs per machine) and never
 //! `.git/info/exclude`. The same rule decides what replicant walks, what the
-//! hash sees, and what rsync is told to leave alone on *both* ends, so an
+//! hash sees, and what a transfer leaves alone on *both* ends (each side's
+//! list crosses the wire, and a unit's transfer excludes their union), so an
 //! ignored `.env.local` on the target is never deleted for being absent on
 //! the source.
 //!
-//! **Why not rsync's `--filter=':- .gitignore'`.** Neither macOS's openrsync
-//! nor rsync 3.4.1 reads a `!negation` the way git does: both excluded
-//! `keep.log` under `*.log` / `!keep.log` (probe, `docs/v0.2-prep-notes.md`).
-//! So replicant lists the ignored paths itself and hands rsync one anchored
-//! literal per path ([`crate::exclude::Excludes::push_exact`]).
+//! **Why a list, and not each side's rules at walk time.** Each side's walk
+//! could apply its own `.gitignore`s, but a path ignored on one side only
+//! would then be sent over (or deleted from) the side that ignores it. The
+//! lists, unioned, leave such a path alone on both (one anchored literal
+//! per path, [`crate::exclude::Excludes::push_exact`]). (v0.2 chose the list
+//! for rsync, whose `.gitignore` merge rule misreads `!negation`; see
+//! `docs/v0.2-prep-notes.md`.)
 //!
 //! **Why not `git ls-files --ignored --directory`.** It collapses a directory
 //! whose *current contents* happen to be all ignored (`sub/deep/` holding only

@@ -101,7 +101,7 @@ fn a_rolled_back_push_holds_the_pusher_until_it_accepts_then_pulls_then_settles(
         unit(&accepted, "work", UnitKind::Loose).decision,
         Decision::Pull
     );
-    let r = sync_with(&bed, &home, &opts(&["work"]), crate::plan::RSYNC).unwrap();
+    let r = sync_with(&bed, &home, &opts(&["work"])).unwrap();
     assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
     assert_eq!(r.applied.len(), 1);
     assert_eq!(
@@ -134,10 +134,10 @@ fn plan_of_accepting(bed: &Bed, home: &Home, accept: &[&str]) -> crate::plan::Pl
         home_dir: bed.leaf_hd.clone(),
     };
     let cfg = bed.leaf_cfg();
-    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let dirs = bed.leaf_dirs.state();
     let ctx = crate::plan::LeafCtx {
         accept_rollback: &accept,
-        ..crate::plan::apply::tests::ctx(bed, &cfg, &dirs, crate::plan::RSYNC)
+        ..crate::plan::apply::tests::ctx(bed, &cfg, &dirs)
     };
     crate::plan::plan(&link, ctx, true, false).unwrap()
 }
@@ -149,13 +149,7 @@ fn accept_names_the_unit_by_its_local_path_too_and_must_name_one() {
     rolled_back(&bed, &home);
     let before = leaf_side(&bed);
     // Naming nothing rolled back blocks, rather than being ignored.
-    let r = sync_with(
-        &bed,
-        &home,
-        &opts(&["work", "work/alpha"]),
-        crate::plan::RSYNC,
-    )
-    .unwrap();
+    let r = sync_with(&bed, &home, &opts(&["work", "work/alpha"])).unwrap();
     let Outcome::Blocked { why } = &r.outcome else {
         panic!("{:#?}", r.outcome);
     };
@@ -169,7 +163,7 @@ fn accept_names_the_unit_by_its_local_path_too_and_must_name_one() {
     );
     assert_eq!(leaf_side(&bed), before);
     // `~/work/` is this leaf's path for the unit.
-    let r = sync_with(&bed, &home, &opts(&["~/work/"]), crate::plan::RSYNC).unwrap();
+    let r = sync_with(&bed, &home, &opts(&["~/work/"])).unwrap();
     assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
 }
 
@@ -180,13 +174,29 @@ fn a_leaf_that_already_matches_home_is_adopted_and_settles_the_rollback() {
     let id = rolled_back(&bed, &home);
     // The person copies home's loose files back by hand (mtimes and all:
     // the loose hash covers them): nothing is left for the hold to guard.
-    let st = std::process::Command::new("rsync")
-        .args(["-a", "--delete", "--exclude=/alpha"])
-        .arg(format!("{}/", bed.home_hd.join("work").display()))
-        .arg(format!("{}/", bed.leaf_hd.join("work").display()))
-        .status()
-        .unwrap();
-    assert!(st.success());
+    {
+        use crate::native::{EntryKind, Manifest, diff, receive::Receiver};
+        let mut ex = crate::exclude::Excludes::default();
+        ex.push_exact("alpha", true);
+        let (from, to) = (bed.home_hd.join("work"), bed.leaf_hd.join("work"));
+        let c = diff(
+            &Manifest::walk(&from, &ex, false).unwrap(),
+            &Manifest::walk(&to, &ex, false).unwrap(),
+        );
+        let rx = Receiver::open(&to, false, None, None).unwrap();
+        for e in &c.mkdir {
+            rx.mkdir(e).unwrap();
+        }
+        for e in &c.send {
+            match e.kind {
+                EntryKind::Symlink => rx.symlink(e).unwrap(),
+                _ => rx
+                    .file(e, &std::fs::read(from.join(&e.rel)).unwrap())
+                    .unwrap(),
+            }
+        }
+        rx.delete(&c.delete).unwrap();
+    }
     let p = plan_of(&bed, &home, false);
     assert_eq!(
         unit(&p, "work", UnitKind::Loose).leaf,

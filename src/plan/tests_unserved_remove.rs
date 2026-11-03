@@ -108,7 +108,7 @@ fn a_carve_out_by_unsubscribe_is_remove_and_resubscribing_restores_it() {
     );
 }
 
-/// Rev 7: a removal is rsync `--delete` from an empty source, and a
+/// Rev 7: a removal is a transfer from an empty source, and a
 /// git-ignored file is never moved, so it is not deleted either.
 #[test]
 fn a_removal_spares_the_leafs_ignored_files() {

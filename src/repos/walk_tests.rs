@@ -106,7 +106,7 @@ fn parallel_walk_equals_the_serial_walk() {
     }
 }
 
-/// Replicant has to see everything rsync would move, so none of `ignore`'s
+/// Replicant has to see everything a transfer would move, so none of `ignore`'s
 /// filters may be on.
 #[test]
 fn hidden_and_ignored_files_are_seen() {

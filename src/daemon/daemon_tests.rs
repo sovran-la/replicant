@@ -31,7 +31,6 @@ fn enroll_approve_status_dry_run_fleet_and_log_over_mtls() {
     let sub = LocalRequest::Subscribe {
         home: "home".into(),
         address: None,
-        rsync_host: None,
         credentials: None,
         paths: vec![format!("{}/work", bed.leaf_hd.display())],
         as_local: None,
@@ -178,7 +177,6 @@ fn subscribe_as_records_the_local_mapping_and_unsubscribe_drops_it() {
     let sub = LocalRequest::Subscribe {
         home: "home".into(),
         address: None,
-        rsync_host: None,
         credentials: None,
         paths: vec!["~/work/x".into()],
         as_local: Some(work2.clone()),
@@ -211,7 +209,6 @@ fn subscribe_as_records_the_local_mapping_and_unsubscribe_drops_it() {
     let other_home = LocalRequest::Subscribe {
         home: "elsewhere".into(),
         address: None,
-        rsync_host: None,
         credentials: None,
         paths: vec!["~/work".into()],
         as_local: None,
