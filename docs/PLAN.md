@@ -7,6 +7,7 @@ rev 8 2026-11-01 night (apply built on `bsneed/v0.2-apply`, pending review: F3's
 rev 9 2026-11-02 (apply review fixed: a marker resumes only its own unit; a resume will not replace leaf work newer than its marker (guardrail 6); a rolled-back push holds its pusher until `--accept-rollback`).
 rev 10 2026-11-02 (sync shows each unit as it applies, with its time and the total; Ctrl-C at the CLI stops the running rsync, leaving its unit interrupted with its marker).
 rev 11 2026-11-02 (a confirmed plan is what each unit will do and what it would delete, not the bytes it carries: an edit or a touch between the plan shown and the `y` no longer voids it).
+rev 12 2026-11-03 (rsync removed: the daemons move the bytes over their mTLS link, the native transport; a dry run is the diff of both sides' manifests; home backs up by rename; per-unit progress; `[daemon] streams`. Built on `bsneed/v0.4-native`, release 0.4.0; record: `docs/v0.4-native-notes.md`).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -92,15 +93,48 @@ nothing waiting, which is loud, and `approve` reissues. A pairing token is
 not needed while every leaf is Brandon's. Caps still guard against mistakes
 only until the ssh-side confinement exists.
 
-**Data plane:** `rsync -a --delete` over Tailscale SSH. Replicant never
-copies bytes itself; it is policy and guardrails around rsync. The daemon
-never carries file data. ssh runs non-interactive with timeouts
-(`BatchMode=yes`, `ConnectTimeout`, `ServerAlive*`) and rsync runs under a
-wall-clock bound, so a hung transfer cannot wedge home's queue. Quoting home's
-path is the *client's* job: rsync ≥ 3.2.4 escapes it, macOS's openrsync does
-not, so replicant detects openrsync and single-quotes the path for it. (The
-v0.1 notes' "rsync ≥ 3.2.4 on home protects arguments" is wrong; escaping is
-client-side.)
+**Data plane: the native transport** (rev 12; rsync over ssh until 0.3).
+The daemons move the bytes themselves, over the same mTLS listener,
+certificates and pins as the control plane; there is no ssh. Per unit:
+
+- **Manifest.** Each side walks the unit into a manifest: (path, kind
+  file/symlink/dir, size, mtime to the nanosecond, mode, link target), with
+  the unit's excludes applied as it walks (root excludes, carve-outs, a
+  loose unit's repos, worktree checkouts, and both sides' git-ignored
+  paths). Symlinks are entries, never followed. The leaf walks its side;
+  home sends its own (`HomeRequest::Manifest`, at the head of the queue).
+- **Diff.** The diff of source against target *is* the dry run: an entry is
+  sent when the target lacks it or holds it with another kind, size, mtime,
+  mode or link target (a link compares by target only); what the target has
+  and the source does not is deleted. Rendered as the same `+ / ~ / a / -`
+  lines, it is what the plan shows, the guardrails read and the digest
+  hashes.
+- **Channel.** A data connection is a second kind of connection to home's
+  listener: after the TLS handshake the leaf writes `replicant-data\n`
+  where a request starts with `{`, then binary frames: `u32` payload length
+  (big-endian), `u8` kind, payload (JSON for control-ish frames, raw bytes
+  for file data; at most 8 MiB). The leaf says `Hello` (lease, unit,
+  direction, ack timeout); home answers `Ready` or `Refused`. The leaf
+  always dials and always drives: on a push it sends and home receives; on
+  a pull it asks (`Get`) and home sends. Per unit it opens `streams`
+  connections (the lower of home's `[daemon] streams` and the leaf's
+  `[home] streams`, default 4, at least 1); the existing control link
+  carries `BeginPush`, `Rehash`, `Agree`, `Settle`.
+- **Acks and stalls.** Every frame is acked by its receiver, in order, up to
+  8 in flight per connection. A side that waits longer than the ack timeout
+  (60 s, carried in `Hello`) for an ack or a frame calls the connection dead,
+  and the unit ends `Interrupted` (marker kept, no baseline, journaled), as a
+  failed rsync did. Home checks before every frame that the lease is still
+  the head of its queue. An abort (a lost lease, the CLI gone) shuts every
+  connection at once.
+- **Writes.** Small files (< 64 KiB) travel many to a frame, larger ones in
+  1 MiB chunks, one file per worker (never split). The receiver writes
+  `.replicant-tmp-<name>` in the file's directory, gives it the source's
+  mode and mtime, fsyncs it and renames it over the target: a target file is
+  never torn. Order per unit: kind changes and directories first, files (a
+  repo's refs last), and only once every file arrived the deletions and the
+  directories' final modes. Then the leaf diffs both sides again: nothing
+  may differ but directories still holding what the unit does not sync.
 
 ### One command
 
@@ -115,7 +149,7 @@ replicant sync --confirm-delete work/r   # carry out a "deleted on X" unit, or l
 replicant sync --accept-rollback work/r  # take home's copy of a unit whose push from here
                                          # home rolled back (repeatable)
 replicant sync --non-interactive         # never prompt; without --yes, only shows the plan
-replicant sync --dry-run    # decision + itemized rsync diff, no writes
+replicant sync --dry-run    # decision + each unit's itemized diff, no writes
 replicant sync --no-wait    # fail instead of queueing behind another sync
 replicant status            # the decision table and open markers (with age); conflicts in red
 replicant status --fleet    # every host: last contact, last sync, open markers, quarantines
@@ -124,8 +158,8 @@ replicant rollback [<push-id>]           # on home: undo one push; without an id
 
 Exit codes: 0 done (or nothing to do), 2 something needs a human and
 nothing was written (a conflict, a quarantine, a guardrail refusal, an
-unconfirmed deletion, no terminal and no `--yes`), 1 anything else (an
-rsync that did not finish, a plan that changed after it was confirmed, a
+unconfirmed deletion, no terminal and no `--yes`), 1 anything else (a
+transfer that did not finish, a plan that changed after it was confirmed, a
 `n` at the prompt).
 
 Direction is inferred, never typed. Each leaf keeps a **baseline** per
@@ -172,7 +206,7 @@ wall of conflicts: both sides already agree, so agreeing is free. The
 vanished and missing-base rows exist because "everything became Empty" is
 far more often a renamed `~/work2`, an unmounted volume or an `--as` pointed
 at nothing than a real delete, and reading it as an ordinary change sends a
-whole-unit `rsync --delete` into home, the backup (review F4).
+whole-unit delete into home, the backup (review F4).
 
 `Remove` is narrow for the same reason (F5, decided 2026-11-01): only a path
 the host explicitly unsubscribed, with nothing unpushed (`leaf ==
@@ -221,23 +255,21 @@ granularity can come with v0.3's per-file conflicts.
   thistledown, and a modified 400 MB zip is still a modified 400 MB zip.
 - **Git-ignored files inside repos do not sync** (decided 2026-11-01 late,
   reversing the rev 5 reading of F6). They are not state, not in the hash,
-  not moved by rsync, so there is nothing to protect: F6 is deleted, not
-  built. Only each repo's own `.gitignore` files count — the same files
-  rsync's `--filter=':- .gitignore'` merge rule reads — never the global
-  gitignore or `.git/info/exclude`, so the walker (the `ignore` crate) and
-  rsync cannot drift; the differential test holds them together. Untracked
+  never moved, so there is nothing to protect: F6 is deleted, not built.
+  Only each repo's own `.gitignore` files count, never the global
+  gitignore or `.git/info/exclude`. Untracked
   but not ignored still syncs: that is WIP. Consequence: `.ai-index/`,
   `target/`, `vectors.db` and every `.env` stay where they were made.
-  Measured: openrsync and rsync 3.4.1 both accept `--filter=':- .gitignore'`
-  but neither reads `!negation` as git does, so replicant materializes the
-  list (`repos::ignored`, decided by rules, a tracked path never ignored)
-  and hands rsync both sides' lists as anchored excludes
-  (`docs/v0.2-prep-notes.md`, "Ignored files do not sync").
+  Each side lists what its rules ignore (`repos::ignored`, `!negation`
+  as git reads it, a tracked path never ignored), the lists cross the wire,
+  and a unit's transfer leaves the union alone on both sides: a path ignored
+  on either side is neither sent nor deleted (`docs/v0.2-prep-notes.md`,
+  "Ignored files do not sync"; v0.4 notes).
 - **Loose:** the sorted manifest of (path, kind, size, mtime, mode, link
   target).
 
-Same contract everywhere: metadata, not content. rsync `-a` preserves
-mtimes, and each side compares only against its own baseline, so metadata
+Same contract everywhere: metadata, not content. A transfer gives each
+file its source's mtime to the nanosecond and its mode, and each side compares only against its own baseline, so metadata
 is enough and the hash need not be machine-independent. The one blind spot
 is a same-size rewrite landing in the same nanosecond; it is pinned by a
 test so it is a decision, not a surprise.
@@ -246,7 +278,7 @@ Known gaps (review Q3): the hash does not see `.git/config`, hooks,
 `info/exclude`, reflogs (so stash entries below the top one), or
 `skip-worktree`/`assume-unchanged` flags. It is over-sensitive to
 `refs/remotes/*`, which IDE autofetch moves on every machine; dropping them is
-a v0.2 entry criterion (they are refetchable, and rsync moves them anyway).
+a v0.2 entry criterion (they are refetchable, and a transfer moves them anyway).
 
 ### Subscriptions
 
@@ -273,8 +305,8 @@ A subscription base that is a **symlink is followed** (decided 2026-11-01,
 review P4): `~/work2 → /Volumes/data/work2` is the directory it names, the
 most likely `--as` layout. A dangling link is a missing base, so an
 unmounted volume is the missing-base error once synced, never "empty".
-Only the base is followed; symlinks inside the tree stay links, as rsync
-`-a` copies them.
+Only the base is followed; symlinks inside the tree stay links, and a
+transfer makes them as links.
 
 `subscribe` is a request to home. Home records it in the fleet config and
 starts serving it; `sync` on the leaf reads its subscriptions back from
@@ -343,8 +375,9 @@ subscriptions, state, acquire, approve) is refused until the file parses.
 Heartbeats and releases read no policy (see *Leases*).
 
 A leaf's local config is little more than where home is, and `subscribe`
-writes that (plus `home_dir`, the rsync host, and the rsync time bound, all
-defaulted). SSH keys are per host; a capped host's key is additionally
+writes that (plus `home_dir`, and optionally `[home] streams`, which can
+only lower home's `[daemon] streams`). The v0.3 keys `rsync_host` and
+`rsync_timeout_secs` are still read, ignored, and dropped on the next save. SSH keys are per host; a capped host's key is additionally
 confined server-side so it physically cannot read outside its cap. (Not
 built yet; see the trust note.)
 
@@ -469,7 +502,7 @@ While it writes, each unit is shown as it starts and as it ends (rev 10):
 finish, in red, and the run ends with `done: 155 units applied in 14m
 02s`. `--json` streams one object per line, per unit event, then the
 report. Ctrl-C while it writes stops the unit in progress the way a lost
-lease does: its rsync is stopped, its marker stays (the next `sync`
+lease does: its transfer is stopped, its marker stays (the next `sync`
 resumes it), and no later unit begins. What finished before it stands.
 
 ### Skip is not neutral
@@ -490,13 +523,13 @@ Before any destructive apply, in order:
    resume.
 2. **Stale baseline.** Push refuses if home moved since this leaf last
    pulled (someone else pushed). That is the "both changed" row, caught
-   before rsync.
+   before any transfer.
 3. **Source mid-write.** Any of git's own `*.lock` files inside `.git` on
    the source (`.git/index.lock` and friends; a `Cargo.lock` is source) →
    refuse. (Alternative: capture git state via `git bundle`, which is
    consistent by construction. Evaluate.)
 4. **Case collisions.** Two paths differing only by case headed from Linux
-   home to a macOS leaf → refuse before rsync silently merges them. Only
+   home to a macOS leaf → refuse before the case-folding filesystem merges them. Only
    needed on pull; applies whenever the leaf is macOS. v0.1 checks within
    each unit only; collisions *between* units (`work/Foo` vs `work/foo`, a
    repo vs a loose sibling) and NFC/NFD pairs are a v0.2 entry criterion
@@ -512,7 +545,7 @@ Before any destructive apply, in order:
    `--confirm-delete <unit>`. Covers a repo's working tree and `.git`,
    which guardrail 1 cannot see once the work is committed.
 
-`--dry-run` runs them all and prints the itemized rsync diff.
+`--dry-run` runs them all and prints each unit's itemized diff.
 
 ## The queue
 
@@ -545,16 +578,17 @@ A lease lives on the length it was **granted** (decided 2026-11-01, review
 P5): the fleet's `lease_secs` is read once, at `Acquire`, and stored on the
 entry; heartbeats refresh by that and releases read nothing. So a typo saved
 in fleet.toml mid-transfer refuses new work but cannot abort a sync in
-flight (which, once a lost lease kills the rsync child, it otherwise would).
+flight (which, once a lost lease stops the transfer, it otherwise would).
 An edit to `lease_secs` applies to the next `Acquire`.
 
 Losing a lease is never silent. The holder retries heartbeats for as long
 as the lease could still be alive; a definitive "not queued", or silence for
 the whole lease, marks it lost and fails the run with "lease lost", whatever
 the work returned. A failed release is an error too. A lost lease also
-**stops the running rsync**: SIGTERM to its process group (ssh included),
-SIGKILL two seconds later, so two real rsyncs never interleave on home (F3,
-built in v0.2). The unit's marker stays and the next sync resumes it.
+**stops the running transfer**: every data connection is shut at once, and
+home itself refuses the next frame of a connection whose lease is no longer
+the head of its queue, so two transfers never interleave on home (F3, built
+in v0.2 for rsync, natively in 0.4). The unit's marker stays and the next sync resumes it.
 
 A waiter's lease is currently refreshed without checking its connection, so
 a leaf that dies while waiting holds its place for up to the full lease
@@ -562,14 +596,15 @@ a leaf that dies while waiting holds its place for up to the full lease
 
 ## Interrupted sync
 
-rsync can die at 60%. Single files are never torn — rsync writes to a temp
-name and renames — but the *set* is incomplete, and for a repo that can
-mean refs pointing at objects that never arrived. So:
+A transfer can die at 60%. Single files are never torn (the receiver writes
+a temporary name and renames), and a repo's refs go last, after its
+objects, but the *set* is incomplete. So:
 
-- Before rsync starts, the target side writes an **in-progress marker**
+- Before the transfer starts, the target side writes an **in-progress marker**
   for the path (direction, source host, source state, started-at).
-- Baselines are written only after rsync exits 0, and the marker is
-  cleared in the same step.
+- Baselines are written only after the transfer finished and its
+  verification found nothing left to differ, and the marker is cleared in
+  the same step.
 - A marker on a **leaf** (dead pull) is private: home is untouched, nobody
   else can see the mess, and the leaf's next `sync` resumes the pull of
   exactly that unit. A marker on a loose unit says nothing about the repos
@@ -583,14 +618,15 @@ mean refs pointing at objects that never arrived. So:
 A home marker clears one of three ways:
 
 - **Resume.** The pushing leaf's next `sync` sees home's marker for its own
-  push, reruns the same rsync (idempotent), finishes, writes the baseline,
+  push, diffs and transfers again (what already arrived is not in the diff),
+  finishes, writes the baseline,
   clears the marker. The common case; needs nothing from anyone. "Its own"
   is only as good as host identity, which is why per-host certs land before
   apply.
 - **Rollback.** `replicant rollback <push-id>` on home restores the
   pre-push state from that push's backup plus its recorded itemized change
-  list: new files removed, changed and deleted files restored, through
-  rsync, under a queue entry. Per push, not per path (decided rev 7).
+  list: new files removed, changed and deleted files restored (by home's
+  own list operations, through the receiver), under a queue entry. Per push, not per path (decided rev 7).
   Baselines untouched. For when the leaf is not coming back soon and
   someone needs the path. The pushing leaf's next sync then holds the unit
   as a conflict rather than pull home's restored copy over the work it
@@ -611,20 +647,21 @@ resume until `--confirm-delete` (rev 9).
 ## Home is also the backup
 
 Push and local agents are the only things that write home, so a bad push
-is the one way to damage the backup from outside. Before a push writes,
-home copies every file it will replace or delete into
-`~/.sovran/replicant/backup/<host>/<YYYYMMDDTHHMMSSZ>/run-<n>/` and keeps a
-manifest of the push (`state/pushes/`). `replicant rollback <push-id>` undoes
+is the one way to damage the backup from outside. As a push replaces or
+deletes a path on home, home *renames* what was there into
+`~/.sovran/replicant/backup/<host>/<YYYYMMDDTHHMMSSZ>/run-<n>/` (rev 12; a
+copy and a delete when the backup is on another filesystem) and keeps a
+manifest of the push (`state/pushes/`). The run's directory is the record
+of what it kept, so a run whose leaf died before reporting can still be
+rolled back. `replicant rollback <push-id>` undoes
 one push; backups older than `[daemon] backup_days` (default 14) are swept
 daily, except a push whose marker is still open. A bad push is recoverable
 and the backup role of thistledown survives replicant.
 
-Home takes the copy itself rather than passing `rsync --backup
---backup-dir` (decided 2026-11-01, built in v0.2): macOS's openrsync, given
-`--backup`, silently skips `--delete` (measured), so a push to such a
-receiver would never delete anything. The copy is of the files the push's
-own dry run, taken just before it, says it will replace or delete
-(`docs/v0.2-prep-notes.md`, "Apply").
+Until 0.3 home copied the files the push's own dry run listed before the
+push wrote (openrsync, given `--backup`, silently skips `--delete`); the
+rename is the receiver's, at the moment of the replace, so nothing is
+listed in advance and nothing the push touches escapes the backup.
 
 ## Journal
 
@@ -636,7 +673,7 @@ several zones.
 2026-10-31T19:04:11Z  sync      birchbook  push  work/tundra   3 repos 41 files 0 del  ok
 2026-10-31T19:06:02Z  sync      twinoaks   pull  work/tundra   3 repos 41 files 0 del  ok
 2026-10-31T19:30:40Z  hold      thistledown agent:beatrix work/tundra/tundra-beacon  acquired
-2026-10-31T20:02:15Z  sync      birchbook  push  work/sequoia  interrupted (rsync exit 20)
+2026-10-31T20:02:15Z  sync      birchbook  push  work/sequoia  interrupted (the other side closed the data connection)
 2026-10-31T20:05:33Z  sync      birchbook  push  work/sequoia  resumed → ok
 2026-10-31T20:10:00Z  conflict  birchbook  work/scratch/notes.md  chose:birchbook
 2026-10-31T20:10:00Z  conflict  birchbook  work/rust/sysdirs      skipped
@@ -646,7 +683,7 @@ several zones.
 ```
 
 As built (v0.2): `sync` lines are per unit (`push 41 files 0 del ok
-backup:<push-id>`, `push interrupted (rsync exit 20); marker kept`, `push 2
+backup:<push-id>`, `push interrupted (<why>); marker kept`, `push 2
 files 0 del resumed → ok`) plus one summary line per sync; `adopt` records
 a shared state taken as the first baseline; `backup-sweep` the daily sweep.
 
@@ -778,9 +815,10 @@ root:
 Everything else comes from each root's `exclude` in fleet.toml (`target/`,
 `.build/`, `node_modules/`, `.DS_Store` in the example). Anchored (`/x`)
 patterns are refused. The exclude engine is `globset` with the sovran
-filesystem matching rules, plus a differential test against rsync so the
-walkers and rsync agree on every pattern (decided 2026-11-01, landed in
-v0.2-prep).
+filesystem matching rules (decided 2026-11-01, landed in v0.2-prep); one
+list per unit serves every walker, the transfer's manifests on both sides
+included (rev 12: the rsync translation and its differential test are gone;
+the accepted grammar is unchanged).
 
 A pattern with a `/` is **relative to the root** (decided 2026-11-01, review
 P3): `agents/state` on the `.sovran` root is `~/.sovran/agents/state` for a
@@ -788,7 +826,7 @@ host subscribed to `.sovran`, to `.sovran/agents`, or to anything else, so
 what an exclude protects does not depend on how a host splits its
 subscriptions. Per unit it is rewritten by stripping the unit's root-relative
 prefix (`/state` in `.sovran/agents`; dropped in `.sovran/x`), and the same
-rewritten list goes to discovery, the hash and rsync. A bare name or a `**/`
+rewritten list goes to discovery, the hash and the transfer. A bare name or a `**/`
 pattern matches at any depth, as written. Subscribing to a path wholly
 inside an exclude is refused; one written before the exclude existed is
 orphaned, not served.
@@ -843,8 +881,8 @@ src/
   decide.rs        the direction table, per unit, including no-baseline and resume rows
   conflict.rs      conflict detection, prompting, collect-then-apply, skip tracking, non-interactive mode
   guard.rs         the five refusals, with human-readable reports
-  rsync.rs         build and run the rsync command, parse itemized output
-  ssh.rs           the data-plane ssh invocation only; control goes through the daemon
+  native/          the data plane (rev 12): manifest, diff, frames, data
+                   connections, sender, receiver, backup by rename
 ```
 
 v0.1 as built diverges from this sketch in layout (`units.rs`, `plan/`,
@@ -856,8 +894,9 @@ Tests: every guardrail and every row of the decision table gets a
 fixture-repo test (dirty target, stale baseline, source lock, case
 collision, subscription escape, cap refusal, repo conflict, file conflict,
 skip persistence, worktree detection, non-interactive conflict exit,
-resume-from-marker, queue ordering, lease expiry, quarantine refusal, rollback, journal round-trip). rsync
-invocations tested against a temp dir pair; daemon-to-daemon tested over
+resume-from-marker, queue ordering, lease expiry, quarantine refusal, rollback, journal round-trip).
+Transfers tested over socket pairs with home in-process (cut, stalled and
+throttled connections injected) and between two real daemons over mTLS on
 loopback; no tailnet in unit tests.
 
 Performance: the plan's open question was whether state hashing across every
@@ -867,6 +906,28 @@ perf work (dirty files by metadata, the loose-unit filter) it is **~1.1 s**.
 Home logs per-snapshot timing — discover and unit phases, worker count, and
 its five slowest units — so the next regression names itself (decided
 2026-11-01). Discovery is going parallel (in flight).
+
+## Known limits (rev 12)
+
+- **Hardlinks** arrive as independent files; **xattrs, ACLs and file flags**
+  are not carried. Neither is in the state hash.
+- **Directories' mtimes** are not kept (they are not state either); their
+  modes are.
+- **A symlink's own mode** is never compared or set (macOS keeps one, Linux
+  has 0777): a link changes only by its target.
+- **Case-insensitive targets:** guardrail 4 refuses a pull of names that
+  differ only by case into a macOS leaf, as before. NFC/NFD pairs (F7) are
+  still not checked.
+- **A `.git` without `HEAD` is not a repo** (rev 12): what an interrupted pull
+  of a new repo leaves is plain content until its refs arrive (last).
+- **Durability:** each file is `fsync(2)`ed before its rename and each
+  directory renamed into is fsynced at the end of the unit; on macOS that is
+  not `F_FULLFSYNC` (a drive-cache flush), which cost 4 ms a file.
+- **No deltas:** a changed file is sent whole; a file is never split across
+  connections, so one large file uses one stream.
+- **A file changing while it is read** is not installed; the unit's
+  verification then fails it (`Interrupted`) and the next sync sends it
+  again. A live tree can do this every time, as rsync's exit 24 could (N4).
 
 ## Known data quality issues on home
 
@@ -888,7 +949,8 @@ real pull is a cutover prerequisite, and like cutover it is still deferred.
   server cert is separate from client certs. A pairing-token flow is not
   needed while every leaf is Brandon's.
 - **Backup on push:** `~/.sovran/replicant/backup/<host>/<timestamp>/` on
-  home via `rsync --backup --backup-dir`, retained 14 days. `replicant
+  home (superseded twice: home's own copy in v0.2, a rename by the native
+  receiver in rev 12) via `rsync --backup --backup-dir`, retained 14 days. `replicant
   rollback` is per push (the unit of "undo what just happened").
 - **DeletedOn confirmation:** both forms — `--confirm-delete <path>` for
   hooks, and the y/N in the collect-then-apply pass for humans.
@@ -942,10 +1004,13 @@ real pull is a cutover prerequisite, and like cutover it is still deferred.
    First real run is one subscription, after review.
 4. **v0.3.0 — conflicts.** Repo and file conflict prompts, collect-then-
    apply, skip tracking, `--adopt`, merge via peer-to-peer git.
-5. **v0.4.0 — agents.** Leaf hooks (sync), home hooks (hold/release),
+5. **v0.4.0 — the native transport** (rev 12, `bsneed/v0.4-native`, pending
+   review): rsync removed; see the data plane above and
+   `docs/v0.4-native-notes.md`.
+6. **Agents** (the next release; planned as v0.4.0 before rev 12). Leaf hooks (sync), home hooks (hold/release),
    `--to`, `approve --sync`, pre-dispatch push on the agents side.
-6. **Cutover.** Deferred; not designed yet. Lives in `~/work2` until then.
-7. **Later, if wanted.** The daemon notices a machine switch and runs
+7. **Cutover.** Deferred; not designed yet. Lives in `~/work2` until then.
+8. **Later, if wanted.** The daemon notices a machine switch and runs
    `--dry-run` + notifies. It never applies on its own.
 
 ## v0.2 entry criteria
@@ -962,7 +1027,8 @@ rows), and from `docs/v0.2-prep-review.md` **P3** (root-relative excludes),
 - **F6** — closed by rev 7: git-ignored files do not sync at all.
 - **F7** — guardrail 4 also checks collisions across units and NFC/NFD pairs.
 - **F8** — a waiter's lease refresh checks that its connection is alive.
-- **F9** — push deletions from openrsync to rsync 3 must come back with names;
+- **F9** — (moot since rev 12: there is no rsync; deletions are the diff's
+  own names) push deletions from openrsync to rsync 3 must come back with names;
   needs a real Mac→Linux push test with a deletion.
 - **F11** — hand edits to fleet.toml are reloaded (also fixes `approve`
   previewing a stale cached fleet). Done in v0.2-prep.
@@ -989,7 +1055,10 @@ rows), and from `docs/v0.2-prep-review.md` **P3** (root-relative excludes),
 - Forking Syncthing.
 - A hub repo + second remote per project. Discussed; overkill. Peer-to-peer
   git covers the merge case.
-- Writing our own file copier. rsync.
+- Deltas. A changed file travels whole (decided 0.4). (Until 0.3 this line
+  read "Writing our own file copier. rsync." Reversed in rev 12: most of
+  the code was adapting rsync, which ran at ~40 MB/s over ssh with no
+  progress and a guessed timeout.)
 - Leaf-to-leaf sync. Everything goes through home.
 - Two machines active on one repo at once. If that is needed for a specific
   repo, it gets a git-native workflow, not replicant.
