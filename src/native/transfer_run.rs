@@ -129,6 +129,11 @@ impl Transfer {
             for conn in &mut conns {
                 conn.send(&Frame::new(Kind::Done, vec![]))?;
             }
+            // Home's names are durable once each of these comes back: only
+            // then may verification, and a baseline, follow.
+            for conn in &mut conns {
+                conn.recv()?.expect(Kind::Ack)?;
+            }
             Ok(())
         });
         done.sent = sent(&sh);

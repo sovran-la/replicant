@@ -44,7 +44,10 @@ impl Receiver<'_> {
                 self.note_dir(rel, Some(mode_of(&m)))?;
             }
             return match fs::remove_dir(&abs) {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    self.touch(&abs);
+                    Ok(())
+                }
                 Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
                 Err(_) => Err(bad(
                     rel,
@@ -57,6 +60,7 @@ impl Receiver<'_> {
             Ok(m) if m.is_dir() => Err(bad(rel, "is a directory now; it is not replaced")),
             Ok(_) => {
                 self.guard(&abs, rel)?;
+                self.touch(&abs);
                 self.displace(&abs, rel)
             }
             Err(_) => Ok(()),
@@ -145,17 +149,46 @@ impl Receiver<'_> {
     }
 
     /// fsync every directory a rename or removal changed, so the names are
-    /// as durable as the bytes.
+    /// as durable as the bytes. A failure is the transfer's: no baseline may
+    /// say both sides agree on names that may not be there after a power cut.
     pub fn sync_dirs(&self) -> Result<()> {
         let dirs: Vec<PathBuf> = {
             let t = self.touched.lock().unwrap_or_else(|e| e.into_inner());
             t.iter().cloned().collect()
         };
-        for d in dirs {
-            if let Ok(f) = fs::File::open(&d) {
-                let _ = crate::native::fsync(&f);
-            }
-        }
-        Ok(())
+        sync_each(&dirs, crate::native::fsync)
     }
+}
+
+/// `sync` each of `dirs`. One removed since (or that a file took the place of,
+/// or of its parent) was renamed out of or deleted: its parent holds that name. One this user may not open was given
+/// that mode by the source, and its names cannot be flushed from here. A
+/// filesystem that does not fsync directories says so with `EINVAL`.
+pub(super) fn sync_each(dirs: &[PathBuf], sync: fn(&fs::File) -> io::Result<()>) -> Result<()> {
+    for d in dirs {
+        let f = match fs::File::open(d) {
+            Ok(f) => f,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::NotADirectory
+                        | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                continue;
+            }
+            Err(e) => return Err(Error::Transfer(format!("{}: {e}", d.display()))),
+        };
+        match sync(&f) {
+            Err(e) if e.raw_os_error() != Some(libc::EINVAL) => {
+                return Err(Error::Transfer(format!(
+                    "{} could not be synced: {e}",
+                    d.display()
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }

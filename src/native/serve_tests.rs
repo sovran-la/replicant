@@ -216,5 +216,31 @@ fn a_discarded_file_leaves_its_target_as_it_was() {
     );
 }
 
+/// The review's m5: a push's end is acked, once home's names are durable.
+#[test]
+fn a_pushs_done_is_acked() {
+    let t = tempfile::tempdir().unwrap();
+    let s = served(t.path(), None, &[]);
+    let ok = || Ok(());
+    push(&s, &ok, |c| {
+        acked(c, frame::batch(&[file("f", 1, 1)], b"f").unwrap());
+        acked(c, Frame::new(Kind::Done, vec![]));
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_leaf_gone_before_its_done_is_acked_changes_nothing_on_home() {
+    let t = tempfile::tempdir().unwrap();
+    let s = served(t.path(), None, &[]);
+    let ok = || Ok(());
+    push(&s, &ok, |c| {
+        acked(c, frame::batch(&[file("f", 1, 1)], b"f").unwrap());
+        c.send(&Frame::new(Kind::Done, vec![])).unwrap();
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(t.path().join("f")).unwrap(), b"f");
+}
+
 #[path = "serve_hostile_tests.rs"]
 mod hostile;

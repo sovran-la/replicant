@@ -2,10 +2,11 @@
 //! a push, or send what a pull asks for, until the leaf says it is done.
 //!
 //! Every frame the leaf sends is answered, in order: [`Kind::Ack`] once it
-//! is done with (a file's end: once the file is renamed into place), or
-//! [`Kind::Fail`] with why, which ends the connection. Before every frame
-//! that writes or reads the tree, home checks that the lease is still the
-//! head of its queue.
+//! is done with (a file's end: once the file is renamed into place; the
+//! push's [`Kind::Done`]: once its directories are synced, so no baseline can
+//! land ahead of the names it describes), or [`Kind::Fail`] with why, which
+//! ends the connection. Before every frame of a push, and every [`Kind::Get`]
+//! of a pull, home checks that the lease is still the head of its queue.
 
 use super::backup::Backup;
 use super::conn::Conn;
@@ -66,6 +67,9 @@ fn receive(conn: &mut Conn, served: &Served, still: &dyn Fn() -> Result<()>) -> 
         let f = conn.recv()?;
         if f.kind == Kind::Done {
             rx.sync_dirs()?;
+            // All that is left is telling the leaf: it may be gone already,
+            // and then it treats the unit as not finished.
+            let _ = ack(conn);
             return Ok(());
         }
         still()?;

@@ -80,6 +80,7 @@ impl Backup {
     }
 
     /// Note what directory `rel` was, before it is removed, made or changed.
+    /// A failure here stops the change: rollback could not undo it.
     pub fn note_dir(&self, rel: &str, mode: Option<u32>) -> Result<()> {
         let mut line = serde_json::to_vec(&DirWas {
             rel: rel.to_string(),
@@ -87,15 +88,17 @@ impl Backup {
         })
         .map_err(|e| Error::Transfer(format!("encode: {e}")))?;
         line.push(b'\n');
-        if let Some(parent) = self.dir.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut f = fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(self.dir.with_extension("dirs"))?;
-        f.write_all(&line)?;
-        Ok(())
+        let note = || -> io::Result<()> {
+            if let Some(parent) = self.dir.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(self.dir.with_extension("dirs"))?
+                .write_all(&line)
+        };
+        note().map_err(|e| Error::Transfer(format!("could not note what {rel} was: {e}")))
     }
 
     /// Nothing between the run's directory and `rel` is a file or link: the

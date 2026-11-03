@@ -187,6 +187,8 @@ impl<'a> Receiver<'a> {
 
 #[path = "receive_tree.rs"]
 mod tree;
+#[cfg(test)]
+use tree::sync_each;
 
 #[path = "receive_file.rs"]
 mod file;
@@ -202,6 +204,10 @@ mod tests;
 #[cfg(test)]
 #[path = "receive_backup_tests.rs"]
 mod backup_tests;
+
+#[cfg(test)]
+#[path = "receive_dirs_tests.rs"]
+mod dirs_tests;
 
 #[cfg(test)]
 #[path = "receive_guard_tests.rs"]

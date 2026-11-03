@@ -132,3 +132,18 @@ fn a_leaf_keeps_no_notes() {
         "just the unit"
     );
 }
+
+#[test]
+fn a_directory_that_cannot_be_noted_is_not_changed() {
+    let t = tempfile::tempdir().unwrap();
+    let (root, run) = (t.path().join("unit"), t.path().join("backup/run-1"));
+    std::fs::create_dir_all(root.join("d")).unwrap();
+    std::fs::create_dir_all(run.with_extension("dirs")).unwrap();
+    let rx = Receiver::open(&root, false, None, Some(Backup::new(run))).unwrap();
+    let e = rx
+        .delete(&[("d".to_string(), true)])
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("could not note"), "{e}");
+    assert!(root.join("d").is_dir());
+}

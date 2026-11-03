@@ -211,3 +211,46 @@ fn a_dead_runs_temporaries_are_removed_by_the_next_transfer() {
         assert!(!tgt.join(".replicant-tmp-x").exists());
     }
 }
+
+/// The review's m5: a leaf takes the push as finished only on home's word that
+/// its names are durable. Home here takes every frame and leaves at `Done`.
+#[test]
+fn a_push_is_not_finished_until_home_acks_its_done() {
+    use crate::native::conn::Conn;
+    use crate::native::frame::{Frame, Kind};
+    use crate::native::session;
+    use crate::plan::{DataLink, HomeLink};
+    struct NoLastAck<'a>(crate::testutil::InProcess<'a>);
+    impl HomeLink for NoLastAck<'_> {
+        fn call(&self, r: HomeRequest) -> crate::Result<HomeReply> {
+            self.0.call(r)
+        }
+        fn open_data(&self, _: &str) -> crate::Result<DataLink<'_>> {
+            let (leaf, mut home) = Conn::pair()?;
+            Ok(DataLink {
+                conn: leaf,
+                serve: Some(Box::new(move || {
+                    let _ = session::hello(&mut home);
+                    let _ = home.send(&Frame::new(Kind::Ready, vec![]));
+                    while let Ok(f) = home.recv() {
+                        if f.kind == Kind::Done
+                            || home.send(&Frame::new(Kind::Ack, vec![])).is_err()
+                        {
+                            break;
+                        }
+                    }
+                })),
+            })
+        }
+    }
+    let fx = Fx::new();
+    write(&fx.leaf().join("f"), "x");
+    let lease = fx.lease();
+    fx.begin_push(lease);
+    let t = fx.transfer(Direction::Push);
+    let link = NoLastAck(fx.link());
+    let ack = Duration::from_secs(10);
+    let (_, ran, _) = run(&link, &t, lease, 1, &Abort::default(), ack);
+    let why = ran.failure.expect("no ack for its end: not finished");
+    assert!(why.contains("closed the data connection"), "{why}");
+}
