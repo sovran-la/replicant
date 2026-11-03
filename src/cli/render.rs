@@ -195,8 +195,10 @@ pub fn plan(p: &Plan, verbose: bool, st: Style) -> String {
                     st.dim(&format!("… {} more (--verbose)", d.changes.len() - shown))
                 );
             }
-            for n in &d.notes {
-                let _ = writeln!(s, "      {}", st.dim(n));
+            if verbose {
+                for n in &d.notes {
+                    let _ = writeln!(s, "      {}", st.dim(n));
+                }
             }
         }
     }

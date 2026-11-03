@@ -84,6 +84,9 @@ pub fn discover(base: &Path, ex: &Excludes) -> Result<Discovery> {
         Err(e) => return Err(e.into()),
     };
     d.exists = true;
+    if is_special(&meta) {
+        return Ok(d);
+    }
     if !meta.is_dir() {
         d.loose.push(entry(base, "", &meta)?);
         return Ok(d);
@@ -113,6 +116,14 @@ pub fn discover_base(base: &Path, ex: &Excludes) -> Result<Discovery> {
         },
         _ => discover(base, ex),
     }
+}
+
+/// A socket, FIFO or device: nothing a sync carries. It is never listed (not
+/// by discovery, a state hash or a manifest, so no diff asks for one and no
+/// verification counts one) and never opened: opening a FIFO blocks.
+pub fn is_special(meta: &fs::Metadata) -> bool {
+    let ft = meta.file_type();
+    !(ft.is_file() || ft.is_symlink() || ft.is_dir())
 }
 
 /// What a directory's `.git` says it is.
@@ -214,8 +225,9 @@ fn walk_names(abs: &Path, rel: &str, ex: &Excludes, out: &mut Vec<String>) -> Re
         } else {
             format!("{rel}/{name}")
         };
-        let is_dir = item.file_type()?.is_dir();
-        if ex.matches(&child_rel, is_dir) {
+        let ft = item.file_type()?;
+        let is_dir = ft.is_dir();
+        if ex.matches(&child_rel, is_dir) || !(is_dir || ft.is_file() || ft.is_symlink()) {
             continue;
         }
         if is_dir {

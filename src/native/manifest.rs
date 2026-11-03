@@ -11,10 +11,13 @@
 //! base (review P4); a single-file unit's root is an entry, `""`.
 //!
 //! The receiver's temporary names are never listed; they are collected in
-//! [`Manifest::temps`] so the next transfer can remove them.
+//! [`Manifest::temps`] so the next transfer can remove them. Sockets, FIFOs
+//! and devices are never listed either ([`Manifest::skipped`] names them, for
+//! the unit's notes), so the diff never asks for one.
 
 use super::is_temp;
 use crate::exclude::Excludes;
+use crate::repos::is_special;
 use crate::{Error, Result};
 use ignore::{DirEntry, ParallelVisitor, ParallelVisitorBuilder, WalkBuilder, WalkState};
 use serde::{Deserialize, Serialize};
@@ -61,8 +64,14 @@ impl Entry {
         self.kind == EntryKind::Dir
     }
 
-    /// The entry for `abs`, called `rel`, from its `lstat`.
+    /// The entry for `abs`, called `rel`, from its `lstat`. A socket, FIFO
+    /// or device has none: a sync does not carry it.
     pub fn of(abs: &Path, rel: &str, meta: &fs::Metadata) -> Result<Self> {
+        if is_special(meta) {
+            return Err(Error::Transfer(format!(
+                "{rel:?} is a socket, FIFO or device, which a sync neither carries nor replaces"
+            )));
+        }
         let ft = meta.file_type();
         let (kind, link) = if ft.is_symlink() {
             let target = fs::read_link(abs)?;
@@ -103,6 +112,10 @@ pub struct Manifest {
     /// The receiver's temporary files found, relative to the unit.
     #[serde(rename = "t", default)]
     pub temps: Vec<String>,
+    /// Sockets, FIFOs and devices found, relative to the unit: not listed,
+    /// not synced, not touched. Sorted.
+    #[serde(rename = "x", default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped: Vec<String>,
 }
 
 impl Manifest {
@@ -131,13 +144,20 @@ impl Manifest {
         let mut m = walk_dir(&base, ex)?;
         m.entries.sort();
         m.temps.sort();
+        m.skipped.sort();
         Ok(m)
     }
 
     fn one(root: &Path, meta: &fs::Metadata) -> Result<Self> {
+        if is_special(meta) {
+            return Ok(Self {
+                skipped: vec![String::new()],
+                ..Self::default()
+            });
+        }
         Ok(Self {
             entries: vec![Entry::of(root, "", meta)?],
-            temps: vec![],
+            ..Self::default()
         })
     }
 
@@ -159,6 +179,7 @@ impl Manifest {
 struct Found {
     entries: Vec<Entry>,
     temps: Vec<String>,
+    skipped: Vec<String>,
     error: Option<Error>,
 }
 
@@ -203,11 +224,15 @@ impl Visitor<'_> {
         };
         let meta = fs::symlink_metadata(abs)?;
         let name = rel.rsplit('/').next().unwrap_or(rel);
-        if is_temp(name) && !meta.is_dir() {
+        if is_temp(name) && !meta.is_dir() && !is_special(&meta) {
             self.found.temps.push(rel.to_string());
             return Ok(WalkState::Skip);
         }
         if self.ex.matches(rel, meta.is_dir()) {
+            return Ok(WalkState::Skip);
+        }
+        if is_special(&meta) {
+            self.found.skipped.push(rel.to_string());
             return Ok(WalkState::Skip);
         }
         self.found.entries.push(Entry::of(abs, rel, &meta)?);
@@ -254,6 +279,7 @@ fn walk_dir(base: &Path, ex: &Excludes) -> Result<Manifest> {
     for f in rx {
         m.entries.extend(f.entries);
         m.temps.extend(f.temps);
+        m.skipped.extend(f.skipped);
         error = error.or(f.error);
     }
     match error {

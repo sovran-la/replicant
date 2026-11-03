@@ -4,10 +4,13 @@
 //! then (as rsync did), never followed through a link: an entry
 //! that is no longer a file or link of that name is skipped, and the
 //! transfer's verification then finds the difference. A file that changes
-//! while it is read is not sent at all ([`Read::Changed`]).
+//! while it is read is not sent at all ([`Read::Changed`]). Only regular
+//! files are ever read: the walk leaves sockets, FIFOs and devices out, and
+//! [`open`] will not block on or return one that took a file's place since.
 
 use super::manifest::{Entry, EntryKind, mtime_ns};
 use crate::exclude::Excludes;
+use crate::repos::is_special;
 use crate::{Error, Result, paths};
 use std::fs;
 use std::io::Read as _;
@@ -73,7 +76,9 @@ impl<'a> Source<'a> {
     pub fn now(&self, rel: &str) -> Result<Option<(PathBuf, Entry)>> {
         let abs = self.path(rel)?;
         match fs::symlink_metadata(&abs) {
-            Ok(m) if !m.is_dir() => Ok(Some((abs.clone(), Entry::of(&abs, rel, &m)?))),
+            Ok(m) if !m.is_dir() && !is_special(&m) => {
+                Ok(Some((abs.clone(), Entry::of(&abs, rel, &m)?)))
+            }
             _ => Ok(None),
         }
     }
@@ -99,15 +104,17 @@ impl<'a> Source<'a> {
     }
 }
 
-/// Open a file for reading without following a link swapped in since it was
-/// looked at; `None` if that is what happened, or it is gone.
+/// Open a regular file for reading, without following a link swapped in since
+/// it was looked at and without blocking on a FIFO that was; `None` if the
+/// path is any of those now, or gone.
 pub fn open(abs: &Path) -> Option<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(abs)
         .ok()
+        .filter(|f| f.metadata().is_ok_and(|m| m.is_file()))
 }
 
 /// Whether the open file still has the size and mtime `e` recorded.

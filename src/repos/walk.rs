@@ -69,7 +69,7 @@ impl Visitor<'_> {
             return Ok(WalkState::Skip);
         };
         let meta = fs::symlink_metadata(abs)?;
-        if self.ex.matches(rel, meta.is_dir()) {
+        if self.ex.matches(rel, meta.is_dir()) || super::is_special(&meta) {
             return Ok(WalkState::Skip);
         }
         if meta.is_dir() {

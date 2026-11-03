@@ -91,6 +91,10 @@ impl<'a> Receiver<'a> {
             .guard(target, rel)
             .and_then(|()| match fs::symlink_metadata(target) {
                 Ok(m) if m.is_dir() => Err(bad(rel, "is a directory, and was not replaced")),
+                Ok(m) if crate::repos::is_special(&m) => Err(bad(
+                    rel,
+                    "is a socket, FIFO or device on this side, and was not replaced",
+                )),
                 Ok(_) if self.backup.is_some() => self.displace(target, rel),
                 _ => Ok(()),
             })

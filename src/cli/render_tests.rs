@@ -303,3 +303,12 @@ fn revoked_says_what_went_and_how_to_come_back() {
     );
     assert!(!out.contains("uncollected"), "{out}");
 }
+
+#[test]
+fn a_units_notes_are_shown_when_verbose() {
+    let mut p = a_plan();
+    let note = "1 sockets, FIFOs or devices skipped, not synced: s";
+    p.units[0].diff.as_mut().unwrap().notes = vec![note.into()];
+    assert!(!plan(&p, false, PLAIN).contains(note));
+    assert!(plan(&p, true, PLAIN).contains(note));
+}

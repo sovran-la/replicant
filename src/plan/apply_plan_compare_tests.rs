@@ -162,3 +162,57 @@ fn a_pull_nothing_moved_under_goes_ahead() {
         b"an edit\n"
     );
 }
+
+mod specials {
+    use super::*;
+    use crate::native::tests_fixture::bounded;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::time::Duration;
+
+    fn fifo(p: &Path) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let c = CString::new(p.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c` is a valid path for the call.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0);
+    }
+
+    /// The whole sync: every unit done, later ones too, the FIFO in the loose
+    /// unit and the one in a repo's `.git` (as `core.fsmonitor` keeps a socket
+    /// there) neither moved nor stopped anything. The review's p04, p05.
+    #[test]
+    fn a_sync_goes_around_specials_and_notes_them() {
+        bounded(Duration::from_secs(60), || {
+            let bed = Bed::enrolled();
+            tree(&bed.home_hd.join("work"));
+            fifo(&bed.home_hd.join("work/data/f"));
+            fifo(&bed.home_hd.join("work/alpha/.git/fsmonitor"));
+            let home = bed.home();
+            let r = yes(&bed, &home);
+            assert_eq!(r.outcome, Outcome::Done, "{:#?}", r.plan);
+            assert!(bed.leaf_hd.join("work/nested/gamma/.git/HEAD").exists());
+            assert!(!bed.leaf_hd.join("work/data/f").exists());
+            assert!(!bed.leaf_hd.join("work/alpha/.git/fsmonitor").exists());
+            let notes: Vec<&String> = r
+                .plan
+                .units
+                .iter()
+                .filter_map(|u| u.diff.as_ref())
+                .flat_map(|d| &d.notes)
+                .collect();
+            assert_eq!(notes.len(), 2, "{notes:?}");
+            assert!(notes.iter().any(|n| n.contains("data/f")));
+            assert!(notes.iter().any(|n| n.contains(".git/fsmonitor")));
+            // Nothing to do next time: the special is no difference.
+            let again = plan_of(&bed, &home, true);
+            assert!(
+                again
+                    .units
+                    .iter()
+                    .all(|u| matches!(u.decision, Decision::Nothing { .. })),
+                "{:#?}",
+                again.units
+            );
+        });
+    }
+}

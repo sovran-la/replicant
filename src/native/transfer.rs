@@ -153,8 +153,10 @@ impl Transfer {
     pub fn dry_run(&self, env: &Env<'_>) -> Result<Diffed> {
         let (source, target) = self.manifests(env)?;
         let changes = diff(&source, &target);
+        let mut itemized = itemize(&changes, &target);
+        itemized.notes = skipped_notes(&source, &target);
         Ok(Diffed {
-            itemized: itemize(&changes, &target),
+            itemized,
             changes,
             temps: target.temps.clone(),
             target,
@@ -201,6 +203,31 @@ impl Transfer {
     }
 }
 
+/// The unit's notes: what the walks left out as sockets, FIFOs and devices.
+fn skipped_notes(source: &Manifest, target: &Manifest) -> Vec<String> {
+    let mut all: Vec<&str> = source
+        .skipped
+        .iter()
+        .chain(&target.skipped)
+        .map(String::as_str)
+        .collect();
+    all.sort_unstable();
+    all.dedup();
+    if all.is_empty() {
+        return vec![];
+    }
+    let some: Vec<&str> = all.iter().take(5).copied().collect();
+    let more = match all.len() > some.len() {
+        true => ", …",
+        false => "",
+    };
+    vec![format!(
+        "{} sockets, FIFOs or devices skipped, not synced: {}{more}",
+        all.len(),
+        some.join(", ")
+    )]
+}
+
 /// Which parts of a transfer were carried out.
 #[derive(Debug, Default)]
 pub(super) struct Done {
@@ -230,7 +257,7 @@ impl Done {
             .collect();
         Itemized {
             changes,
-            notes: vec![],
+            notes: d.itemized.notes.clone(),
         }
     }
 }
@@ -242,6 +269,10 @@ mod tests;
 #[cfg(test)]
 #[path = "transfer_fault_tests.rs"]
 mod fault_tests;
+
+#[cfg(test)]
+#[path = "transfer_special_tests.rs"]
+mod special_tests;
 
 #[cfg(test)]
 #[path = "transfer_backup_tests.rs"]

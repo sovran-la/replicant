@@ -34,7 +34,7 @@ fn m(mut entries: Vec<Entry>) -> Manifest {
     entries.sort();
     Manifest {
         entries,
-        temps: vec![],
+        ..Manifest::default()
     }
 }
 fn lines(it: &Itemized) -> Vec<String> {

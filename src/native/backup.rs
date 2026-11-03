@@ -82,6 +82,12 @@ pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
             copy_tree(&e.path(), &to.join(e.file_name()))?;
         }
         fs::set_permissions(to, fs::Permissions::from_mode(meta.permissions().mode()))?;
+    } else if !ft.is_file() {
+        // Copying a FIFO would block for a writer that never comes.
+        return Err(io::Error::other(format!(
+            "{} is a socket, FIFO or device",
+            from.display()
+        )));
     } else {
         fs::copy(from, to)?;
         // Read-only is enough: the owner may set times on any mode.

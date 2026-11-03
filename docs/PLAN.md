@@ -909,6 +909,9 @@ its five slowest units — so the next regression names itself (decided
 
 ## Known limits (rev 12)
 
+- **Sockets, FIFOs and devices** are never listed, opened, sent or deleted, on
+  either side: they count in the unit's notes (`--verbose`). A file whose name
+  one holds on the target fails its unit, saying so; nothing replaces one.
 - **Hardlinks** arrive as independent files; **xattrs, ACLs and file flags**
   are not carried. Neither is in the state hash.
 - **Directories' mtimes** are not kept (they are not state either); their

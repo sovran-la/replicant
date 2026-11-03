@@ -166,4 +166,16 @@ pub fn run(
     (d, ran, seen.into_inner().unwrap())
 }
 
+/// Run `f` on a thread of its own and return what it returns, failing the
+/// test if that takes longer than `limit`: for what must not hang. (A hung
+/// `f` stays behind, blocked, until the test process exits.)
+pub fn bounded<T: Send + 'static>(limit: Duration, f: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(limit)
+        .unwrap_or_else(|e| panic!("still not done after {limit:?}: {e}"))
+}
+
 pub use super::tests_faulty::{Fault, Faulty};

@@ -132,7 +132,8 @@ pub fn repo(abs: &Path, ex: &Excludes) -> Result<RepoFacts> {
 fn content(h: &mut Sha256, path: &Path, deleted: bool) -> Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let meta = match std::fs::symlink_metadata(path) {
-        Ok(m) if !deleted => m,
+        // A socket or FIFO in a tracked file's place: not state, as anywhere.
+        Ok(m) if !deleted && !crate::repos::is_special(&m) => m,
         _ => {
             h.update(b"<absent>\0");
             return Ok(());
