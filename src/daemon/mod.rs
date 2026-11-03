@@ -249,6 +249,10 @@ mod apply_tests;
 mod data_tests;
 
 #[cfg(test)]
+#[path = "daemon_bench_tests.rs"]
+mod bench_tests;
+
+#[cfg(test)]
 #[path = "daemon_progress_tests.rs"]
 mod progress_tests;
 

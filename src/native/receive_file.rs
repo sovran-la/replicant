@@ -134,7 +134,7 @@ impl Incoming<'_, '_> {
         let when = mtime(e.mtime_ns);
         f.set_permissions(fs::Permissions::from_mode(e.mode & 0o7777))?;
         f.set_times(fs::FileTimes::new().set_modified(when))?;
-        f.sync_all()?;
+        crate::native::fsync(&f)?;
         drop(f);
         let (temp, target) = (self.temp.clone(), self.target.clone());
         self.rx.commit(&temp, &target, &e.rel)

@@ -87,7 +87,7 @@ pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
         // Read-only is enough: the owner may set times on any mode.
         let f = fs::File::open(to)?;
         f.set_times(fs::FileTimes::new().set_modified(meta.modified()?))?;
-        f.sync_all()?;
+        super::fsync(&f)?;
     }
     Ok(())
 }

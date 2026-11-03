@@ -53,6 +53,20 @@ pub const CHUNK: usize = 1 << 20;
 /// How long a sender waits for an ack before it calls the connection dead.
 pub const ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// fsync(2): a file's bytes and metadata handed to the device, before a
+/// rename makes them visible (and a directory's names, after renames into
+/// it). Not `File::sync_all`, which on macOS is `F_FULLFSYNC`, a drive-cache
+/// flush per file: ~4 ms each, which made 10,000 small files take 40 s
+/// instead of 1.6 s. POSIX `fsync` is what Linux's `sync_all` is anyway.
+pub fn fsync(f: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: the descriptor is open for the life of `f`.
+    match unsafe { libc::fsync(f.as_raw_fd()) } {
+        0 => Ok(()),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
 /// Whether a file name is one of the receiver's temporary names.
 pub fn is_temp(name: &str) -> bool {
     name.starts_with(TEMP_PREFIX)

@@ -265,7 +265,7 @@ impl<'a> Receiver<'a> {
         };
         for d in dirs {
             if let Ok(f) = fs::File::open(&d) {
-                let _ = f.sync_all();
+                let _ = super::fsync(&f);
             }
         }
         Ok(())
