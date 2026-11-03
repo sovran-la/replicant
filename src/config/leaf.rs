@@ -39,6 +39,10 @@ pub struct HomeEntry {
     /// to [`DEFAULT_RSYNC_TIMEOUT_SECS`]; at least 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rsync_timeout_secs: Option<u64>,
+    /// Data connections per unit, at most home's `[daemon] streams`.
+    /// Defaults to home's; at least 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streams: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +128,12 @@ impl LeafConfig {
         std::time::Duration::from_secs(secs.max(1))
     }
 
+    /// Data connections per unit: the lower of this leaf's `[home] streams`
+    /// and home's `[daemon] streams`, at least 1.
+    pub fn streams(&self, home: u32) -> u32 {
+        self.home.streams.unwrap_or(home).min(home).max(1)
+    }
+
     /// Home's bundle on this machine.
     pub fn credentials(&self, dirs: &super::Dirs) -> PathBuf {
         match &self.home.credentials {
@@ -176,6 +186,7 @@ mod tests {
                 credentials: None,
                 rsync_host: None,
                 rsync_timeout_secs: None,
+                streams: None,
             },
             as_local: BTreeMap::from([(
                 "work/tundra".into(),
@@ -249,6 +260,19 @@ mod tests {
         .unwrap();
         let c = LeafConfig::load(&p).unwrap().unwrap();
         assert_eq!(c.rsync_timeout(), std::time::Duration::from_secs(7));
+    }
+
+    #[test]
+    fn streams_are_the_lower_of_both_sides_and_at_least_one() {
+        let mut c = cfg();
+        assert_eq!(c.streams(4), 4, "home's, by default");
+        assert_eq!(c.streams(0), 1);
+        c.home.streams = Some(2);
+        assert_eq!(c.streams(4), 2);
+        c.home.streams = Some(8);
+        assert_eq!(c.streams(4), 4, "a leaf cannot widen home's");
+        c.home.streams = Some(0);
+        assert_eq!(c.streams(4), 1);
     }
 
     #[test]

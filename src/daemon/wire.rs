@@ -21,7 +21,9 @@ use std::path::PathBuf;
 /// 3: apply ([`HomeRequest::BeginPush`] and the rest of `sync`'s writes).
 /// 4: [`HomeSnapshot::rolled_back`] (review A2), and `--accept-rollback`
 /// (and `rollback_accepted` on [`HomeRequest::Agree`], re-review R2).
-pub const WIRE_VERSION: u32 = 4;
+/// 5: the native data plane: [`HomeRequest::Manifest`], data connections
+/// on the same listener, [`SubscriptionsView::streams`].
+pub const WIRE_VERSION: u32 = 5;
 
 // ---------------------------------------------------------------- leaf → home
 
@@ -150,6 +152,23 @@ pub enum HomeRequest {
         rel: String,
         detail: String,
     },
+    /// Home's manifest of one unit, walked with the unit's excludes: the
+    /// root's (as home serves them) plus what only the leaf can say, every
+    /// one of which can only leave more out. Requires the head of the queue
+    /// (a dry run's entry will do: it reads).
+    Manifest {
+        lease: u64,
+        rel: String,
+        kind: UnitKind,
+        is_file: bool,
+        /// The plan's repos inside the unit (a loose unit leaves them out).
+        union: Vec<String>,
+        /// Both sides' worktree checkouts inside the unit.
+        worktrees: Vec<String>,
+        /// Both sides' git-ignored paths, unit-relative (a directory ends
+        /// in `/`).
+        ignored: Vec<String>,
+    },
     /// Over the bootstrap bundle: the certificate `approve` issued this
     /// host, if one is waiting. One-shot: home deletes its copy as it
     /// answers.
@@ -187,6 +206,10 @@ pub enum HomeReply {
     /// names its backup.
     Begun {
         push: String,
+    },
+    /// [`HomeRequest::Manifest`]'s answer.
+    Manifest {
+        manifest: crate::native::Manifest,
     },
 }
 
@@ -260,6 +283,13 @@ pub struct SubscriptionsView {
     /// `[daemon] marker_alert_mins`). Absent from an older home: an hour.
     #[serde(default = "default_marker_alert")]
     pub marker_alert_secs: u64,
+    /// Data connections home accepts per unit (`[daemon] streams`).
+    #[serde(default = "default_streams")]
+    pub streams: u32,
+}
+
+fn default_streams() -> u32 {
+    crate::config::fleet::DEFAULT_STREAMS
 }
 
 fn default_marker_alert() -> u64 {

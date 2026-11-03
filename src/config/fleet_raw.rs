@@ -29,6 +29,7 @@ pub(super) struct RawDaemon {
     pub(super) lease_secs: Option<u64>,
     pub(super) marker_alert_mins: Option<u64>,
     pub(super) backup_days: Option<u64>,
+    pub(super) streams: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

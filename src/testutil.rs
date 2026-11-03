@@ -166,6 +166,7 @@ impl Bed {
                 credentials: None,
                 rsync_host: Some(crate::config::leaf::LOCAL_RSYNC.into()),
                 rsync_timeout_secs: None,
+                streams: None,
             },
             as_local: Default::default(),
         }
@@ -225,6 +226,35 @@ impl crate::plan::HomeLink for InProcess<'_> {
             request,
         };
         self.home.handle(call).result.map_err(crate::Error::Remote)
+    }
+
+    fn open_data(&self, _rel: &str) -> crate::Result<crate::plan::DataLink<'_>> {
+        let (conn, home_end) = crate::native::conn::Conn::pair()?;
+        let home = self.home;
+        Ok(crate::plan::DataLink {
+            conn,
+            serve: Some(Box::new(move || {
+                home.serve_data(&crate::daemon::home::Caller::Trusted, home_end)
+            })),
+        })
+    }
+}
+
+/// A hello for `rel` as `leaf`, with a short ack timeout.
+pub fn hello(
+    lease: u64,
+    rel: &str,
+    direction: crate::marker::Direction,
+) -> crate::native::session::Hello {
+    crate::native::session::Hello {
+        version: crate::native::frame::DATA_VERSION,
+        host: "leaf".into(),
+        lease,
+        rel: rel.into(),
+        kind: crate::units::UnitKind::Loose,
+        is_file: false,
+        direction,
+        ack_timeout_ms: 2000,
     }
 }
 

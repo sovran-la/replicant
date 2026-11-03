@@ -13,8 +13,12 @@
 //!
 //! [`Itemized`]: crate::changes::Itemized
 
+pub mod conn;
 pub mod diff;
+pub mod frame;
 pub mod manifest;
+pub mod serve;
+pub mod session;
 
 pub use diff::{ChangeList, diff, itemize};
 pub use manifest::{Entry, EntryKind, Manifest};
@@ -22,6 +26,18 @@ pub use manifest::{Entry, EntryKind, Manifest};
 /// The prefix of a file being received. Never part of a manifest, and
 /// removed by the receiver at the start of the next transfer of its unit.
 pub const TEMP_PREFIX: &str = ".replicant-tmp-";
+
+/// Files smaller than this travel many to a [`frame::Kind::Batch`].
+pub const SMALL: u64 = 64 << 10;
+
+/// A batch closes at this many bytes of files.
+pub const BATCH_BYTES: u64 = 1 << 20;
+
+/// A large file streams in chunks of this many bytes.
+pub const CHUNK: usize = 1 << 20;
+
+/// How long a sender waits for an ack before it calls the connection dead.
+pub const ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Whether a file name is one of the receiver's temporary names.
 pub fn is_temp(name: &str) -> bool {

@@ -185,6 +185,7 @@ impl Leaf {
                     credentials: None,
                     rsync_host: None,
                     rsync_timeout_secs: None,
+                    streams: None,
                 },
                 as_local: Default::default(),
             },

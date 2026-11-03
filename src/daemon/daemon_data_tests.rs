@@ -1,0 +1,228 @@
+//! Data connections on home's mTLS listener: admitted like a request (a
+//! pinned host's own certificate), only for the head of the queue under a
+//! sync's entry, for a unit home serves, and no more of them per unit than
+//! `[daemon] streams`. And home's manifest of a unit over a request.
+
+use super::test_certs::{dial, leaf_identity};
+use super::wire::{HomeReply, HomeRequest};
+use super::*;
+use crate::marker::Direction;
+use crate::native::frame::{Frame, Kind};
+use crate::testutil::{self, Bed, hello};
+
+fn home(bed: &Bed) -> Daemon {
+    Daemon::start(bed.home_dirs.clone()).unwrap()
+}
+
+fn lease(leaf: &super::test_certs::RawLeaf, apply: bool) -> u64 {
+    match leaf
+        .call(HomeRequest::Acquire {
+            no_wait: true,
+            apply,
+        })
+        .unwrap()
+    {
+        HomeReply::Lease { lease, .. } => lease,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_head_of_the_queue_gets_a_data_connection_and_nobody_else_does() {
+    let bed = Bed::enrolled();
+    testutil::write(&bed.home_hd.join("work/a.txt"), "x");
+    let d = home(&bed);
+    let leaf = dial(&d, &leaf_identity(&bed, "leaf"), "leaf", &bed.leaf_hd);
+
+    let refused = |h| {
+        leaf.data(&h)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default()
+    };
+    let none = refused(hello(77, "work", Direction::Pull));
+    assert!(none.contains("does not hold the head"), "{none}");
+
+    let id = lease(&leaf, true);
+    let mut c = leaf.data(&hello(id, "work", Direction::Pull)).unwrap();
+    c.send(&Frame::new(Kind::Done, vec![])).unwrap();
+
+    let outside = refused(hello(id, "elsewhere", Direction::Pull));
+    assert!(
+        outside.contains("not under anything home serves"),
+        "{outside}"
+    );
+    let dotdot = refused(hello(id, "work/../x", Direction::Pull));
+    assert!(dotdot.contains("work/../x"), "{dotdot}");
+    let unbegun = refused(hello(id, "work", Direction::Push));
+    assert!(
+        unbegun.contains("no push of work by leaf has begun"),
+        "{unbegun}"
+    );
+    let mut other = hello(id, "work", Direction::Pull);
+    other.host = "other".into();
+    let named = refused(other);
+    assert!(named.contains("a host acts only as itself"), "{named}");
+    let mut old = hello(id, "work", Direction::Pull);
+    old.version = 0;
+    assert!(refused(old).contains("data protocol 0"));
+
+    leaf.call(HomeRequest::Release { lease: id }).unwrap();
+    let dry = lease(&leaf, false);
+    let reads = refused(hello(dry, "work", Direction::Pull));
+    assert!(reads.contains("writes nothing"), "{reads}");
+    d.stop();
+}
+
+#[test]
+fn the_bootstrap_and_unpinned_certificates_get_no_data_connection() {
+    let bed = Bed::enrolled();
+    let d = home(&bed);
+    let p = certs::Paths::of(&bed.home_dirs);
+    let boot = dial(&d, &p.bootstrap, "leaf", &bed.leaf_hd);
+    let err = boot
+        .data(&hello(1, "work", Direction::Pull))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(err.contains(home::BOOTSTRAP_ONLY), "{err}");
+    let stranger = dial(
+        &d,
+        &leaf_identity(&bed, "stranger"),
+        "stranger",
+        &bed.leaf_hd,
+    );
+    let mut h = hello(1, "work", Direction::Pull);
+    h.host = "stranger".into();
+    let err = stranger.data(&h).err().unwrap().to_string();
+    assert!(err.contains(home::UNKNOWN_CERT), "{err}");
+    d.stop();
+}
+
+#[test]
+fn no_more_data_connections_per_unit_than_home_allows() {
+    let bed = Bed::enrolled();
+    let fleet = bed.home_dirs.fleet();
+    testutil::hand_edit(&fleet, "listen = ", "streams = 2\nlisten = ");
+    let d = home(&bed);
+    let leaf = dial(&d, &leaf_identity(&bed, "leaf"), "leaf", &bed.leaf_hd);
+    let id = lease(&leaf, true);
+    let a = leaf.data(&hello(id, "work", Direction::Pull)).unwrap();
+    let b = leaf.data(&hello(id, "work", Direction::Pull)).unwrap();
+    let err = leaf
+        .data(&hello(id, "work", Direction::Pull))
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(err.contains("2 data connections per unit"), "{err}");
+    let mut b = b;
+    b.send(&Frame::new(Kind::Done, vec![])).unwrap();
+    // The slot comes back once home has seen the connection end.
+    let mut ok = None;
+    for _ in 0..100 {
+        if let Ok(c) = leaf.data(&hello(id, "work", Direction::Pull)) {
+            ok = Some(c);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(ok.is_some(), "a closed connection's slot is given back");
+    drop(a);
+    d.stop();
+}
+
+#[test]
+fn a_connection_that_is_neither_request_nor_data_is_dropped_and_home_serves_on() {
+    use std::io::{Read, Write};
+    let bed = Bed::enrolled();
+    let d = home(&bed);
+    let id = leaf_identity(&bed, "leaf");
+    let leaf = dial(&d, &id, "leaf", &bed.leaf_hd);
+    let ident = super::tls::Identity::load(&id).unwrap();
+    let dialer = super::remote::Dialer::new(&ident, std::time::Duration::from_secs(5)).unwrap();
+    let addr = d.tcp_addr().unwrap().to_string();
+    let t = std::time::Duration::from_secs(5);
+
+    let mut raw = dialer.connect(&addr, t).unwrap();
+    raw.write_all(b"GET / HTTP/1.0\r\n\r\n").unwrap();
+    let mut buf = [0u8; 16];
+    assert_eq!(raw.read(&mut buf).unwrap_or(0), 0, "dropped without a word");
+
+    // The magic line, then garbage where the hello should be: refused in a
+    // frame, then closed.
+    let mut c = dialer.open_data(&addr, t).unwrap();
+    c.io().write_all(b"GET / HTTP/1.0\r\n\r\n").unwrap();
+    let f = c.recv().unwrap();
+    assert_eq!(f.kind, Kind::Refused);
+    assert!(
+        f.parse::<String>()
+            .unwrap()
+            .contains("larger than the limit")
+    );
+
+    assert!(matches!(
+        leaf.call(HomeRequest::Subscriptions).unwrap(),
+        HomeReply::Subscriptions(_)
+    ));
+    d.stop();
+}
+
+#[test]
+fn homes_manifest_of_a_unit_needs_the_head_and_honours_every_exclude() {
+    let bed = Bed::enrolled();
+    let w = bed.home_hd.join("work");
+    testutil::write(&w.join("a.txt"), "x");
+    testutil::write(&w.join("target/junk"), "root exclude");
+    testutil::write(&w.join("r/README"), "a repo the loose unit leaves out");
+    testutil::write(&w.join("wt/f"), "a worktree");
+    testutil::write(&w.join(".env"), "ignored on the leaf's side");
+    let d = home(&bed);
+    let leaf = dial(&d, &leaf_identity(&bed, "leaf"), "leaf", &bed.leaf_hd);
+    let ask = |lease| HomeRequest::Manifest {
+        lease,
+        rel: "work".into(),
+        kind: crate::units::UnitKind::Loose,
+        is_file: false,
+        union: vec!["work/r".into(), "elsewhere/x".into()],
+        worktrees: vec!["work/wt".into()],
+        ignored: vec![".env".into(), "../escape".into()],
+    };
+    let err = leaf.refused(ask(5));
+    assert!(err.contains("does not hold the head"), "{err}");
+    let dry = lease(&leaf, false);
+    let HomeReply::Manifest { manifest } = leaf.call(ask(dry)).unwrap() else {
+        panic!()
+    };
+    let rels: Vec<&str> = manifest.entries.iter().map(|e| e.rel.as_str()).collect();
+    assert_eq!(rels, ["a.txt"]);
+    d.stop();
+}
+
+#[test]
+fn an_in_process_link_serves_its_data_connection_on_the_callers_thread() {
+    use crate::plan::HomeLink;
+    let bed = Bed::enrolled();
+    let h = bed.home();
+    let link = testutil::InProcess {
+        home: &h,
+        host: "leaf".into(),
+        home_dir: bed.leaf_hd.clone(),
+    };
+    let id = match link
+        .call(HomeRequest::Acquire {
+            no_wait: true,
+            apply: true,
+        })
+        .unwrap()
+    {
+        HomeReply::Lease { lease, .. } => lease,
+        other => panic!("{other:?}"),
+    };
+    let data = link.open_data("work").unwrap();
+    let mut conn = data.conn;
+    std::thread::scope(|s| {
+        s.spawn(data.serve.expect("home's side, in-process"));
+        crate::native::session::open(&mut conn, &hello(id, "work", Direction::Pull)).unwrap();
+        conn.send(&Frame::new(Kind::Done, vec![])).unwrap();
+    });
+}

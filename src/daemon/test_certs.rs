@@ -53,6 +53,7 @@ pub fn leaf_toml(bed: &Bed, address: &str) {
             credentials: None,
             rsync_host: Some(LOCAL_RSYNC.into()),
             rsync_timeout_secs: None,
+            streams: None,
         },
         as_local: Default::default(),
     }
@@ -102,6 +103,13 @@ impl RawLeaf {
             .dialer
             .call(&self.addr, &call, Duration::from_secs(5))?;
         a.result.map_err(Error::Remote)
+    }
+
+    /// A data connection, said hello on: home's answer is the result.
+    pub fn data(&self, hello: &crate::native::session::Hello) -> Result<crate::native::conn::Conn> {
+        let mut c = self.dialer.open_data(&self.addr, Duration::from_secs(5))?;
+        crate::native::session::open(&mut c, hello)?;
+        Ok(c)
     }
 
     /// The same identity, claiming another name.

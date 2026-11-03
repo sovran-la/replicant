@@ -35,6 +35,22 @@ use std::time::Instant;
 /// may call a [`crate::daemon::home::Home`] in-process.
 pub trait HomeLink: Sync {
     fn call(&self, request: HomeRequest) -> Result<HomeReply>;
+
+    /// A data connection to home for unit `rel`, not yet said hello on.
+    /// In-process links also hand back home's side of it, to be run on a
+    /// thread of the caller's while the connection is used.
+    fn open_data(&self, rel: &str) -> Result<DataLink<'_>> {
+        Err(Error::Remote(format!(
+            "this link to home carries no data connections (unit {rel})"
+        )))
+    }
+}
+
+/// [`HomeLink::open_data`]'s connection, and home's side of it when home is
+/// in this process.
+pub struct DataLink<'a> {
+    pub conn: crate::native::conn::Conn,
+    pub serve: Option<Box<dyn FnOnce() + Send + 'a>>,
 }
 
 /// Who and where this leaf is.

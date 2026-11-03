@@ -7,6 +7,7 @@
 
 use super::certs::SERVER_NAME;
 use super::tls::Identity;
+use crate::native::conn::{Conn, Sock};
 use crate::{Error, Result};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection, StreamOwned};
@@ -184,6 +185,26 @@ impl Dialer {
         req: &Q,
         deadline: Duration,
     ) -> Result<A> {
+        let mut stream = self.connect(address, deadline)?;
+        send(&mut stream, req)?;
+        recv(&mut stream)
+    }
+
+    /// A data connection to home: the same handshake as a request, the
+    /// magic line, then frames (`native::session::open` says hello on it).
+    pub fn open_data(&self, address: &str, timeout: Duration) -> Result<Conn> {
+        let mut stream = self.connect(address, timeout)?;
+        stream.write_all(crate::native::frame::MAGIC)?;
+        let sock = Sock::Tcp(stream.sock.try_clone()?);
+        Ok(Conn::new(Box::new(stream), sock))
+    }
+
+    /// A connection to home, its handshake done, nothing sent.
+    pub(super) fn connect(
+        &self,
+        address: &str,
+        deadline: Duration,
+    ) -> Result<StreamOwned<ClientConnection, TcpStream>> {
         let unreachable =
             |d: String| Error::Remote(format!("home at {address} is unreachable: {d}"));
         let addrs: Vec<SocketAddr> = address
@@ -216,8 +237,7 @@ impl Dialer {
                 self.source
             ))
         })?;
-        send(&mut stream, req)?;
-        recv(&mut stream)
+        Ok(stream)
     }
 }
 

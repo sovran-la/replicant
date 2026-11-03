@@ -55,6 +55,13 @@ impl HomeLink for Remote<'_> {
         }
         answer.result.map_err(Error::Remote)
     }
+
+    fn open_data(&self, _rel: &str) -> Result<crate::plan::DataLink<'_>> {
+        let conn = self
+            .dialer
+            .open_data(&self.address, crate::native::session::HELLO_TIMEOUT)?;
+        Ok(crate::plan::DataLink { conn, serve: None })
+    }
 }
 
 /// Which certificate the link presents.

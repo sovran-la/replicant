@@ -21,6 +21,9 @@ pub const DEFAULT_LEASE_SECS: u64 = 30;
 pub const DEFAULT_MARKER_ALERT_MINS: u64 = 60;
 /// How long home keeps a push's backup (`[daemon] backup_days`).
 pub const DEFAULT_BACKUP_DAYS: u64 = 14;
+/// Data connections per unit home accepts (`[daemon] streams`); a leaf's
+/// `[home] streams` can only lower it.
+pub const DEFAULT_STREAMS: u32 = 4;
 
 /// A directory home serves, with its excludes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +82,8 @@ pub struct Fleet {
     pub lease: Duration,
     pub marker_alert: Duration,
     pub backup_keep: Duration,
+    /// Data connections per unit: `[daemon] streams`, at least 1.
+    pub streams: u32,
     /// Sorted by `rel`.
     pub roots: Vec<Root>,
     pub hosts: BTreeMap<String, HostEntry>,
@@ -228,6 +233,7 @@ impl Fleet {
                     .unwrap_or(DEFAULT_MARKER_ALERT_MINS)
                     * 60,
             ),
+            streams: raw.daemon.streams.unwrap_or(DEFAULT_STREAMS).max(1),
             roots,
             hosts,
             subscriptions,

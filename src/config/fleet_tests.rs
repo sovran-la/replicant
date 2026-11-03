@@ -141,6 +141,16 @@ fn lease_is_at_least_one_second() {
     assert_eq!(f.lease, Duration::from_secs(1));
 }
 
+#[test]
+fn streams_default_to_four_and_are_at_least_one() {
+    let f = parse("[daemon]\nname=\"h\"\nhome_dir=\"/h\"\n").unwrap();
+    assert_eq!(f.streams, 4);
+    let f = parse("[daemon]\nname=\"h\"\nhome_dir=\"/h\"\nstreams=16\n").unwrap();
+    assert_eq!(f.streams, 16);
+    let f = parse("[daemon]\nname=\"h\"\nhome_dir=\"/h\"\nstreams=0\n").unwrap();
+    assert_eq!(f.streams, 1);
+}
+
 const PIN_A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const PIN_B: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 

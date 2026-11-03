@@ -184,7 +184,17 @@ fn spawn_tcp(
                     .peer_certificates()
                     .and_then(|c| c.first())
                     .map(|c| certs::fingerprint(c));
-                let answer = match (remote::recv::<_, wire::HomeCall>(&mut s), peer) {
+                // A control request is one JSON line; a data connection
+                // starts with its magic line instead.
+                let mut first = [0u8; 1];
+                if std::io::Read::read_exact(&mut s, &mut first).is_err() {
+                    return;
+                }
+                if first[0] != b'{' {
+                    return serve_data(&home, s, first[0], peer);
+                }
+                let line = std::io::Read::chain(&first[..], &mut s);
+                let answer = match (remote::recv::<_, wire::HomeCall>(line), peer) {
                     (Ok(call), Some(peer)) => {
                         home.handle_from(call, &peer, &|| remote::connected(&s.sock))
                     }
@@ -203,6 +213,21 @@ fn spawn_tcp(
             });
         }
     })
+}
+
+/// A data connection: the rest of its magic line, then home serves it.
+fn serve_data(home: &home::Home, mut s: remote::ServerStream, first: u8, peer: Option<String>) {
+    let magic = crate::native::frame::MAGIC;
+    let mut rest = vec![0u8; magic.len() - 1];
+    let ok = first == magic[0] && std::io::Read::read_exact(&mut s, &mut rest).is_ok();
+    let (Some(peer), true) = (peer, ok && rest == magic[1..]) else {
+        return eprintln!("replicant: refused a connection that is neither a request nor data");
+    };
+    let Ok(sock) = s.sock.try_clone() else {
+        return;
+    };
+    let conn = crate::native::conn::Conn::new(Box::new(s), crate::native::conn::Sock::Tcp(sock));
+    home.serve_data(&home::Caller::Cert(peer), conn);
 }
 
 /// Expired leases every half second; old push backups at start and once a
@@ -287,6 +312,10 @@ mod identity_tests;
 #[cfg(test)]
 #[path = "daemon_apply_tests.rs"]
 mod apply_tests;
+
+#[cfg(test)]
+#[path = "daemon_data_tests.rs"]
+mod data_tests;
 
 #[cfg(test)]
 #[path = "daemon_progress_tests.rs"]
