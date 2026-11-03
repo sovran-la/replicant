@@ -48,12 +48,13 @@ impl<'a> Receiver<'a> {
                 .open(&temp)
         };
         let file = match open() {
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                fs::remove_file(&temp)?;
-                open()?
+            Err(why) if why.kind() == io::ErrorKind::AlreadyExists => {
+                fs::remove_file(&temp).map_err(|why| bad(&e.rel, why))?;
+                open()
             }
-            r => r?,
-        };
+            r => r,
+        }
+        .map_err(|why| bad(&e.rel, why))?;
         Ok(Incoming {
             rx: self,
             entry: e.clone(),
@@ -80,7 +81,7 @@ impl<'a> Receiver<'a> {
             .ok_or_else(|| bad(&e.rel, "a link with no target"))?;
         let temp = Self::temp_for(&target);
         let _ = fs::remove_file(&temp);
-        std::os::unix::fs::symlink(link, &temp)?;
+        std::os::unix::fs::symlink(link, &temp).map_err(|why| bad(&e.rel, why))?;
         self.commit(&temp, &target, &e.rel)
     }
 
@@ -98,7 +99,7 @@ impl<'a> Receiver<'a> {
                 Ok(_) if self.backup.is_some() => self.displace(target, rel),
                 _ => Ok(()),
             })
-            .and_then(|()| Ok(fs::rename(temp, target)?));
+            .and_then(|()| fs::rename(temp, target).map_err(|why| bad(rel, why)));
         if r.is_err() {
             let _ = fs::remove_file(temp);
         }
@@ -123,8 +124,9 @@ impl Incoming<'_, '_> {
         if self.written > self.entry.size {
             return Err(bad(&self.entry.rel, "more bytes arrived than it has"));
         }
+        let rel = &self.entry.rel;
         let f = self.file.as_mut().expect("open until finished");
-        Ok(f.write_all(bytes)?)
+        f.write_all(bytes).map_err(|why| bad(rel, why))
     }
 
     /// Mode, mtime, fsync, then rename into place.
@@ -138,9 +140,11 @@ impl Incoming<'_, '_> {
         }
         let f = self.file.take().expect("open until finished");
         let when = mtime(e.mtime_ns);
-        f.set_permissions(fs::Permissions::from_mode(e.mode & 0o7777))?;
-        f.set_times(fs::FileTimes::new().set_modified(when))?;
-        crate::native::fsync(&f)?;
+        let finished = f
+            .set_permissions(fs::Permissions::from_mode(e.mode & 0o7777))
+            .and_then(|()| f.set_times(fs::FileTimes::new().set_modified(when)))
+            .and_then(|()| crate::native::fsync(&f));
+        finished.map_err(|why| bad(&e.rel, why))?;
         drop(f);
         let (temp, target) = (self.temp.clone(), self.target.clone());
         self.rx.commit(&temp, &target, &e.rel)

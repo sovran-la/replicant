@@ -180,7 +180,7 @@ impl<'a> Receiver<'a> {
     pub(super) fn displace(&self, abs: &Path, rel: &str) -> Result<()> {
         match &self.backup {
             Some(b) => b.keep(abs, &self.backup_rel(rel)),
-            None => remove_tree(abs),
+            None => remove_tree(abs).map_err(|why| bad(rel, why)),
         }
     }
 }

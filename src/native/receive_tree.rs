@@ -25,7 +25,7 @@ impl Receiver<'_> {
             }
             let abs = self.checked(t, false, false)?;
             match fs::remove_file(&abs) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.into()),
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(bad(t, e)),
                 _ => {}
             }
         }
@@ -73,15 +73,15 @@ impl Receiver<'_> {
             Ok(m) if m.is_dir() => {
                 if mode_of(&m) != writable.mode() {
                     self.note_dir(&e.rel, Some(mode_of(&m)))?;
-                    fs::set_permissions(&abs, writable)?;
+                    fs::set_permissions(&abs, writable).map_err(|why| bad(&e.rel, why))?;
                 }
                 Ok(())
             }
             Ok(_) => Err(bad(&e.rel, "is not a directory, and was not replaced")),
             Err(_) => {
                 self.note_dir(&e.rel, None)?;
-                fs::create_dir(&abs)?;
-                fs::set_permissions(&abs, writable)?;
+                fs::create_dir(&abs).map_err(|why| bad(&e.rel, why))?;
+                fs::set_permissions(&abs, writable).map_err(|why| bad(&e.rel, why))?;
                 self.touch(&abs);
                 Ok(())
             }
@@ -102,7 +102,8 @@ impl Receiver<'_> {
             if mode_of(&m) != e.mode & 0o7777 {
                 self.note_dir(&e.rel, Some(mode_of(&m)))?;
             }
-            fs::set_permissions(&abs, fs::Permissions::from_mode(e.mode & 0o7777))?;
+            fs::set_permissions(&abs, fs::Permissions::from_mode(e.mode & 0o7777))
+                .map_err(|why| bad(&e.rel, why))?;
         }
         Ok(())
     }

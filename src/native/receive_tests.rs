@@ -322,3 +322,59 @@ fn an_existing_read_only_directory_is_opened_to_be_filled() {
     assert_eq!(m.permissions().mode() & 0o7777, 0o755);
     assert_eq!(fs::read(root.join("ro/f")).unwrap(), b"x");
 }
+
+/// The review's m2: "Permission denied", on what could be a 70k-file unit,
+/// says nothing. Every failure on the tree says which path.
+#[test]
+fn a_failed_write_names_the_path() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path();
+    crate::testutil::write(&root.join("ro/old"), "x");
+    crate::testutil::write(&root.join("ro/.replicant-tmp-dead"), "x");
+    fs::set_permissions(root.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+    let rx = Receiver::open(root, false, None, None).unwrap();
+    let file = Entry {
+        rel: "ro/new".into(),
+        kind: EntryKind::File,
+        size: 1,
+        mtime_ns: 1,
+        mode: 0o644,
+        link: None,
+    };
+    let dir = Entry {
+        rel: "ro/sub".into(),
+        kind: EntryKind::Dir,
+        mode: 0o755,
+        size: 0,
+        mtime_ns: 0,
+        link: None,
+    };
+    let link = Entry {
+        rel: "ro/l".into(),
+        kind: EntryKind::Symlink,
+        link: Some("x".into()),
+        mode: 0o777,
+        size: 0,
+        mtime_ns: 0,
+    };
+    let errs = [
+        ("ro/new", rx.file(&file, b"x").unwrap_err()),
+        ("ro/sub", rx.mkdir(&dir).unwrap_err()),
+        ("ro/l", rx.symlink(&link).unwrap_err()),
+        (
+            "ro/old",
+            rx.delete(&[("ro/old".to_string(), false)]).unwrap_err(),
+        ),
+        (
+            "ro/.replicant-tmp-dead",
+            rx.clean(&["ro/.replicant-tmp-dead".to_string()])
+                .unwrap_err(),
+        ),
+    ];
+    fs::set_permissions(root.join("ro"), fs::Permissions::from_mode(0o755)).unwrap();
+    for (rel, e) in errs {
+        let e = e.to_string();
+        assert!(e.contains(rel), "{rel}: {e}");
+        assert!(e.contains("denied"), "{rel}: {e}");
+    }
+}
