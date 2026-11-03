@@ -18,8 +18,13 @@ pub const MAGIC: &[u8] = b"replicant-data\n";
 pub const DATA_VERSION: u32 = 1;
 
 /// A payload larger than this is refused rather than buffered: a chunk is
-/// [`super::CHUNK`], a batch at most [`super::BATCH_BYTES`] plus its header.
+/// [`super::CHUNK`], a batch about [`super::BATCH_BYTES`] of files and at most
+/// that of header, a list [`LIST_BYTES`].
 pub const MAX_PAYLOAD: usize = 8 << 20;
+
+/// A list goes in frames of about this many bytes ([`lists`]). Each is acked
+/// once its whole list is done, within the ack timeout, so they stay short.
+pub const LIST_BYTES: usize = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -128,6 +133,30 @@ impl Frame {
     }
 }
 
+/// `items` as JSON-array frames of `kind`, in order, each about
+/// [`LIST_BYTES`] at most. Each frame stands alone: nothing depends on
+/// where a list is split. An empty list is no frames.
+pub fn lists<T: Serialize>(kind: Kind, items: &[T]) -> Result<Vec<Frame>> {
+    let mut frames = Vec::new();
+    let mut cur = vec![b'['];
+    for item in items {
+        let j = serde_json::to_vec(item).map_err(|e| Error::Transfer(format!("encode: {e}")))?;
+        if cur.len() > 1 && cur.len() + j.len() + 2 > LIST_BYTES {
+            cur.push(b']');
+            frames.push(Frame::new(kind, std::mem::replace(&mut cur, vec![b'['])));
+        }
+        if cur.len() > 1 {
+            cur.push(b',');
+        }
+        cur.extend_from_slice(&j);
+    }
+    if cur.len() > 1 {
+        cur.push(b']');
+        frames.push(Frame::new(kind, cur));
+    }
+    Ok(frames)
+}
+
 /// A [`Kind::Batch`] of `entries`, whose files' bytes are `bytes`, in order.
 pub fn batch(entries: &[Entry], bytes: &[u8]) -> Result<Frame> {
     let head = serde_json::to_vec(entries).map_err(|e| Error::Transfer(format!("encode: {e}")))?;
@@ -151,23 +180,34 @@ pub fn unbatch(f: &Frame) -> Result<(Vec<Entry>, &[u8])> {
     let entries: Vec<Entry> =
         serde_json::from_slice(head).map_err(|e| bad(&format!("header: {e}")))?;
     let bytes = &p[4 + n..];
-    let want: u64 = entries
+    let want = entries
         .iter()
         .filter(|e| e.kind == EntryKind::File)
-        .map(|e| e.size)
-        .sum();
-    if want != bytes.len() as u64 {
+        .try_fold(0u64, |sum, e| sum.checked_add(e.size));
+    if want != Some(bytes.len() as u64) {
         return Err(bad(&format!(
-            "its files are {want} bytes, it carries {}",
+            "its files are {} bytes, it carries {}",
+            want.map_or("too many".to_string(), |w| w.to_string()),
             bytes.len()
         )));
     }
     Ok((entries, bytes))
 }
 
-/// Write one frame.
+/// Write one frame. One past [`MAX_PAYLOAD`] is an error, nothing written:
+/// the other side would refuse it, and frames are sized from what is on disk
+/// when they are built, which nothing here controls.
 pub fn write<W: Write + ?Sized>(w: &mut W, f: &Frame) -> std::io::Result<()> {
-    assert!(f.payload.len() <= MAX_PAYLOAD, "frames are built small");
+    if f.payload.len() > MAX_PAYLOAD {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "a {:?} frame of {} bytes is larger than the limit",
+                f.kind,
+                f.payload.len()
+            ),
+        ));
+    }
     let mut head = [0u8; 5];
     head[..4].copy_from_slice(&(f.payload.len() as u32).to_be_bytes());
     head[4] = f.kind as u8;

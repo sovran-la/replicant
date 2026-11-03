@@ -19,6 +19,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// Entries in one batch, at most: its header stays well under a frame.
 const BATCH_ENTRIES: usize = 2048;
 
+/// A batch's paths, in bytes, at most: however long they are, the [`Kind::Get`]
+/// that names them and the header that lists them fit a frame.
+const BATCH_PATHS: usize = 1 << 19;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Batch(Vec<String>),
@@ -34,16 +38,17 @@ pub fn items(send: &[Entry]) -> Vec<Item> {
         .collect();
     big.sort_by(|a, b| b.size.cmp(&a.size).then(a.rel.cmp(&b.rel)));
     let mut out: Vec<Item> = big.iter().map(|e| Item::Big(e.rel.clone())).collect();
-    let (mut cur, mut bytes) = (Vec::new(), 0u64);
+    let (mut cur, mut bytes, mut names) = (Vec::new(), 0u64, 0usize);
     for e in send
         .iter()
         .filter(|e| !(e.kind == EntryKind::File && e.size >= SMALL))
     {
         cur.push(e.rel.clone());
         bytes += e.size;
-        if bytes >= BATCH_BYTES || cur.len() >= BATCH_ENTRIES {
+        names += e.rel.len();
+        if bytes >= BATCH_BYTES || cur.len() >= BATCH_ENTRIES || names >= BATCH_PATHS {
             out.push(Item::Batch(std::mem::take(&mut cur)));
-            bytes = 0;
+            (bytes, names) = (0, 0);
         }
     }
     if !cur.is_empty() {
@@ -141,13 +146,17 @@ fn stopped(abort: &Abort) -> Result<()> {
 pub fn push(conn: &mut Conn, src: &Source<'_>, sh: &Shared, abort: &Abort) -> Result<()> {
     while let Some(item) = sh.take() {
         stopped(abort)?;
+        #[cfg(test)]
+        tests::forced_panic(&item);
         match item {
             Item::Batch(rels) => {
-                let (f, sent) = send::batch(src, &rels)?;
-                if let Some(f) = f {
-                    Window::new(conn).call(&f)?;
-                }
-                sent.into_iter().for_each(|s| sh.done(s));
+                send::batch(src, &rels, &mut |f, sent| {
+                    if let Some(f) = f {
+                        Window::new(conn).call(&f)?;
+                    }
+                    sent.into_iter().for_each(|s| sh.done(s));
+                    Ok(())
+                })?;
             }
             Item::Big(rel) => {
                 let s = send::file(&mut Window::counting(conn, &sh.bytes), src, &rel)?;
@@ -163,6 +172,8 @@ pub fn push(conn: &mut Conn, src: &Source<'_>, sh: &Shared, abort: &Abort) -> Re
 pub fn pull(conn: &mut Conn, rx: &Receiver<'_>, sh: &Shared, abort: &Abort) -> Result<()> {
     while let Some(item) = sh.take() {
         stopped(abort)?;
+        #[cfg(test)]
+        tests::forced_panic(&item);
         let asked: Vec<String> = match item {
             Item::Batch(rels) => rels,
             Item::Big(rel) => vec![rel],

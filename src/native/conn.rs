@@ -84,6 +84,8 @@ impl Conn {
     pub fn send(&mut self, f: &Frame) -> Result<()> {
         match frame::write(&mut self.io, f) {
             Ok(()) => Ok(()),
+            // Never written: the peer has nothing to say about it.
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput => Err(frame::io_error(e)),
             Err(e) => Err(self.last_word().unwrap_or_else(|| frame::io_error(e))),
         }
     }

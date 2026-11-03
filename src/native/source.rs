@@ -8,6 +8,7 @@
 //! files are ever read: the walk leaves sockets, FIFOs and devices out, and
 //! [`open`] will not block on or return one that took a file's place since.
 
+use super::SMALL;
 use super::manifest::{Entry, EntryKind, mtime_ns};
 use crate::exclude::Excludes;
 use crate::repos::is_special;
@@ -26,7 +27,8 @@ pub struct Source<'a> {
 pub enum Read {
     /// A file's entry as it is now, and its bytes; or a link's entry.
     Whole(Entry, Vec<u8>),
-    /// Gone, a directory now, or changed while it was read: not sent.
+    /// Gone, a directory now, too large to read whole now, or changed while
+    /// it was read: not sent.
     Changed,
 }
 
@@ -83,7 +85,9 @@ impl<'a> Source<'a> {
         }
     }
 
-    /// A small file's bytes (or a link), whole.
+    /// A small file's bytes (or a link), whole. A file grown past
+    /// [`SMALL`] since the diff is not read at all, and one that grows while
+    /// it is read is read no further than its size: nothing here is unbounded.
     pub fn read(&self, rel: &str) -> Result<Read> {
         let Some((abs, e)) = self.now(rel)? else {
             return Ok(Read::Changed);
@@ -91,12 +95,15 @@ impl<'a> Source<'a> {
         if e.kind == EntryKind::Symlink {
             return Ok(Read::Whole(e, vec![]));
         }
-        let mut f = match open(&abs) {
+        if e.size >= SMALL {
+            return Ok(Read::Changed);
+        }
+        let f = match open(&abs) {
             Some(f) => f,
             None => return Ok(Read::Changed),
         };
         let mut bytes = Vec::with_capacity(e.size as usize);
-        f.read_to_end(&mut bytes)?;
+        (&f).take(e.size + 1).read_to_end(&mut bytes)?;
         match unchanged(&f, &e) && bytes.len() as u64 == e.size {
             true => Ok(Read::Whole(e, bytes)),
             false => Ok(Read::Changed),

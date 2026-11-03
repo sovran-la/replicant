@@ -4,11 +4,11 @@
 //! Acks come back in order; waiting longer than the ack timeout for one
 //! fails with the connection called dead (the socket's timeout).
 
-use super::CHUNK;
 use super::conn::Conn;
 use super::frame::{self, Frame, Kind};
 use super::manifest::Entry;
 use super::source::{self, Read, Source};
+use super::{BATCH_BYTES, CHUNK};
 use crate::Result;
 use std::collections::VecDeque;
 use std::io::Read as _;
@@ -16,6 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Frames that may be in flight, unacked, on one connection.
 pub const WINDOW: usize = 8;
+
+/// A batch header's fixed fields, per entry, at most.
+const HEAD_ENTRY: usize = 96;
 
 pub struct Window<'c> {
     conn: &'c mut Conn,
@@ -121,25 +124,46 @@ pub fn file(w: &mut Window<'_>, src: &Source<'_>, rel: &str) -> Result<Sent> {
     Ok(Sent::Whole(e))
 }
 
-/// Small files and links in one [`Kind::Batch`], read as they are now.
-/// The changed ones are left out; `None` when none is left.
-pub fn batch(src: &Source<'_>, rels: &[String]) -> Result<(Option<Frame>, Vec<Sent>)> {
-    let (mut entries, mut bytes, mut sent) = (Vec::new(), Vec::new(), Vec::new());
+/// Small files and links in [`Kind::Batch`] frames, read as they are now,
+/// given to `flush` with what each entry came to (no frame when none of them
+/// is left). Usually one frame: `rels` was made to fit. More when the files
+/// grew since (each is still under [`SMALL`], or left out, but all of them
+/// together need not be under a frame).
+pub fn batch(
+    src: &Source<'_>,
+    rels: &[String],
+    flush: &mut dyn FnMut(Option<Frame>, Vec<Sent>) -> Result<()>,
+) -> Result<()> {
+    let (mut entries, mut bytes, mut sent, mut head) = (Vec::new(), Vec::new(), Vec::new(), 0);
+    let mut out = |entries: &mut Vec<Entry>, bytes: &mut Vec<u8>, sent: &mut Vec<Sent>| {
+        let f = match entries.is_empty() {
+            true => None,
+            false => Some(frame::batch(entries, bytes)?),
+        };
+        entries.clear();
+        bytes.clear();
+        flush(f, std::mem::take(sent))
+    };
     for rel in rels {
         match src.read(rel)? {
             Read::Whole(e, b) => {
+                // Its header's size, at worst: every byte of a path escaped.
+                head += HEAD_ENTRY + 6 * (e.rel.len() + e.link.as_ref().map_or(0, String::len));
                 bytes.extend_from_slice(&b);
                 sent.push(Sent::Whole(e.clone()));
                 entries.push(e);
             }
             Read::Changed => sent.push(Sent::Changed(rel.clone())),
         }
+        if bytes.len() as u64 >= BATCH_BYTES || head >= BATCH_BYTES as usize {
+            out(&mut entries, &mut bytes, &mut sent)?;
+            head = 0;
+        }
     }
-    let f = match entries.is_empty() {
-        true => None,
-        false => Some(frame::batch(&entries, &bytes)?),
-    };
-    Ok((f, sent))
+    if !sent.is_empty() {
+        out(&mut entries, &mut bytes, &mut sent)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -192,3 +192,32 @@ fn an_interrupted_push_quarantines_home_and_its_own_leaf_resumes_it() {
     );
     assert!(baseline(&bed, "work/beta").is_some());
 }
+
+#[test]
+fn a_panic_in_a_transfer_worker_interrupts_the_unit_and_frees_the_queue() {
+    crate::native::tests_fixture::bounded(Duration::from_secs(60), || {
+        let bed = Bed::enrolled();
+        testutil::write(&bed.home_hd.join("work/plain.txt"), "plain\n");
+        testutil::write(&bed.home_hd.join("work/panic-me-sync"), "boom\n");
+        let home = bed.home();
+        let r = yes(&bed, &home);
+        match &r.outcome {
+            Outcome::Interrupted {
+                rel,
+                why,
+                journaled,
+            } => {
+                assert_eq!(rel, "work");
+                assert!(why.contains("panicked"), "{why}");
+                assert!(journaled);
+            }
+            o => panic!("not interrupted: {o:?}"),
+        }
+        let m: Vec<Marker> = crate::marker::store(&bed.leaf_dirs.state()).all().unwrap();
+        assert_eq!(m.len(), 1, "the marker stays");
+        // The lease came back: the next sync gets through, and resumes.
+        std::fs::remove_file(bed.home_hd.join("work/panic-me-sync")).unwrap();
+        assert_eq!(yes(&bed, &home).outcome, Outcome::Done);
+        assert!(bed.leaf_hd.join("work/plain.txt").exists());
+    });
+}

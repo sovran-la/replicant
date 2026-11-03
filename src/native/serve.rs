@@ -33,13 +33,12 @@ pub struct Served {
     pub backup: Option<PathBuf>,
 }
 
-/// A path whose kind changes, and what under it goes first.
+/// A path whose kind changes. What lies under a directory went first, in
+/// [`Kind::Deletes`] frames.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Replace {
     pub rel: String,
     pub kind: EntryKind,
-    #[serde(default)]
-    pub under: Vec<(String, bool)>,
 }
 
 pub fn ack(conn: &mut Conn) -> Result<()> {
@@ -74,7 +73,7 @@ fn receive(conn: &mut Conn, served: &Served, still: &dyn Fn() -> Result<()>) -> 
             Kind::Clean => rx.clean(&f.parse::<Vec<String>>()?).map(|()| None),
             Kind::Replace => f.parse::<Vec<Replace>>().and_then(|list| {
                 list.iter()
-                    .try_for_each(|r| rx.replace(&r.rel, r.kind, &r.under))
+                    .try_for_each(|r| rx.replace(&r.rel, r.kind, &[]))
                     .map(|()| None)
             }),
             Kind::Mkdirs => f

@@ -45,8 +45,8 @@ fn answer(conn: &mut Conn, src: &Source<'_>, rels: &[String]) -> Result<()> {
         send::file(&mut Window::new(conn), src, rel)?;
         return Ok(());
     }
-    if let (Some(f), _) = send::batch(src, rels)? {
-        Window::new(conn).call(&f)?;
-    }
-    Ok(())
+    send::batch(src, rels, &mut |f, _| match f {
+        Some(f) => Window::new(conn).call(&f).map(|_| ()),
+        None => Ok(()),
+    })
 }

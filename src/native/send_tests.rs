@@ -14,6 +14,18 @@ fn acker(mut c: Conn) -> Vec<(Kind, usize)> {
     seen
 }
 
+/// What a batch that fits one frame comes to.
+fn one(src: &Source<'_>, rels: &[String]) -> (Option<Frame>, Vec<Sent>) {
+    let mut out = Vec::new();
+    batch(src, rels, &mut |f, s| {
+        out.push((f, s));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(out.len(), 1, "{out:?}");
+    out.pop().unwrap()
+}
+
 #[test]
 fn a_large_file_streams_in_chunks_and_ends_once_acked() {
     let t = tempfile::tempdir().unwrap();
@@ -64,7 +76,7 @@ fn a_batch_leaves_out_what_changed_and_is_none_when_nothing_is_left() {
     write(&t.path().join("a"), "aa");
     std::os::unix::fs::symlink("a", t.path().join("l")).unwrap();
     let src = Source::open(t.path(), false, None).unwrap();
-    let (f, sent) = batch(&src, &["a".into(), "gone".into(), "l".into()]).unwrap();
+    let (f, sent) = one(&src, &["a".into(), "gone".into(), "l".into()]);
     let f = f.unwrap();
     let (entries, bytes) = frame::unbatch(&f).unwrap();
     assert_eq!(
@@ -74,7 +86,7 @@ fn a_batch_leaves_out_what_changed_and_is_none_when_nothing_is_left() {
     assert_eq!(entries[1].kind, EntryKind::Symlink);
     assert_eq!(bytes, b"aa");
     assert_eq!(sent[1], Sent::Changed("gone".into()));
-    let (none, _) = batch(&src, &["gone".into()]).unwrap();
+    let (none, _) = one(&src, &["gone".into()]);
     assert!(none.is_none());
 }
 

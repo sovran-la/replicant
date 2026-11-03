@@ -1,6 +1,53 @@
 //! How a unit's sends are split into work: big files alone and first, the
 //! rest batched; a repo's refs in a round of their own, last.
 
+/// A file so named panics the worker that takes it: the only way to make one
+/// panic, and only in tests. Names are per test, so tests do not meet.
+pub(super) const PANIC_PREFIX: &str = "panic-me-";
+
+pub(super) fn forced_panic(item: &super::Item) {
+    let hit = |rel: &String| {
+        rel.rsplit('/')
+            .next()
+            .unwrap_or(rel)
+            .starts_with(PANIC_PREFIX)
+    };
+    match item {
+        super::Item::Batch(rels) if rels.iter().any(hit) => panic!("forced, in a worker"),
+        super::Item::Big(rel) if hit(rel) => panic!("forced, in a worker"),
+        _ => {}
+    }
+}
+
+#[test]
+fn a_batch_closes_at_its_paths_however_few_or_small_the_files() {
+    use super::{Item, items};
+    let f = |i: usize| crate::native::Entry {
+        rel: format!("{i:04}-{}", "n".repeat(250)),
+        kind: crate::native::EntryKind::File,
+        size: 1,
+        mtime_ns: 0,
+        mode: 0o644,
+        link: None,
+    };
+    let send: Vec<_> = (0..4000).map(f).collect();
+    let batches = items(&send);
+    assert!(batches.len() >= 2, "{}", batches.len());
+    for b in &batches {
+        let Item::Batch(rels) = b else { panic!() };
+        let j = crate::native::frame::Frame::json(crate::native::frame::Kind::Get, rels).unwrap();
+        assert!(j.payload.len() < crate::native::frame::MAX_PAYLOAD);
+    }
+    let n: usize = batches
+        .iter()
+        .map(|b| match b {
+            Item::Batch(r) => r.len(),
+            Item::Big(_) => 1,
+        })
+        .sum();
+    assert_eq!(n, 4000, "none lost");
+}
+
 #[test]
 fn work_items_put_big_files_first_and_batch_the_rest() {
     use super::{Item, items};

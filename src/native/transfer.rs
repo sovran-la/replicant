@@ -21,6 +21,8 @@ use std::time::Duration;
 
 #[path = "transfer_run.rs"]
 mod run;
+#[path = "transfer_watch.rs"]
+mod watch;
 
 /// One unit's transfer.
 #[derive(Debug, Clone)]
@@ -269,6 +271,10 @@ mod tests;
 #[cfg(test)]
 #[path = "transfer_fault_tests.rs"]
 mod fault_tests;
+
+#[cfg(test)]
+#[path = "transfer_limits_tests.rs"]
+mod limits_tests;
 
 #[cfg(test)]
 #[path = "transfer_special_tests.rs"]

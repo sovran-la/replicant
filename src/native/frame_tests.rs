@@ -130,3 +130,68 @@ fn shutting_down_from_another_thread_unblocks_a_reader() {
     });
     assert!(t.elapsed() < Duration::from_secs(5));
 }
+
+#[test]
+fn an_oversize_frame_is_an_error_with_nothing_written() {
+    let mut out = Vec::new();
+    let f = Frame::new(Kind::Chunk, vec![0; MAX_PAYLOAD + 1]);
+    let e = write(&mut out, &f).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(out.is_empty());
+    // Just at the limit is a frame.
+    write(&mut out, &Frame::new(Kind::Chunk, vec![0; MAX_PAYLOAD])).unwrap();
+    assert_eq!(out.len(), MAX_PAYLOAD + 5);
+}
+
+#[test]
+fn a_connection_refuses_an_oversize_frame_at_once() {
+    let (mut a, _b) = crate::native::conn::Conn::pair().unwrap();
+    let t0 = std::time::Instant::now();
+    let e = a.send(&Frame::new(Kind::Chunk, vec![0; MAX_PAYLOAD + 1]));
+    let e = e.unwrap_err().to_string();
+    assert!(e.contains("larger than the limit"), "{e}");
+    assert!(t0.elapsed() < std::time::Duration::from_millis(500));
+}
+
+#[test]
+fn lists_split_under_the_limit_and_keep_their_order() {
+    assert!(
+        lists(Kind::Deletes, &Vec::<String>::new())
+            .unwrap()
+            .is_empty()
+    );
+    let one = lists(Kind::Deletes, &["a".to_string()]).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].parse::<Vec<String>>().unwrap(), ["a"]);
+    let all: Vec<String> = (0..60_000)
+        .map(|i| format!("{i:06}-{}", "p".repeat(100)))
+        .collect();
+    let frames = lists(Kind::Deletes, &all).unwrap();
+    assert!(frames.len() >= 6, "{}", frames.len());
+    let mut back = Vec::new();
+    for f in &frames {
+        assert_eq!(f.kind, Kind::Deletes);
+        assert!(f.payload.len() <= LIST_BYTES, "{}", f.payload.len());
+        back.extend(f.parse::<Vec<String>>().unwrap());
+    }
+    assert_eq!(back, all);
+    // One item over the budget still goes, alone.
+    let big = vec!["x".repeat(LIST_BYTES + 10), "y".to_string()];
+    let frames = lists(Kind::Deletes, &big).unwrap();
+    assert_eq!(frames.len(), 2);
+}
+
+#[test]
+fn a_batch_whose_sizes_wrap_is_malformed_not_a_panic() {
+    let e = |size| Entry {
+        rel: "f".into(),
+        kind: EntryKind::File,
+        size,
+        mtime_ns: 0,
+        mode: 0o644,
+        link: None,
+    };
+    let f = batch(&[e(u64::MAX), e(2)], b"x").unwrap();
+    let err = unbatch(&f).unwrap_err().to_string();
+    assert!(err.contains("malformed"), "{err}");
+}

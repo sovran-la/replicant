@@ -73,7 +73,6 @@ fn a_whole_push_lands_with_every_frame_acked_in_order() {
         let r = [Replace {
             rel: "was-file".into(),
             kind: EntryKind::File,
-            under: vec![],
         }];
         acked(c, Frame::json(Kind::Replace, &r).unwrap());
         acked(
