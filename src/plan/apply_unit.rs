@@ -10,12 +10,13 @@
 
 use super::{AppliedUnit, Outcome};
 use crate::baseline;
+use crate::changes::ChangeKind;
 use crate::daemon::wire::{HomeReply, HomeRequest};
 use crate::marker::{self, Direction, Marker};
 use crate::plan::lease::Watch;
-use crate::plan::{HomeLink, LeafCtx, Planned, PlannedUnit, diff};
+use crate::plan::xfer::{Ops, Xfer};
+use crate::plan::{Planned, PlannedUnit, diff};
 use crate::record::RECORD_VERSION;
-use crate::rsync::{ChangeKind, Runner, Stopped, Transfer};
 use crate::state::UnitState;
 use crate::{Error, Result};
 use std::time::Instant;
@@ -52,18 +53,17 @@ fn expect_done(r: HomeReply, what: &str) -> Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 fn transfer(
-    link: &dyn HomeLink,
-    ctx: LeafCtx<'_>,
+    ops: &Ops<'_>,
     watch: &Watch,
     p: &Planned<'_>,
-    runner: &Runner,
     u: &PlannedUnit,
-    t: &Transfer,
+    t: &Xfer,
     deleting: bool,
     action: &'static str,
     resumed: bool,
     started: Instant,
 ) -> Result<Done> {
+    let (link, ctx) = (ops.link, ops.ctx);
     let lease = watch.id();
     let markers = marker::store(ctx.state_dir);
     if let Some(note) = u.deletion_note(ctx.me, &p.plan.home) {
@@ -82,13 +82,15 @@ fn transfer(
         return Ok(Done::Stopped(stopped_before(u, watch)));
     }
     // The marker: before the rsync, on the target.
-    let source_state = match (deleting, t.direction) {
+    let direction = t.direction();
+    let source_state = match (deleting, direction) {
         (true, _) => UnitState::Empty,
         (false, Direction::Pull) => u.home.clone(),
         (false, Direction::Push) => u.leaf.clone(),
     };
     let mut push = None;
-    match t.direction {
+    let mut fresh = None;
+    match direction {
         Direction::Pull => {
             // A resumed pull keeps the marker it is resuming.
             if markers.get::<Marker>(&u.rel)?.is_none() {
@@ -106,9 +108,9 @@ fn transfer(
         Direction::Push => {
             // Home backs up what this push will replace or delete, so it
             // needs the list as of now, and it must be what was planned.
-            let fresh = t.dry_run(runner)?;
+            let (it, native) = ops.dry_run(t)?;
             let planned = u.diff.as_ref().map(|d| &d.changes);
-            if planned != Some(&diff::summarize(&fresh).changes) {
+            if planned != Some(&diff::summarize(&it).changes) {
                 return Ok(Done::Stopped(Outcome::Failed {
                     rel: u.rel.clone(),
                     why: "it changed since the plan was made; nothing of it was written. Run \
@@ -116,12 +118,18 @@ fn transfer(
                         .into(),
                 }));
             }
-            let backup: Vec<String> = fresh
-                .changes
-                .iter()
-                .filter(|c| !c.is_dir && c.kind != ChangeKind::Create)
-                .map(|c| c.path.clone())
-                .collect();
+            // The native receiver renames what it replaces into the backup
+            // as it goes; rsync's push needs home to copy it first.
+            let backup: Vec<String> = match native {
+                Some(_) => vec![],
+                None => it
+                    .changes
+                    .iter()
+                    .filter(|c| !c.is_dir && c.kind != ChangeKind::Create)
+                    .map(|c| c.path.clone())
+                    .collect(),
+            };
+            fresh = native;
             // Home's marker and backup are the push's first writes.
             if watch.abort().raised() {
                 return Ok(Done::Stopped(stopped_before(u, watch)));
@@ -131,7 +139,7 @@ fn transfer(
                 rel: u.rel.clone(),
                 source_state,
                 backup,
-                is_file: t.is_file,
+                is_file: t.is_file(),
             })?;
             let HomeReply::Begun { push: id } = reply else {
                 return Err(Error::Remote(format!(
@@ -142,19 +150,20 @@ fn transfer(
         }
     }
 
-    let ran = t.apply(runner)?;
+    let ran = ops.apply(t, fresh.as_ref())?;
     let changes = diff::summarize(&ran.itemized).changes;
     if !ran.ok() {
         // Stopped by whoever raised the abort and said why (the CLI hung
         // up); without a reason, a lost lease.
         let why = match (ran.stopped, watch.abort().why()) {
-            (Some(Stopped::Aborted), Some(w)) => format!("{w}; rsync stopped"),
+            (true, Some(w)) => format!("{w}; {}", ran.stop_word),
+            (true, None) => format!("lease lost; {}", ran.stop_word),
             _ => ran.why(),
         };
         let journaled = link
             .call(HomeRequest::Interrupted {
                 rel: u.rel.clone(),
-                direction: t.direction,
+                direction,
                 why: why.clone(),
                 changes: changes.clone(),
             })
@@ -174,7 +183,7 @@ fn transfer(
         let journaled = link
             .call(HomeRequest::Interrupted {
                 rel: u.rel.clone(),
-                direction: t.direction,
+                direction,
                 why: why.clone(),
                 changes: changes.clone(),
             })
@@ -188,7 +197,7 @@ fn transfer(
 
     let agreed = match deleting {
         true => None,
-        false => Some(after(link, ctx, p, u, t.direction, lease)?),
+        false => Some(after(link, ctx, p, u, direction, lease)?),
     };
     expect_done(
         link.call(HomeRequest::Agree {
@@ -204,7 +213,7 @@ fn transfer(
         Some(b) => store.put(b)?,
         None => store.delete(&u.rel)?,
     }
-    if t.direction == Direction::Pull {
+    if direction == Direction::Pull {
         markers.delete(&u.rel)?;
     }
     let mut applied = applied(u, action, resumed, &ran);
@@ -220,7 +229,7 @@ fn transfer(
         link.call(HomeRequest::Settle {
             lease,
             rel: u.rel.clone(),
-            direction: Some(t.direction),
+            direction: Some(direction),
             detail,
             changes,
         })?,

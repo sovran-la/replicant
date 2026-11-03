@@ -1,18 +1,19 @@
-//! The dry-run half of a plan: one rsync `--dry-run` per unit that would move,
-//! and guardrails 1, 3, 4 and 5 against what it reports.
+//! The dry-run half of a plan: one dry run per unit that would move (the
+//! diff of both sides' manifests, natively; rsync `--dry-run` on the rsync
+//! plane), and guardrails 1, 3, 4 and 5 against what it reports.
 
-use super::{DiffSummary, LeafCtx, PlannedUnit, leaf_case_insensitive};
+use super::xfer::{Ops, Plane, Xfer};
+use super::{DiffSummary, PlannedUnit, leaf_case_insensitive};
+use crate::changes::{ChangeKind, Itemized};
 use crate::daemon::wire::HomeSnapshot;
 use crate::decide::Decision;
 use crate::guard::{self, Refusal};
 use crate::marker::{Direction, Marker};
-use crate::rsync::{Abort, ChangeKind, Client, Itemized, Runner, Transfer};
 use crate::units::{self, Discovered, SideUnit, SubSpec};
 use crate::{Result, paths, state};
 
-/// Concurrent rsync dry runs. Each is an ssh session to home; a handful is
-/// plenty and does not look like an attack to sshd.
-const RSYNC_WORKERS: usize = 4;
+/// Concurrent dry runs: each walks a unit here and asks home for its side.
+const DRY_RUN_WORKERS: usize = 4;
 
 pub(super) fn spec_for<'s>(specs: &'s [SubSpec], rel: &str) -> Option<&'s SubSpec> {
     specs
@@ -59,17 +60,16 @@ pub(super) fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
 /// Fill `diff` and `refusals` on every unit that would move, and return the
 /// transfer each one's dry run used (index-aligned; `None` for the rest):
 /// apply runs exactly those, without `--dry-run`.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
-    ctx: LeafCtx<'_>,
+    ops: &Ops<'_>,
     snap: &HomeSnapshot,
     found: &Discovered,
     union: &[String],
     leaf_units: &[SideUnit],
     planned: &mut [PlannedUnit],
     leaf_markers: &[Marker],
-    abort: &Abort,
-) -> Result<Vec<Option<Transfer>>> {
+) -> Result<Vec<Option<Xfer>>> {
+    let ctx = ops.ctx;
     let mut worktrees = found.worktrees();
     worktrees.extend(snap.worktrees.iter().cloned());
     let sub_rels: Vec<String> = snap.specs.iter().map(|s| s.rel.clone()).collect();
@@ -83,19 +83,10 @@ pub(super) fn run(
     if jobs.is_empty() {
         return Ok(transfers);
     }
-    let runner = Runner {
-        program: ctx.rsync.into(),
-        abort: abort.clone(),
-        ..Runner::new(
-            ctx.cfg.rsync_timeout(),
-            Client::detect()?,
-            ctx.scratch_dir.to_path_buf(),
-        )
-    };
     let results = state::parallel_map(
         &jobs,
-        RSYNC_WORKERS,
-        |&i| -> Result<(DiffSummary, Vec<Refusal>, Transfer)> {
+        DRY_RUN_WORKERS,
+        |&i| -> Result<(DiffSummary, Vec<Refusal>, Xfer)> {
             let p = &planned[i];
             let remove = p.decision == Decision::Remove;
             let direction = diff_direction(ctx.me, &p.decision).expect("filtered above");
@@ -121,24 +112,54 @@ pub(super) fn run(
             };
             // Git-ignored paths on either side never move: the source's are
             // not sent, the target's are not deleted for being absent.
-            let ignored = l.into_iter().chain(h).chain(removed.as_ref());
-            let excludes = units::with_ignored(excludes, ignored.flat_map(|u| &u.ignored));
+            let ignored: Vec<String> = l
+                .into_iter()
+                .chain(h)
+                .chain(removed.as_ref())
+                .flat_map(|u| u.ignored.iter().cloned())
+                .collect();
+            let excludes = units::with_ignored(excludes, &ignored);
             let (source, target) = match direction {
                 Direction::Pull => (h, l),
                 Direction::Push => (l, h),
             };
-            let transfer = Transfer {
-                direction,
-                leaf_path: p.leaf_path.clone(),
-                home_path: p.home_path.clone(),
-                home_host: ctx.cfg.rsync_host(),
-                is_file: l.is_some_and(|u| u.is_file)
-                    || h.is_some_and(|u| u.is_file)
-                    || (remove && p.leaf_path.is_file()),
-                excludes,
-                source_absent: remove || source.is_none_or(|u| u.state.is_empty()),
+            let is_file = l.is_some_and(|u| u.is_file)
+                || h.is_some_and(|u| u.is_file)
+                || (remove && p.leaf_path.is_file());
+            let source_absent = remove || source.is_none_or(|u| u.state.is_empty());
+            let within = |v: &[String]| -> Vec<String> {
+                v.iter()
+                    .filter(|r| paths::is_within(r, &p.rel))
+                    .cloned()
+                    .collect()
             };
-            let it = transfer.dry_run(&runner)?;
+            let transfer = match ctx.plane {
+                Plane::Rsync(_) => Xfer::Rsync(crate::rsync::Transfer {
+                    direction,
+                    leaf_path: p.leaf_path.clone(),
+                    home_path: p.home_path.clone(),
+                    home_host: ctx.cfg.rsync_host(),
+                    is_file,
+                    excludes,
+                    source_absent,
+                }),
+                Plane::Native { .. } => Xfer::Native(crate::native::transfer::Transfer {
+                    direction,
+                    rel: p.rel.clone(),
+                    kind: p.kind,
+                    leaf_path: p.leaf_path.clone(),
+                    is_file,
+                    source_absent,
+                    excludes,
+                    union: match p.kind {
+                        units::UnitKind::Loose => within(union),
+                        units::UnitKind::Repo => vec![],
+                    },
+                    worktrees: within(&worktrees),
+                    ignored,
+                }),
+            };
+            let (it, _) = ops.dry_run(&transfer)?;
 
             let mut refusals = Vec::new();
             if !remove {
@@ -164,7 +185,7 @@ pub(super) fn run(
             if direction == Direction::Pull
                 && let Some(m) = leaf_markers.iter().find(|m| m.rel == p.rel)
             {
-                let late = changed_since(p, transfer.is_file, &it, m.started_at);
+                let late = changed_since(p, transfer.is_file(), &it, m.started_at);
                 refusals.extend(guard::changed_since_interrupted(&p.rel, m.started_at, late));
             }
             Ok((summarize(&it), refusals, transfer))

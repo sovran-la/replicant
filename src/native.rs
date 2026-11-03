@@ -29,7 +29,7 @@ pub mod transfer;
 pub mod workers;
 
 #[cfg(test)]
-mod tests_fixture;
+pub(crate) mod tests_fixture;
 
 pub use diff::{ChangeList, diff, itemize};
 pub use manifest::{Entry, EntryKind, Manifest};

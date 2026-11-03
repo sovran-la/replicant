@@ -9,7 +9,6 @@ use crate::daemon::local::HANGUP;
 use crate::daemon::wire::{HomeReply, HomeRequest};
 use crate::plan::HomeLink;
 use crate::rsync::Abort;
-use std::cell::RefCell;
 
 /// The sync stopped at `rel` before it began: `Failed`, saying so.
 fn stopped_before(r: &SyncReport, rel: &str) {
@@ -140,8 +139,12 @@ fn raised_on_the_note(bed: &Bed, home: &Home, confirm: &str) -> (SyncReport, Vec
     };
     let cfg = bed.leaf_cfg();
     let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
-    let seen = RefCell::new(Vec::new());
-    let emit = |e: ProgressEvent| seen.borrow_mut().push(e);
+    let seen = std::sync::Mutex::new(Vec::new());
+    let emit = |e: ProgressEvent| {
+        if !matches!(e, ProgressEvent::UnitProgress { .. }) {
+            seen.lock().unwrap().push(e)
+        }
+    };
     let progress = Progress::new(&emit, abort);
     let opts = SyncOpts {
         confirm_delete: vec![confirm.into()],
@@ -149,7 +152,7 @@ fn raised_on_the_note(bed: &Bed, home: &Home, confirm: &str) -> (SyncReport, Vec
     };
     let ctx = ctx(bed, &cfg, &dirs, crate::plan::RSYNC);
     let r = crate::plan::apply::sync_with(&link, ctx, &opts, &progress).unwrap();
-    (r, seen.into_inner())
+    (r, seen.into_inner().unwrap())
 }
 
 #[test]

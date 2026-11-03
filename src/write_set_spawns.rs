@@ -87,7 +87,13 @@ pub(super) const SPAWNS: &[(&str, &str, usize, &str)] = &[
         "plan/apply_unit.rs",
         ".apply(",
         1,
-        "the unit's real rsync, after its marker: synced paths",
+        "the unit's real transfer (Ops::apply), after its marker: synced paths",
+    ),
+    (
+        "plan/xfer.rs",
+        ".apply(",
+        2,
+        "Ops::apply: rsync's Transfer::apply, or the native transfer's apply",
     ),
     (
         "daemon/home_backup.rs",

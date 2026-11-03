@@ -52,11 +52,29 @@ pub fn items(send: &[Entry]) -> Vec<Item> {
     out
 }
 
-/// What the workers share: the items, the next one to take, and what has
-/// been done.
+/// Whether `rel` is one of a repo's refs: `.git/HEAD`, `.git/packed-refs`,
+/// or under `.git/refs/`. They go in a round of their own, after everything
+/// else arrived, so a transfer stopped partway never leaves a ref pointing
+/// at an object that did not arrive (nor a new repo with a `HEAD` and
+/// nothing behind it).
+pub fn is_ref(rel: &str) -> bool {
+    let comps: Vec<&str> = rel.split('/').collect();
+    comps.iter().position(|c| *c == ".git").is_some_and(|i| {
+        matches!(&comps[i + 1..], ["HEAD"] | ["packed-refs"]) || comps.get(i + 1) == Some(&"refs")
+    })
+}
+
+/// The send list in its two rounds: everything but refs, then refs.
+pub fn rounds(send: &[Entry]) -> [Vec<Item>; 2] {
+    let (refs, rest): (Vec<Entry>, Vec<Entry>) = send.iter().cloned().partition(|e| is_ref(&e.rel));
+    [items(&rest), items(&refs)]
+}
+
+/// What the workers share: the round's items, the next one to take, and
+/// what has been done in every round.
 #[derive(Default)]
 pub struct Shared {
-    pub items: Vec<Item>,
+    items: Mutex<Vec<Item>>,
     next: AtomicUsize,
     pub files: AtomicU64,
     pub bytes: AtomicU64,
@@ -68,14 +86,28 @@ pub struct Shared {
 
 impl Shared {
     pub fn new(items: Vec<Item>) -> Self {
-        Self {
-            items,
-            ..Default::default()
-        }
+        let sh = Self::default();
+        sh.round(items);
+        sh
     }
 
-    fn take(&self) -> Option<&Item> {
-        self.items.get(self.next.fetch_add(1, Ordering::Relaxed))
+    /// Begin a round of `items` (the last one must be over).
+    pub fn round(&self, items: Vec<Item>) {
+        *lock(&self.items) = items;
+        self.next.store(0, Ordering::SeqCst);
+    }
+
+    pub fn len(&self) -> usize {
+        lock(&self.items).len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn take(&self) -> Option<Item> {
+        let i = self.next.fetch_add(1, Ordering::Relaxed);
+        lock(&self.items).get(i).cloned()
     }
 
     fn done(&self, s: Sent) {
@@ -111,14 +143,14 @@ pub fn push(conn: &mut Conn, src: &Source<'_>, sh: &Shared, abort: &Abort) -> Re
         stopped(abort)?;
         match item {
             Item::Batch(rels) => {
-                let (f, sent) = send::batch(src, rels)?;
+                let (f, sent) = send::batch(src, &rels)?;
                 if let Some(f) = f {
                     Window::new(conn).call(&f)?;
                 }
                 sent.into_iter().for_each(|s| sh.done(s));
             }
             Item::Big(rel) => {
-                let s = send::file(&mut Window::counting(conn, &sh.bytes), src, rel)?;
+                let s = send::file(&mut Window::counting(conn, &sh.bytes), src, &rel)?;
                 sh.done(s);
             }
         }
@@ -132,8 +164,8 @@ pub fn pull(conn: &mut Conn, rx: &Receiver<'_>, sh: &Shared, abort: &Abort) -> R
     while let Some(item) = sh.take() {
         stopped(abort)?;
         let asked: Vec<String> = match item {
-            Item::Batch(rels) => rels.clone(),
-            Item::Big(rel) => vec![rel.clone()],
+            Item::Batch(rels) => rels,
+            Item::Big(rel) => vec![rel],
         };
         conn.send(&Frame::json(Kind::Get, &asked)?)?;
         let mut got: Vec<Entry> = Vec::new();

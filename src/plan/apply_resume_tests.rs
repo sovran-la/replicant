@@ -165,11 +165,11 @@ fn a_resumed_removal_will_not_delete_what_the_leaf_made_after_it_was_interrupted
     .unwrap();
     // The marker starts after the first sync's writes (see `interrupted`).
     testutil::next_second();
-    let r = sync_with(
+    let r = sync_inject(
         &bed,
         &home,
         &SyncOpts::default(),
-        &fail_at(&bed, "/work/r/"),
+        &fail_at(&bed, "/work/r/").deleting(),
     )
     .unwrap();
     assert!(
@@ -214,7 +214,13 @@ fn a_resumed_confirmed_deletion_does_not_reuse_its_confirmation_for_newer_files(
     let home = bed.home();
     assert_eq!(yes(&bed, &home).outcome, Outcome::Done);
     std::fs::remove_dir_all(bed.home_hd.join("work/r")).unwrap();
-    let r = sync_with(&bed, &home, &confirm("work/r"), &fail_at(&bed, "/work/r/")).unwrap();
+    let r = sync_inject(
+        &bed,
+        &home,
+        &confirm("work/r"),
+        &fail_at(&bed, "/work/r/").deleting(),
+    )
+    .unwrap();
     assert!(
         matches!(&r.outcome, Outcome::Interrupted { rel, .. } if rel == "work/r"),
         "{r:#?}"

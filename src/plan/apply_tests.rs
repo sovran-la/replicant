@@ -32,6 +32,15 @@ pub(crate) mod progress_tests;
 #[path = "apply_resume_tests.rs"]
 mod resume_tests;
 
+/// The plane a test asks for: [`crate::plan::RSYNC`] is the suite's plane
+/// (`xfer::test_plane`), anything else a script standing in for rsync.
+pub(crate) fn plane(rsync: &str) -> crate::plan::Plane<'_> {
+    match rsync == crate::plan::RSYNC {
+        true => crate::plan::xfer::test_plane(),
+        false => crate::plan::Plane::Rsync(rsync),
+    }
+}
+
 pub(crate) fn ctx<'a>(
     bed: &'a Bed,
     cfg: &'a crate::config::LeafConfig,
@@ -44,7 +53,7 @@ pub(crate) fn ctx<'a>(
         cfg,
         state_dir: &dirs.0,
         scratch_dir: &dirs.1,
-        rsync,
+        plane: plane(rsync),
         accept_rollback: &[],
     }
 }
@@ -64,6 +73,43 @@ pub(crate) fn sync_with(
     let cfg = bed.leaf_cfg();
     let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
     sync(&link, ctx(bed, &cfg, &dirs, rsync), opts)
+}
+
+/// `sync` as `leaf`, with `inj`'s failure injected into its unit.
+pub(crate) fn sync_inject(
+    bed: &Bed,
+    home: &Home,
+    opts: &SyncOpts,
+    inj: &crate::plan::tests::inject::Inject,
+) -> Result<SyncReport> {
+    use crate::plan::tests::inject::How;
+    let link = inj.link(bed, home);
+    let cfg = bed.leaf_cfg();
+    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let ctx = LeafCtx {
+        plane: inj.plane(),
+        ..ctx(bed, &cfg, &dirs, crate::plan::RSYNC)
+    };
+    // Natively, a deletion carried out here (home has nothing to send) is
+    // local, with no connection to cut: it fails as a deletion does, on a
+    // directory it may not write, put back as it was afterwards.
+    use std::os::unix::fs::PermissionsExt;
+    let unit_dir = bed.leaf_hd.join(&inj.unit);
+    let local = inj.native() && inj.deleting && unit_dir.is_dir();
+    let mode = |m| std::fs::set_permissions(&unit_dir, std::fs::Permissions::from_mode(m)).unwrap();
+    if local {
+        mode(0o555);
+    }
+    let r = std::thread::scope(|s| {
+        if inj.how == How::Killed && !inj.native() {
+            s.spawn(|| inj.wait_running(&link));
+        }
+        sync(&link, ctx, opts)
+    });
+    if local {
+        mode(0o755);
+    }
+    r
 }
 
 pub(crate) fn yes(bed: &Bed, home: &Home) -> SyncReport {

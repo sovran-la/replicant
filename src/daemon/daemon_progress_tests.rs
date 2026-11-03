@@ -30,6 +30,25 @@ fn a_sync_streams_each_unit_before_its_report() {
     assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
     let rels: Vec<&str> = r.applied.iter().map(|a| a.rel.as_str()).collect();
     assert_eq!(rels, ["work", "work/r", "work/s"]);
+    // A unit's live counters come between its own start and end.
+    let mut running = None;
+    seen.retain(|e| match e {
+        ProgressEvent::UnitStarted { rel, .. } => {
+            running = Some(rel.clone());
+            true
+        }
+        ProgressEvent::UnitProgress {
+            rel,
+            files_done,
+            files_total,
+            ..
+        } => {
+            assert_eq!(Some(rel), running.as_ref());
+            assert!(files_done <= files_total);
+            false
+        }
+        ProgressEvent::UnitDone { .. } => true,
+    });
     assert_eq!(seen.len(), 2 * rels.len(), "{seen:#?}");
     for (i, (pair, a)) in seen.chunks(2).zip(&r.applied).enumerate() {
         assert_eq!(

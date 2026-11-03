@@ -17,10 +17,12 @@ pub mod progress;
 mod report;
 mod types;
 mod unserved;
+pub mod xfer;
 
 pub use open::{OpenMarker, open_markers};
 pub(crate) use report::report;
 pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings, Tone};
+pub use xfer::Plane;
 
 use crate::baseline::{self, Baseline};
 use crate::config::LeafConfig;
@@ -62,14 +64,14 @@ pub struct LeafCtx<'a> {
     pub state_dir: &'a Path,
     /// [`crate::config::Dirs::scratch`].
     pub scratch_dir: &'a Path,
-    /// The rsync program: [`RSYNC`] in production; tests stand a script in.
-    pub rsync: &'a str,
+    /// Which data plane moves the bytes.
+    pub plane: Plane<'a>,
     /// `--accept-rollback`: units (by unit path or this leaf's path) whose
     /// rolled-back push this host takes home's copy for (review A2).
     pub accept_rollback: &'a [String],
 }
 
-/// The rsync a leaf runs: whatever `rsync` is on `PATH`.
+/// The rsync a leaf runs on the rsync plane: whatever `rsync` is on `PATH`.
 pub const RSYNC: &str = "rsync";
 
 fn ms(since: Instant) -> u64 {
@@ -111,9 +113,11 @@ impl Mode {
 /// `plan.units`), and the repos of both sides.
 pub(crate) struct Planned<'a> {
     pub plan: &'a Plan,
-    pub transfers: &'a [Option<crate::rsync::Transfer>],
+    pub transfers: &'a [Option<xfer::Xfer>],
     pub union: &'a [String],
     pub snap: &'a HomeSnapshot,
+    /// Data connections per unit: the lower of both sides' `streams`.
+    pub streams: u32,
 }
 
 /// Plan every unit. `dry_run` adds the queue entry, rsync diffs and guards.
@@ -140,7 +144,7 @@ pub(crate) fn run<T>(
     ctx: LeafCtx<'_>,
     mode: Mode,
     no_wait: bool,
-    abort: crate::rsync::Abort,
+    abort: crate::abort::Abort,
     then: impl FnOnce(&lease::Watch, Planned<'_>) -> Result<T>,
 ) -> Result<(Plan, T)> {
     let total = Instant::now();
@@ -152,6 +156,7 @@ pub(crate) fn run<T>(
             ctx.me, view.home, view.enrollment
         )));
     }
+    let streams = ctx.cfg.streams(view.streams);
     let mut t = Timings::default();
     let local = |rel: &str| ctx.cfg.local_path(rel, ctx.home_dir);
     let started = Instant::now();
@@ -241,15 +246,15 @@ pub(crate) fn run<T>(
             union.extend(gone.repos);
             union.sort();
             union.dedup();
+            let ops = xfer::Ops::new(link, ctx, watch.id(), watch.abort(), streams);
             transfers = diff::run(
-                ctx,
+                &ops,
                 &snap,
                 &found,
                 &union,
                 &leaf_units,
                 &mut planned,
                 &leaf_markers,
-                watch.abort(),
             )?;
             t.rsync_ms = ms(started);
         }
@@ -269,6 +274,7 @@ pub(crate) fn run<T>(
                 transfers: &transfers,
                 union: &union,
                 snap: &snap,
+                streams,
             },
         )?;
         Ok((plan, out))
@@ -294,4 +300,4 @@ pub fn leaf_case_insensitive() -> bool {
 
 #[cfg(test)]
 #[path = "tests.rs"]
-mod tests;
+pub(crate) mod tests;

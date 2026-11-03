@@ -175,6 +175,8 @@ pub fn run(
 /// What goes wrong, on which data connection (0-based, in opening order).
 #[derive(Debug, Clone, Copy)]
 pub enum Fault {
+    /// Nothing: the data connections are as they are.
+    None,
     /// Forward this many bytes (both ways together), then cut.
     CutAfter(usize, usize),
     /// Forward everything, slowly (a pause per 8 KiB each way).
@@ -183,11 +185,21 @@ pub enum Fault {
     Stall(usize),
 }
 
+/// A check on each request, given how many of the unit's data connections
+/// were opened so far: an error fails the request.
+pub type OnCall<'a> = Box<dyn Fn(&HomeRequest, usize) -> crate::Result<()> + Sync + 'a>;
+
 /// [`InProcess`], with one data connection faulty.
 pub struct Faulty<'a> {
     pub inner: InProcess<'a>,
     pub fault: Fault,
     pub opened: AtomicUsize,
+    /// Only this unit's data connections count, and fail.
+    pub unit: Option<String>,
+    pub on_call: Option<OnCall<'a>>,
+    /// A stalled connection said hello; and later, the leaf let it go.
+    pub stalled: std::sync::atomic::AtomicBool,
+    pub released: std::sync::atomic::AtomicBool,
 }
 
 impl<'a> Faulty<'a> {
@@ -196,16 +208,37 @@ impl<'a> Faulty<'a> {
             inner,
             fault,
             opened: AtomicUsize::new(0),
+            unit: None,
+            on_call: None,
+            stalled: Default::default(),
+            released: Default::default(),
         }
+    }
+
+    /// The fault only on `unit`'s data connections.
+    pub fn at(mut self, unit: &str) -> Self {
+        self.unit = Some(unit.into());
+        self
+    }
+
+    pub fn on_call(mut self, f: OnCall<'a>) -> Self {
+        self.on_call = Some(f);
+        self
     }
 }
 
 impl HomeLink for Faulty<'_> {
     fn call(&self, r: HomeRequest) -> crate::Result<HomeReply> {
+        if let Some(f) = &self.on_call {
+            f(&r, self.opened.load(Ordering::SeqCst))?;
+        }
         self.inner.call(r)
     }
 
     fn open_data(&self, rel: &str) -> crate::Result<DataLink<'_>> {
+        if self.unit.as_deref().is_some_and(|u| u != rel) {
+            return self.inner.open_data(rel);
+        }
         let i = self.opened.fetch_add(1, Ordering::SeqCst);
         match self.fault {
             Fault::Stall(n) if n == i => {
@@ -216,9 +249,12 @@ impl HomeLink for Faulty<'_> {
                         if session::hello(&mut home).is_ok()
                             && home.send(&Frame::new(Kind::Ready, vec![])).is_ok()
                         {
+                            self.stalled.store(true, Ordering::SeqCst);
+                            let _ = home.set_timeout(Duration::from_secs(120));
                             let mut sink = [0u8; 65536];
                             while matches!(home.io().read(&mut sink), Ok(n) if n > 0) {}
                         }
+                        self.released.store(true, Ordering::SeqCst);
                     })),
                 })
             }
@@ -226,7 +262,7 @@ impl HomeLink for Faulty<'_> {
                 let (limit, pause) = match self.fault {
                     Fault::CutAfter(_, l) => (l, Duration::ZERO),
                     Fault::Throttle(_, p) => (usize::MAX, p),
-                    Fault::Stall(_) => unreachable!(),
+                    Fault::Stall(_) | Fault::None => unreachable!(),
                 };
                 use std::os::unix::net::UnixStream;
                 let (leaf, from_leaf) = UnixStream::pair()?;

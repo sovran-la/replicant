@@ -30,7 +30,7 @@ fn go(bed: &Bed, home: &Home, cfg: &LeafConfig, dry: bool) -> Result<Plan> {
             cfg,
             state_dir: &state,
             scratch_dir: &scratch,
-            rsync: crate::plan::RSYNC,
+            plane: crate::plan::xfer::test_plane(),
             accept_rollback: &[],
         },
         dry,
@@ -319,3 +319,6 @@ mod symlink;
 
 #[path = "tests_lease_kill.rs"]
 pub(crate) mod lease_kill;
+
+#[path = "tests_inject.rs"]
+pub(crate) mod inject;

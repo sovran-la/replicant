@@ -70,14 +70,16 @@ pub enum UnitOutcome {
 /// running rsync is stopped and the unit left interrupted, and no further
 /// unit begins.
 pub struct Progress<'a> {
-    emit: &'a dyn Fn(ProgressEvent),
+    emit: &'a (dyn Fn(ProgressEvent) + Sync),
     abort: Abort,
 }
 
 fn ignore(_: ProgressEvent) {}
 
 impl<'a> Progress<'a> {
-    pub fn new(emit: &'a dyn Fn(ProgressEvent), abort: Abort) -> Self {
+    /// `emit` is called from the thread that runs the sync, and for a
+    /// unit's counters from its transfer's monitor, never two at once.
+    pub fn new(emit: &'a (dyn Fn(ProgressEvent) + Sync), abort: Abort) -> Self {
         Self { emit, abort }
     }
 

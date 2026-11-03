@@ -1,44 +1,37 @@
-//! Review N1: the CLI hanging up mid-unit stops that unit's rsync, as a
+//! Review N1: the CLI hanging up mid-unit stops that unit's transfer, as a
 //! lost lease does. The daemon side is the real `local::serve`; the CLI is
 //! the other end of a socket pair, reading frames until `work/beta` starts
-//! and its rsync (a script that records its pid and a grandchild's and
-//! sleeps) is running, then closing. And review P2: a hangup after the
-//! rsync exited 0 lets that unit finish.
+//! and its transfer is running (stalled: `tests_inject`), then closing. And
+//! review P2: a hangup after the unit's transfer finished whole lets that
+//! unit finish.
 
-use super::fail::{resumes, stopped_at_beta, wrapper};
+use super::fail::{resumes, stopped_at_beta};
 use super::*;
 use crate::daemon::local::{self, HANGUP};
 use crate::daemon::remote::{recv_buffered, send};
-use crate::daemon::wire::{LOCAL_WIRE_VERSION, LocalCall, LocalFrame, LocalReply, LocalRequest};
-use crate::plan::tests::lease_kill::{gone, wait_for_pid};
+use crate::daemon::wire::{
+    HomeRequest, LOCAL_WIRE_VERSION, LocalCall, LocalFrame, LocalReply, LocalRequest,
+};
+use crate::native::tests_fixture::{Fault, Faulty};
+use crate::plan::tests::inject::{How, Inject};
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 #[test]
-fn the_cli_hanging_up_kills_the_unit_rsync_and_stops_the_sync() {
+fn the_cli_hanging_up_stops_the_units_transfer_and_the_sync() {
     let bed = Bed::enrolled();
     tree(&bed.home_hd.join("work"));
     let home = bed.home();
-    let (pid, kid) = (bed.tmp.path().join("p"), bed.tmp.path().join("k"));
-    let fake = wrapper(
-        bed.tmp.path(),
-        "/work/beta",
-        &format!(
-            "echo $$ > {}; sleep 30 & echo $! > {}; wait; exit 0",
-            pid.display(),
-            kid.display()
-        ),
-    );
-    let link = InProcess {
-        home: &home,
-        host: "leaf".into(),
-        home_dir: bed.leaf_hd.clone(),
-    };
+    let inj = Inject::new(&bed, "work/beta", How::Stalls);
+    let link = inj.link(&bed, &home);
     let cfg = bed.leaf_cfg();
     let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
-    let ctx = ctx(&bed, &cfg, &dirs, &fake);
+    let ctx = LeafCtx {
+        plane: inj.plane(),
+        ..ctx(&bed, &cfg, &dirs, crate::plan::RSYNC)
+    };
     let report = Mutex::new(None);
     let (mut cli, daemon) = UnixStream::pair().unwrap();
     let started = Instant::now();
@@ -68,6 +61,8 @@ fn the_cli_hanging_up_kills_the_unit_rsync_and_stops_the_sync() {
         let mut r = BufReader::new(&cli);
         loop {
             match recv_buffered::<_, LocalFrame>(&mut r).unwrap() {
+                // Counters aside: the starts and ends are what is counted.
+                LocalFrame::Progress(ProgressEvent::UnitProgress { .. }) => {}
                 LocalFrame::Progress(e) => {
                     let beta =
                         matches!(&e, ProgressEvent::UnitStarted { rel, .. } if rel == "work/beta");
@@ -79,7 +74,7 @@ fn the_cli_hanging_up_kills_the_unit_rsync_and_stops_the_sync() {
                 other => panic!("answered before work/beta began: {other:?}"),
             }
         }
-        wait_for_pid(&pid);
+        inj.wait_running(&link);
         // Ctrl-C: the CLI's process, and with it its end, is gone.
         drop(r);
         drop(cli);
@@ -90,19 +85,17 @@ fn the_cli_hanging_up_kills_the_unit_rsync_and_stops_the_sync() {
         "stopped, not waited out: {:?}",
         started.elapsed()
     );
-    for f in [&pid, &kid] {
-        let p = wait_for_pid(f);
-        assert!(gone(p), "{} {p} survived the hangup", f.display());
-    }
+    inj.assert_stopped(&link);
     let r = report.into_inner().unwrap().expect("the sync reported");
     stopped_at_beta(&bed, &home, &r, HANGUP);
     let Outcome::Interrupted { why, .. } = &r.outcome else {
         unreachable!()
     };
-    assert!(
-        why.ends_with("rsync stopped") && !why.contains("lease"),
-        "{why}"
-    );
+    let stop = match inj.native() {
+        true => "transfer stopped",
+        false => "rsync stopped",
+    };
+    assert!(why.ends_with(stop) && !why.contains("lease"), "{why}");
     // What the CLI saw before it left: work and alpha whole, beta begun.
     let started: Vec<&str> = seen
         .iter()
@@ -122,35 +115,55 @@ fn the_cli_hanging_up_kills_the_unit_rsync_and_stops_the_sync() {
 /// unit finishes (baselines, marker cleared, journaled ok) and the sync
 /// stops before the next one.
 #[test]
-fn a_hangup_after_rsync_exits_0_lets_the_unit_finish() {
+fn a_hangup_after_the_transfer_finished_lets_the_unit_finish() {
     let bed = Bed::enrolled();
     tree(&bed.home_hd.join("work"));
     let home = bed.home();
     let (exited, go) = (bed.tmp.path().join("exited"), bed.tmp.path().join("go"));
-    // beta's real rsync, then exit 0 with a background shell holding stdout
-    // open, so `transfer` is still collecting output when, only after the
-    // rsync has been reaped, the shell says so and waits to be let go.
-    let fake = wrapper(
+    let abort = crate::abort::Abort::default();
+    let native = crate::plan::tests::inject::Inject::new(&bed, "work/beta", How::Fails).native();
+    // rsync: beta's real rsync, then exit 0 with a background shell holding
+    // stdout open, so `transfer` is still collecting output when, only
+    // after the rsync has been reaped, the shell says so and waits to be
+    // let go. Native: the hangup lands as beta's transfer is done and
+    // verified and the leaf tells home they agree.
+    let fake = testutil::script(
         bed.tmp.path(),
-        "/work/beta",
+        "rsync-p2",
         &format!(
-            "rsync \"$@\"; code=$?; me=$$; \
+            "for a in \"$@\"; do [ \"$a\" = --dry-run ] && exec rsync \"$@\"; done\n\
+             for a in \"$@\"; do case \"$a\" in */work/beta/) \
+             rsync \"$@\"; code=$?; me=$$; \
              ( while kill -0 $me 2>/dev/null; do sleep 0.02; done; : > {exited}; \
                n=0; while [ ! -e {go} ] && [ $n -lt 1500 ]; do sleep 0.02; n=$((n+1)); done ) & \
-             exit $code",
+             exit $code ;; esac; done\nexec rsync \"$@\"",
             exited = exited.display(),
             go = go.display(),
         ),
-    );
-    let link = InProcess {
+    )
+    .display()
+    .to_string();
+    let inner = InProcess {
         home: &home,
         host: "leaf".into(),
         home_dir: bed.leaf_hd.clone(),
     };
+    let link = Faulty::new(inner, Fault::None).on_call(Box::new(|r, _| {
+        if native && matches!(r, HomeRequest::Agree { rel, .. } if rel == "work/beta") {
+            testutil::write(&exited, "");
+            abort.raise_because(HANGUP);
+        }
+        Ok(())
+    }));
     let cfg = bed.leaf_cfg();
     let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
-    let ctx = ctx(&bed, &cfg, &dirs, &fake);
-    let abort = crate::rsync::Abort::default();
+    let ctx = LeafCtx {
+        plane: match native {
+            true => crate::plan::xfer::test_plane(),
+            false => crate::plan::Plane::Rsync(&fake),
+        },
+        ..ctx(&bed, &cfg, &dirs, crate::plan::RSYNC)
+    };
     let emit = |_: ProgressEvent| {};
     let progress = Progress::new(&emit, abort.clone());
     let r = std::thread::scope(|s| {
@@ -166,7 +179,7 @@ fn a_hangup_after_rsync_exits_0_lets_the_unit_finish() {
         });
         crate::plan::apply::sync_with(&link, ctx, &SyncOpts::default(), &progress).unwrap()
     });
-    assert!(exited.exists(), "beta's rsync never ran");
+    assert!(exited.exists(), "beta's transfer never ran");
     assert!(abort.raised());
     match &r.outcome {
         Outcome::Failed { rel, why } => {

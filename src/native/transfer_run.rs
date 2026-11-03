@@ -166,8 +166,9 @@ impl Transfer {
         if c.is_empty() && d.temps.is_empty() {
             return Ok(());
         }
-        let sh = Shared::new(workers::items(&c.send));
-        let n = (env.streams as usize).clamp(1, sh.items.len().max(1));
+        let [first, refs] = workers::rounds(&c.send);
+        let n = (env.streams as usize).clamp(1, first.len().max(refs.len()).max(1));
+        let sh = Shared::new(first);
         let src = Source::open(&self.leaf_path, self.is_file, None)?;
         let watch = Watch::default();
         let r = std::thread::scope(|s| {
@@ -194,9 +195,10 @@ impl Transfer {
                     w.call(&Frame::json(Kind::Mkdirs, &c.mkdir)?)?;
                 }
                 done.first = true;
-                Self::workers(&watch, &mut conns, &|conn| {
-                    workers::push(conn, &src, &sh, env.abort)
-                })?;
+                let push = |conn: &mut Conn| workers::push(conn, &src, &sh, env.abort);
+                Self::workers(&watch, &mut conns, &push)?;
+                sh.round(refs);
+                Self::workers(&watch, &mut conns, &push)?;
                 watch.over.store(true, Ordering::SeqCst);
                 if env.abort.raised() {
                     return Err(Error::Transfer("stopped".into()));
@@ -245,17 +247,19 @@ impl Transfer {
             rx.mkdir(e)?;
         }
         done.first = true;
-        let sh = Shared::new(workers::items(&c.send));
-        if !sh.items.is_empty() {
-            let n = (env.streams as usize).clamp(1, sh.items.len());
+        let [first, refs] = workers::rounds(&c.send);
+        let n = (env.streams as usize).clamp(1, first.len().max(refs.len()).max(1));
+        let sh = Shared::new(first);
+        if !sh.is_empty() || !refs.is_empty() {
             let watch = Watch::default();
             let r = std::thread::scope(|s| {
                 let m = s.spawn(|| Self::monitor(env, &watch, &sh, c.totals()));
                 let r = (|| -> Result<()> {
                     let mut conns = self.connect(env, n, &watch, s)?;
-                    Self::workers(&watch, &mut conns, &|conn| {
-                        workers::pull(conn, &rx, &sh, env.abort)
-                    })?;
+                    let pull = |conn: &mut Conn| workers::pull(conn, &rx, &sh, env.abort);
+                    Self::workers(&watch, &mut conns, &pull)?;
+                    sh.round(refs);
+                    Self::workers(&watch, &mut conns, &pull)?;
                     for conn in &mut conns {
                         conn.send(&Frame::new(Kind::Done, vec![]))?;
                     }

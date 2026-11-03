@@ -125,10 +125,16 @@ pub enum GitMarker {
     OtherFile,
 }
 
+/// A directory is a repo when its `.git` is a directory holding `HEAD`, as
+/// git itself requires: a `.git` still arriving (an interrupted pull of a
+/// new repo, before its `HEAD`) is plain content until it is whole, rather
+/// than a repo `git status` cannot read, which would fail every plan and
+/// so the resume that completes it.
 pub fn git_marker(dir: &Path) -> GitMarker {
     let dot = dir.join(".git");
     match fs::symlink_metadata(&dot) {
-        Ok(m) if m.is_dir() => GitMarker::Repo,
+        Ok(m) if m.is_dir() && fs::symlink_metadata(dot.join("HEAD")).is_ok() => GitMarker::Repo,
+        Ok(m) if m.is_dir() => GitMarker::None,
         Ok(m) if m.is_file() => match fs::read_to_string(&dot) {
             Ok(text) if points_into_worktrees(&text, dir) => GitMarker::Worktree,
             _ => GitMarker::OtherFile,

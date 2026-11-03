@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::daemon::home::Run;
-use crate::plan::apply::tests::{plan_of, sync_with, tree, yes};
+use crate::plan::apply::tests::{plan_of, tree, yes};
 use crate::plan::apply::{Outcome, SyncOpts};
+use crate::plan::tests::inject::{How, Inject};
 use crate::testutil::{self, Bed};
 use std::collections::BTreeMap;
 
@@ -128,10 +129,10 @@ fn an_interrupted_push_is_rolled_back_and_its_quarantine_ends() {
     testutil::write(&bed.leaf_hd.join("work/notes.txt"), "the leaf's, longer\n");
     testutil::write(&bed.leaf_hd.join("work/added.txt"), "new\n");
     let before = print(&bed.home_hd);
-    // The real rsync runs, then the "transfer" fails: home was written.
-    let fake =
-        crate::plan::apply::tests::fail::wrapper(bed.tmp.path(), "/work/", "rsync \"$@\"; exit 23");
-    let r = sync_with(&bed, &home, &SyncOpts::default(), &fake).unwrap();
+    // The transfer writes everything, then fails: home was written.
+    let inj = Inject::new(&bed, "work", How::WritesThenFails);
+    let r =
+        crate::plan::apply::tests::sync_inject(&bed, &home, &SyncOpts::default(), &inj).unwrap();
     assert!(matches!(r.outcome, Outcome::Interrupted { .. }), "{r:#?}");
     assert_ne!(print(&bed.home_hd), before);
     let m: Vec<Marker> = marker::store(&bed.home_dirs.state()).all().unwrap();
@@ -163,9 +164,9 @@ fn a_resume_backs_up_into_a_run_of_its_own() {
     let home = bed.home();
     assert_eq!(yes(&bed, &home).outcome, Outcome::Done);
     testutil::write(&bed.leaf_hd.join("work/notes.txt"), "first try, longer\n");
-    let fake =
-        crate::plan::apply::tests::fail::wrapper(bed.tmp.path(), "/work/", "rsync \"$@\"; exit 23");
-    let r = sync_with(&bed, &home, &SyncOpts::default(), &fake).unwrap();
+    let inj = Inject::new(&bed, "work", How::WritesThenFails);
+    let r =
+        crate::plan::apply::tests::sync_inject(&bed, &home, &SyncOpts::default(), &inj).unwrap();
     assert!(matches!(r.outcome, Outcome::Interrupted { .. }));
     testutil::write(
         &bed.leaf_hd.join("work/notes.txt"),

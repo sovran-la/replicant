@@ -145,7 +145,7 @@ impl Leaf {
                 cfg: &cfg,
                 state_dir: &state,
                 scratch_dir: &scratch,
-                rsync: plan::RSYNC,
+                plane: plan::Plane::native(),
                 accept_rollback: accept,
             },
         )
