@@ -106,6 +106,8 @@ fn each_unit_is_announced_as_it_starts_and_ends_in_plan_order() {
     assert!(events.iter().all(|e| match e {
         ProgressEvent::UnitStarted { direction, .. }
         | ProgressEvent::UnitDone { direction, .. } => *direction == Some(Direction::Pull),
+        // Counters carry no direction of their own: their unit's start did.
+        ProgressEvent::UnitProgress { .. } => true,
     }));
     assert!(r.applied.iter().any(|a| a.files_changed > 0));
 

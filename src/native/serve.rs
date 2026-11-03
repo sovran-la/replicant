@@ -51,12 +51,7 @@ pub fn ack(conn: &mut Conn) -> Result<()> {
 pub fn answer(conn: &mut Conn, served: &Served, still: &dyn Fn() -> Result<()>) -> Result<()> {
     match served.direction {
         Direction::Push => receive(conn, served, still),
-        Direction::Pull => match conn.recv()?.kind {
-            Kind::Done => Ok(()),
-            other => Err(Error::Transfer(format!(
-                "a {other:?} frame: home does not send yet"
-            ))),
-        },
+        Direction::Pull => super::serve_pull::send(conn, served, still),
     }
 }
 

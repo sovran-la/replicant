@@ -78,8 +78,29 @@ impl Conn {
         Ok((Self::unix(a)?, Self::unix(b)?))
     }
 
+    /// Send one frame. If the peer has already hung up, what it said
+    /// before it did (a [`frame::Kind::Fail`] or `Refused` still unread
+    /// behind any acks) is the error, rather than a broken pipe.
     pub fn send(&mut self, f: &Frame) -> Result<()> {
-        frame::write(&mut self.io, f).map_err(frame::io_error)
+        match frame::write(&mut self.io, f) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(self.last_word().unwrap_or_else(|| frame::io_error(e))),
+        }
+    }
+
+    /// The reason a departed peer left in the stream, if any.
+    fn last_word(&mut self) -> Option<crate::Error> {
+        let _ = self.sock.set_timeout(Duration::from_secs(1));
+        for _ in 0..64 {
+            match frame::read(&mut self.io) {
+                Ok(f) if matches!(f.kind, frame::Kind::Fail | frame::Kind::Refused) => {
+                    return f.expect(frame::Kind::Ack).err();
+                }
+                Ok(_) => continue,
+                Err(_) => return None,
+            }
+        }
+        None
     }
 
     pub fn recv(&mut self) -> Result<Frame> {

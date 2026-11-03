@@ -184,14 +184,15 @@ fn send(
         } else {
             &mut *t.err
         };
+        let mut lines = render::Lines::new(json, a.interactive, style);
         let mut on = |e: ProgressEvent| {
-            streamed += 1;
-            let line = match json {
-                true => serde_json::to_string(&e)
-                    .map(|j| j + "\n")
-                    .unwrap_or_default(),
-                false => render::progress(&e, style),
-            };
+            if !matches!(e, ProgressEvent::UnitProgress { .. }) {
+                streamed += 1;
+            }
+            let line = lines.line(&e);
+            if line.is_empty() {
+                return;
+            }
             // Best effort: a terminal gone away loses the progress, not the
             // sync; the report's own write reports it.
             let _ = w.write_all(line.as_bytes()).and_then(|()| w.flush());

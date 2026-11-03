@@ -1,13 +1,13 @@
 //! What a `sync` tells whoever waits on it while it applies: each unit as
-//! it starts and as it ends, in plan order. PLAN.md, "Collect, then apply".
+//! it starts, how far its transfer has got, and as it ends, in plan order. PLAN.md, "Collect, then apply".
 //!
 //! Only units that do something are announced (a transfer, an adoption, a
 //! forgotten baseline); `index` and `total` count those. A unit that does not
 //! finish is announced done with why, and is the last: the sync stops there.
 //! Planning, dry runs and `status` announce nothing.
 
+use crate::abort::Abort;
 use crate::marker::Direction;
-use crate::rsync::Abort;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +23,19 @@ pub enum ProgressEvent {
         /// 1-based, of `total`.
         index: usize,
         total: usize,
+    },
+    /// A unit's transfer so far, at most every 250 ms while it sends:
+    /// files and bytes done of the unit's totals. The start's fields again,
+    /// so a renderer can redraw the unit's line from this alone.
+    UnitProgress {
+        rel: String,
+        action: String,
+        index: usize,
+        total: usize,
+        files_done: u64,
+        files_total: u64,
+        bytes_done: u64,
+        bytes_total: u64,
     },
     UnitDone {
         rel: String,

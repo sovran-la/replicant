@@ -183,6 +183,9 @@ pub fn progress(e: &ProgressEvent, st: Style) -> String {
         } => {
             format!("  [{index}/{total}] {action}  {rel} … ")
         }
+        // A unit's counters only redraw its line at a terminal
+        // (`render::redraw`); in a stream of lines they are noise.
+        ProgressEvent::UnitProgress { .. } => String::new(),
         ProgressEvent::UnitDone {
             action,
             files_changed,

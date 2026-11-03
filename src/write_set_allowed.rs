@@ -362,6 +362,18 @@ pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
         1,
         "home receiving a push's deletions: synced paths",
     ),
+    (
+        "native/source.rs",
+        "OpenOptions::new(",
+        1,
+        "the sender's open: read-only, O_NOFOLLOW; writes nothing",
+    ),
+    (
+        "native/transfer_run.rs",
+        ".delete(",
+        1,
+        "a pull's deletions on the leaf, after every file arrived: synced paths",
+    ),
     // Home's push backups (backup/) and their manifests (state/pushes/).
     (
         "daemon/home_backup.rs",

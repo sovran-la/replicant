@@ -11,6 +11,10 @@ use std::fmt::Write;
 #[path = "render_fleet.rs"]
 mod fleet_view;
 
+#[path = "render_counts.rs"]
+mod counts;
+pub use counts::{Lines, bytes, counters, redraw, thousands};
+
 #[path = "render_sync.rs"]
 mod sync_view;
 use fleet_view::queue;

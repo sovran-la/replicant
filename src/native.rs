@@ -19,8 +19,16 @@ pub mod diff;
 pub mod frame;
 pub mod manifest;
 pub mod receive;
+pub mod send;
 pub mod serve;
+mod serve_pull;
 pub mod session;
+pub mod source;
+pub mod transfer;
+pub mod workers;
+
+#[cfg(test)]
+mod tests_fixture;
 
 pub use diff::{ChangeList, diff, itemize};
 pub use manifest::{Entry, EntryKind, Manifest};
