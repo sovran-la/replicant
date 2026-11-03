@@ -374,6 +374,30 @@ pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
         1,
         "a pull's deletions on the leaf, after every file arrived: synced paths",
     ),
+    (
+        "native/local.rs",
+        "create_dir_all(",
+        1,
+        "copy_listed's destination root (backup/, or the unit on rollback)",
+    ),
+    (
+        "native/local.rs",
+        "copy_listed(",
+        1,
+        "its definition: copies through the receiver",
+    ),
+    (
+        "native/local.rs",
+        "delete_listed(",
+        1,
+        "its definition: deletes through the receiver",
+    ),
+    (
+        "native/local.rs",
+        ".delete(",
+        1,
+        "delete_listed's call into the receiver: rollback, synced paths",
+    ),
     // Home's push backups (backup/) and their manifests (state/pushes/).
     (
         "daemon/home_backup.rs",

@@ -93,18 +93,18 @@ pub(super) const SPAWNS: &[(&str, &str, usize, &str)] = &[
         "daemon/home_backup.rs",
         "copy_listed(",
         1,
-        "a push's backup copy into backup/<push>/run-<n>/",
+        "native::local: a BeginPush list copied into backup/<push>/run-<n>/",
     ),
     (
         "daemon/home_rollback.rs",
         "copy_listed(",
         2,
-        "rollback: keep what the push wrote, then restore from the backup",
+        "native::local: rollback keeps what the push wrote, then restores from the backup",
     ),
     (
         "daemon/home_rollback.rs",
         "delete_listed(",
         1,
-        "rollback: delete what the push created",
+        "native::local: rollback deletes what the push created",
     ),
 ];

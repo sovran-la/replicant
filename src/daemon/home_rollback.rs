@@ -3,8 +3,9 @@
 //!
 //! Each path the push touched is put back as it was before the push's
 //! first run touched it: a file that run replaced or deleted comes back from
-//! that run's backup; a path it created is deleted. Both through rsync
-//! (`copy_listed`, `delete_listed`). What the push holds now of those paths
+//! that run's backup; a path it created is deleted (`native::local`'s
+//! `copy_listed` and `delete_listed`). What each run backed up is what its
+//! directory holds, read again here. What the push holds now of those paths
 //! is first copied to `<push>/rollback/`, so a rollback can be undone by
 //! hand. Baselines are untouched: the pushing leaf next sees home changed,
 //! and holds the unit as a conflict until it accepts the rollback and
@@ -20,12 +21,12 @@
 //! quarantine ends.
 
 use super::Home;
-use super::backup::{Push, check_id, list_root, pushes};
+use super::backup::{Push, check_id, kept, list_root, pushes};
 use crate::daemon::journal::Line;
 use crate::daemon::queue::EntryKind;
 use crate::daemon::wire::RolledBack;
 use crate::marker::{self, Marker};
-use crate::rsync::{self, Ran};
+use crate::native::local;
 use crate::{Error, Result};
 use std::collections::BTreeSet;
 use std::sync::mpsc;
@@ -87,15 +88,8 @@ pub(super) fn undo(push: &Push) -> Undo {
     u
 }
 
-fn ok(ran: Ran, what: &str) -> Result<Ran> {
-    match ran.ok() {
-        true => Ok(ran),
-        false => Err(Error::Rsync(format!(
-            "rollback: {what} failed ({}): {}",
-            ran.why(),
-            ran.stderr
-        ))),
-    }
+fn ok<T>(r: Result<T>, what: &str) -> Result<T> {
+    r.map_err(|e| Error::Transfer(format!("rollback: {what} failed: {e}")))
 }
 
 impl Home {
@@ -208,9 +202,17 @@ impl Home {
             )));
         }
         let unit_path = self.fleet()?.home_dir.join(&push.unit);
-        let u = undo(push);
-        let runner = self.runner()?;
         let dir = self.push_dir(&push.id);
+        // Each run's directory is the record of what it kept.
+        let mut push = push.clone();
+        for (i, run) in push.runs.iter_mut().enumerate() {
+            let run_dir = dir.join(format!("run-{}", i + 1));
+            if run_dir.is_dir() {
+                run.backed_up = kept(&run_dir, &unit_path, push.is_file)?;
+            }
+        }
+        let push = &push;
+        let u = undo(push);
         let at = |files: &[String]| list_root(&unit_path, push.is_file, files);
 
         // What the push holds now of every path about to change.
@@ -230,7 +232,7 @@ impl Home {
             std::fs::create_dir_all(&kept)?;
             let (from, list) = at(&now);
             ok(
-                rsync::copy_listed(&runner, &from, &kept, &list)?,
+                local::copy_listed(&from, &kept, &list),
                 "keeping the pushed copies",
             )?;
         }
@@ -241,17 +243,14 @@ impl Home {
                 false => u.delete.clone(),
             };
             ok(
-                rsync::delete_listed(&runner, None, &root, &delete)?,
+                local::delete_listed(&root, &delete),
                 "deleting what it created",
             )?;
         }
         for (i, files) in u.restore.iter().enumerate().filter(|(_, f)| !f.is_empty()) {
             let run_dir = dir.join(format!("run-{}", i + 1));
             let (to, list) = at(files);
-            ok(
-                rsync::copy_listed(&runner, &run_dir, &to, &list)?,
-                "restoring",
-            )?;
+            ok(local::copy_listed(&run_dir, &to, &list), "restoring")?;
         }
         if let Some(m) = markers.get::<Marker>(&push.unit)?
             && m.push.as_deref() == Some(push.id.as_str())

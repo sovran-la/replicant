@@ -17,6 +17,7 @@ pub mod backup;
 pub mod conn;
 pub mod diff;
 pub mod frame;
+pub mod local;
 pub mod manifest;
 pub mod receive;
 pub mod send;

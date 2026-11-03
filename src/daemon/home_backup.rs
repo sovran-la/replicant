@@ -1,15 +1,17 @@
-//! Home is also the backup (PLAN.md): before a push writes a unit, home
-//! copies every file the push is about to replace or delete into
-//! `backup/<host>/<YYYYMMDDTHHMMSSZ>/run-<n>/`, and records the push in a
-//! manifest (`state/pushes/`): the unit, each run's backed-up files and
-//! what rsync reported writing. That is what `replicant rollback` undoes.
+//! Home is also the backup (PLAN.md): every file a push replaces or
+//! deletes on home ends up in `backup/<host>/<YYYYMMDDTHHMMSSZ>/run-<n>/`,
+//! and home records the push in a manifest (`state/pushes/`): the unit,
+//! each run's backed-up files and what the push reported writing. That is
+//! what `replicant rollback` undoes.
 //!
-//! Home takes the backup itself rather than passing `--backup-dir` to the
-//! push: macOS's openrsync, given `--backup`, silently skips `--delete`
-//! (measured), so the push would leave every deleted file in place on such
-//! a receiver. The list comes from the leaf's dry run of that very push,
-//! taken just before it; what the push then wrote beyond it is recorded as
-//! not backed up.
+//! The native receiver renames each path into the run's directory at the
+//! moment it replaces or deletes it (`native::backup`), so `BeginPush` only
+//! opens the run. A list sent with `BeginPush` is copied first, as before
+//! (the rsync plane's way: openrsync given `--backup` silently skips
+//! `--delete`). Either way the run's directory *is* the record: what it
+//! holds is what the run backed up ([`kept`]), read again when the run is
+//! reported and when it is rolled back, so even a run whose leaf died
+//! before reporting can be restored.
 //!
 //! A push that is resumed is the same push: each attempt is a run, so a
 //! file the first run already replaced keeps its original copy in run 1.
@@ -20,15 +22,9 @@
 use super::Home;
 use crate::marker::{self, Marker};
 use crate::record::{RECORD_VERSION, Record, Store};
-use crate::rsync::{self, Client, Runner};
 use crate::{Error, Result, paths, timefmt};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-/// The bound on home's own rsyncs (a backup copy, a rollback). A backup
-/// runs inside the leaf's `BeginPush` request, which waits 15 minutes.
-const HOME_RSYNC_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// One push of one unit, across its runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,15 +118,24 @@ pub(super) fn list_root(
     }
 }
 
-impl Home {
-    pub(super) fn runner(&self) -> Result<Runner> {
-        Ok(Runner::new(
-            HOME_RSYNC_TIMEOUT,
-            Client::detect()?,
-            self.dirs.scratch(),
-        ))
+/// What a run's backup directory holds: its files and links, unit-relative
+/// (a single-file unit's own file is `""`).
+pub(super) fn kept(run_dir: &Path, unit_path: &Path, is_file: bool) -> Result<Vec<String>> {
+    if is_file {
+        let name = unit_path.file_name().map(|n| run_dir.join(n));
+        let there = name.is_some_and(|p| std::fs::symlink_metadata(p).is_ok());
+        return Ok(if there { vec![String::new()] } else { vec![] });
     }
+    let all = crate::native::Manifest::walk(run_dir, &crate::exclude::Excludes::default(), false)?;
+    Ok(all
+        .entries
+        .into_iter()
+        .filter(|e| !e.is_dir())
+        .map(|e| e.rel)
+        .collect())
+}
 
+impl Home {
     pub(super) fn push_dir(&self, id: &str) -> PathBuf {
         self.dirs.backup().join(id)
     }
@@ -188,13 +193,10 @@ impl Home {
             files.iter().cloned().partition(|f| exists(f));
         if !present.is_empty() {
             let (from, list) = list_root(unit_path, push.is_file, &present);
-            let ran = rsync::copy_listed(&self.runner()?, &from, &run_dir, &list)?;
-            if !ran.ok() {
+            if let Err(e) = crate::native::local::copy_listed(&from, &run_dir, &list) {
                 let _ = std::fs::remove_dir_all(&run_dir);
-                return Err(Error::Rsync(format!(
-                    "could not back up {rel} before the push ({}): {}",
-                    ran.why(),
-                    ran.stderr
+                return Err(Error::Transfer(format!(
+                    "could not back up {rel} before the push: {e}"
                 )));
             }
         }
@@ -251,9 +253,14 @@ impl Home {
         let Some(mut push) = store.get::<Push>(&id)? else {
             return Ok(None);
         };
+        let unit_path = self.fleet()?.home_dir.join(rel);
+        let n = push.runs.len();
+        let run_dir = self.push_dir(&id).join(format!("run-{n}"));
+        let kept = kept(&run_dir, &unit_path, push.is_file)?;
         if let Some(run) = push.runs.last_mut() {
             run.changes = changes.to_vec();
             run.reported = true;
+            run.backed_up = kept;
         }
         if finished {
             push.finished_at = Some(crate::now_secs());
