@@ -87,8 +87,8 @@ pub(super) const NATIVE: &[(&str, &str, usize, &str)] = &[
     (
         "native/backup.rs",
         "create_dir_all(",
-        2,
-        "a push run's backup dir, and the directory its dirs note lies in: backup/",
+        3,
+        "a run's backup dir, for a keep and a keep_beside, and where its dirs note lies: backup/",
     ),
     (
         "native/backup.rs",
@@ -99,8 +99,14 @@ pub(super) const NATIVE: &[(&str, &str, usize, &str)] = &[
     (
         "native/backup.rs",
         "fs::rename(",
-        1,
-        "a replaced or deleted path renamed into the backup: synced path to backup/",
+        2,
+        "a deleted path renamed into the backup, and a finished EXDEV copy: to backup/",
+    ),
+    (
+        "native/backup.rs",
+        "hard_link(",
+        2,
+        "the function and its call: a path about to be replaced gets a second name in backup/",
     ),
     (
         "native/backup.rs",

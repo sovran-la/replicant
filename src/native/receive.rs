@@ -167,6 +167,14 @@ impl<'a> Receiver<'a> {
         }
     }
 
+    /// On home, keep a copy of `abs`, which a rename is about to replace.
+    pub(super) fn keep_old(&self, abs: &Path, rel: &str) -> Result<()> {
+        match &self.backup {
+            Some(b) => b.keep_beside(abs, &self.backup_rel(rel)),
+            None => Ok(()),
+        }
+    }
+
     /// Note what directory `rel` was, on home, before it changes.
     pub(super) fn note_dir(&self, rel: &str, mode: Option<u32>) -> Result<()> {
         match &self.backup {

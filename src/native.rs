@@ -41,6 +41,21 @@ pub use manifest::{Entry, EntryKind, Manifest};
 /// removed by the receiver at the start of the next transfer of its unit.
 pub const TEMP_PREFIX: &str = ".replicant-tmp-";
 
+/// The temporary name for a file called `name`, in the same directory.
+pub fn temp_name(name: &str) -> String {
+    /// Longest file name most filesystems take.
+    const NAME_MAX: usize = 255;
+    match TEMP_PREFIX.len() + name.len() <= NAME_MAX {
+        true => format!("{TEMP_PREFIX}{name}"),
+        false => {
+            use sha2::Digest;
+            let h = sha2::Sha256::digest(name.as_bytes());
+            let hex: String = h[..12].iter().map(|b| format!("{b:02x}")).collect();
+            format!("{TEMP_PREFIX}{hex}")
+        }
+    }
+}
+
 /// Files smaller than this travel many to a [`frame::Kind::Batch`].
 pub const SMALL: u64 = 64 << 10;
 

@@ -134,7 +134,7 @@ pub(super) fn kept(run_dir: &Path, unit_path: &Path, is_file: bool) -> Result<Ve
     Ok(all
         .entries
         .into_iter()
-        .filter(|e| !e.is_dir())
+        .filter(|e| !e.is_dir() && !crate::native::backup::is_unfinished(&e.rel))
         .map(|e| e.rel)
         .collect())
 }

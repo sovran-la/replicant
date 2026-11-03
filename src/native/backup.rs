@@ -3,7 +3,12 @@
 //! backup directory, `backup/<host>/<push>/run-<n>/<rel>`. A rename on the
 //! same filesystem copies nothing and cannot half-happen. When the backup
 //! directory is on another filesystem (`EXDEV`), the path is copied there
-//! with its mode, mtime and link target, and then removed.
+//! with its mode, mtime and link target, under a temporary name and renamed
+//! once whole, so what is in the backup is always all of it; and then removed.
+//!
+//! A path about to be replaced by a rename stays where it is until then: the
+//! backup gets a hard link to it ([`Backup::keep_beside`]), so the target is
+//! never absent, not after a crash and not after a failed rename.
 //!
 //! A path already kept in this run is not kept again: the run's copy is
 //! the one from before the run touched it, which is what rollback needs.
@@ -14,6 +19,7 @@
 //! `run-<n>.dirs` beside the run's directory ([`Backup::note_dir`]): a record
 //! that, like the directory, survives a leaf dying before it reports.
 
+use super::temp_name;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -28,6 +34,23 @@ pub type Rename = fn(&Path, &Path) -> io::Result<()>;
 
 fn rename(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(from, to)
+}
+
+fn hard_link(from: &Path, to: &Path) -> io::Result<()> {
+    fs::hard_link(from, to)
+}
+
+/// Copy `from` to `to`, whole or not at all: under a temporary name there, and
+/// renamed once it is finished. `Backup::kept`'s reader skips temporary names.
+fn copy_whole(from: &Path, to: &Path) -> io::Result<()> {
+    let name = to.file_name().map(|n| n.to_string_lossy());
+    let temp = to.with_file_name(temp_name(&name.unwrap_or_default()));
+    let _ = remove_tree(&temp);
+    let copied = copy_tree(from, &temp).and_then(|()| fs::rename(&temp, to));
+    if copied.is_err() {
+        let _ = remove_tree(&temp);
+    }
+    copied
 }
 
 /// What a directory was before a run first touched it.
@@ -64,19 +87,51 @@ pub fn dirs_noted(run_dir: &Path) -> Result<Vec<DirWas>> {
 pub struct Backup {
     dir: PathBuf,
     rename: Rename,
+    link: Rename,
 }
 
 impl Backup {
     pub fn new(dir: PathBuf) -> Self {
-        Self::with_rename(dir, rename)
+        Self {
+            dir,
+            rename,
+            link: hard_link,
+        }
     }
 
+    /// With `rename` standing in for both the rename and the hard link.
     pub fn with_rename(dir: PathBuf, rename: Rename) -> Self {
-        Self { dir, rename }
+        Self {
+            dir,
+            rename,
+            link: rename,
+        }
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Keep `abs` (the unit-relative `rel`, a file or link) in the backup and
+    /// leave it where it is, for a rename to replace.
+    pub fn keep_beside(&self, abs: &Path, rel: &str) -> Result<()> {
+        self.real_parents(rel)?;
+        let dest = self.dir.join(rel);
+        if fs::symlink_metadata(&dest).is_ok() {
+            // Kept earlier in this run: that copy is the original.
+            return Ok(());
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // A link's own name, not a second name for what it points at: rebuilt.
+        let linked = fs::symlink_metadata(abs)?.is_file() && (self.link)(abs, &dest).is_ok();
+        if !linked {
+            copy_whole(abs, &dest).map_err(|e| {
+                Error::Transfer(format!("could not back up {rel} before replacing it: {e}"))
+            })?;
+        }
+        Ok(())
     }
 
     /// Note what directory `rel` was, before it is removed, made or changed.
@@ -133,7 +188,7 @@ impl Backup {
         match (self.rename)(abs, &dest) {
             Ok(()) => Ok(()),
             Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-                copy_tree(abs, &dest).map_err(|e| {
+                copy_whole(abs, &dest).map_err(|e| {
                     Error::Transfer(format!(
                         "could not back up {rel} across filesystems before replacing it: {e}"
                     ))
@@ -145,6 +200,12 @@ impl Backup {
             ))),
         }
     }
+}
+
+/// Whether a path in a run's directory is a temporary name, or under one: a
+/// copy that did not finish, which is not something the run kept.
+pub fn is_unfinished(rel: &str) -> bool {
+    rel.split('/').any(super::is_temp)
 }
 
 /// Copy a file, link or directory tree with its modes and file mtimes.

@@ -147,3 +147,51 @@ fn a_directory_that_cannot_be_noted_is_not_changed() {
     assert!(e.contains("could not note"), "{e}");
     assert!(root.join("d").is_dir());
 }
+
+/// The review's m6: at no point of a write is its target absent.
+#[test]
+fn a_rename_that_fails_leaves_the_old_file_in_place_on_home() {
+    let t = tempfile::tempdir().unwrap();
+    let (root, run) = (t.path().join("unit"), t.path().join("backup/run-1"));
+    write(&root.join("a"), "home's");
+    let rx = Receiver::open(&root, false, None, Some(Backup::new(run.clone()))).unwrap();
+    let e = crate::native::manifest::Entry {
+        rel: "a".into(),
+        kind: crate::native::manifest::EntryKind::File,
+        size: 3,
+        mtime_ns: 1,
+        mode: 0o644,
+        link: None,
+    };
+    let mut inc = rx.begin(&e).unwrap();
+    inc.write(b"new").unwrap();
+    // The temporary goes (a dead run's clean, say): the rename must fail.
+    std::fs::remove_file(root.join(".replicant-tmp-a")).unwrap();
+    assert!(inc.finish().is_err());
+    assert_eq!(std::fs::read(root.join("a")).unwrap(), b"home's");
+    assert_eq!(std::fs::read(run.join("a")).unwrap(), b"home's", "and kept");
+}
+
+#[test]
+fn a_write_keeps_the_old_file_whole_whether_or_not_it_can_link() {
+    fn exdev(_: &Path, _: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::from_raw_os_error(libc::EXDEV))
+    }
+    for backup in [Backup::new, |d| Backup::with_rename(d, exdev)] {
+        let t = tempfile::tempdir().unwrap();
+        let (root, run) = (t.path().join("unit"), t.path().join("backup/run-1"));
+        write(&root.join("a"), "home's");
+        let rx = Receiver::open(&root, false, None, Some(backup(run.clone()))).unwrap();
+        let e = crate::native::manifest::Entry {
+            rel: "a".into(),
+            kind: crate::native::manifest::EntryKind::File,
+            size: 3,
+            mtime_ns: 1,
+            mode: 0o644,
+            link: None,
+        };
+        rx.file(&e, b"new").unwrap();
+        assert_eq!(std::fs::read(root.join("a")).unwrap(), b"new");
+        assert_eq!(std::fs::read(run.join("a")).unwrap(), b"home's");
+    }
+}
