@@ -279,3 +279,7 @@ pub use file::Incoming;
 #[cfg(test)]
 #[path = "receive_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "receive_backup_tests.rs"]
+mod backup_tests;

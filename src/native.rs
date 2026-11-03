@@ -31,6 +31,9 @@ pub mod workers;
 #[cfg(test)]
 pub(crate) mod tests_fixture;
 
+#[cfg(test)]
+mod tests_faulty;
+
 pub use diff::{ChangeList, diff, itemize};
 pub use manifest::{Entry, EntryKind, Manifest};
 

@@ -228,3 +228,7 @@ pub fn pull(conn: &mut Conn, rx: &Receiver<'_>, sh: &Shared, abort: &Abort) -> R
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "workers_tests.rs"]
+mod tests;

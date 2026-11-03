@@ -239,23 +239,7 @@ impl Home {
                 Ok(HomeReply::Done)
             }
             HomeRequest::FleetState => Ok(HomeReply::Fleet(self.fleet_state()?)),
-            HomeRequest::Manifest {
-                lease,
-                rel,
-                kind,
-                is_file,
-                union,
-                worktrees,
-                ignored,
-            } => {
-                let extra = data::Extra {
-                    union: &union,
-                    worktrees: &worktrees,
-                    ignored: &ignored,
-                };
-                let manifest = self.unit_manifest(&host, lease, &rel, kind, is_file, extra)?;
-                Ok(HomeReply::Manifest { manifest })
-            }
+            r @ HomeRequest::Manifest { .. } => self.manifest_request(&host, r),
             r @ (HomeRequest::BeginPush { .. }
             | HomeRequest::Rehash { .. }
             | HomeRequest::Agree { .. }

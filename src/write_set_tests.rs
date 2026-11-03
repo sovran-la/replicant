@@ -27,6 +27,8 @@ use scan::{count, forbidden, is_test_file};
 
 #[path = "write_set_allowed.rs"]
 mod allowed;
+#[path = "write_set_native.rs"]
+mod native;
 #[path = "write_set_spawns.rs"]
 mod spawns;
 
@@ -69,6 +71,7 @@ fn every_spawn_and_write_is_on_the_list() {
     let allowed: BTreeMap<(String, &str), usize> = allowed::ALLOWED
         .iter()
         .chain(spawns::SPAWNS)
+        .chain(native::NATIVE)
         .map(|(f, p, n, _)| ((f.to_string(), *p), *n))
         .collect();
     let mut wrong = Vec::new();

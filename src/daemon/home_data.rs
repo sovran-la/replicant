@@ -11,6 +11,7 @@
 
 use super::Home;
 use super::trust::Caller;
+use crate::daemon::wire::{HomeReply, HomeRequest};
 use crate::exclude::Excludes;
 use crate::marker::{self, Direction, Marker};
 use crate::native::conn::Conn;
@@ -28,15 +29,38 @@ pub(super) type Slots = Mutex<HashMap<(u64, String), usize>>;
 
 /// The leaf's additions to a unit's excludes: paths inside the unit only,
 /// each of which can only leave more out.
-pub(super) struct Extra<'a> {
+struct Extra<'a> {
     pub union: &'a [String],
     pub worktrees: &'a [String],
     pub ignored: &'a [String],
 }
 
 impl Home {
+    /// [`HomeRequest::Manifest`]'s answer.
+    pub(super) fn manifest_request(&self, host: &str, r: HomeRequest) -> Result<HomeReply> {
+        let HomeRequest::Manifest {
+            lease,
+            rel,
+            kind,
+            is_file,
+            union,
+            worktrees,
+            ignored,
+        } = r
+        else {
+            return Err(Error::Remote(format!("not a manifest request: {r:?}")));
+        };
+        let extra = Extra {
+            union: &union,
+            worktrees: &worktrees,
+            ignored: &ignored,
+        };
+        let manifest = self.unit_manifest(host, lease, &rel, kind, is_file, extra)?;
+        Ok(HomeReply::Manifest { manifest })
+    }
+
     /// `host`'s unit `rel` as home holds it, for the leaf's diff.
-    pub(super) fn unit_manifest(
+    fn unit_manifest(
         &self,
         host: &str,
         lease: u64,

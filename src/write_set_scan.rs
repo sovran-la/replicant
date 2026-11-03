@@ -75,6 +75,7 @@ pub(super) fn is_test_file(rel: &str) -> bool {
                 | "write_set_tests.rs"
                 | "write_set_allowed.rs"
                 | "write_set_spawns.rs"
+                | "write_set_native.rs"
                 | "write_set_scan.rs"
         )
 }
