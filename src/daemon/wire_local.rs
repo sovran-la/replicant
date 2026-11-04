@@ -17,7 +17,8 @@ use std::path::PathBuf;
 /// 4: the shared [`super::WIRE_VERSION`], before the CLI had its own.
 /// 5: the answer is a stream of [`LocalFrame`]s (a sync's progress).
 /// 6: a unit's live counters (`ProgressEvent::UnitProgress`).
-pub const LOCAL_WIRE_VERSION: u32 = 6;
+/// 7: `Subscribe.address` is a list (`--address` repeats).
+pub const LOCAL_WIRE_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalCall {

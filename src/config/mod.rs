@@ -162,8 +162,13 @@ pub fn short_hostname(raw: &str) -> Option<String> {
     valid.then_some(first)
 }
 
-/// `host` or `host:port`, with the default port applied. A bare IPv6
-/// literal (two or more colons, no brackets) gets its brackets too.
+/// `host` or `host:port`, with the default port applied.
+///
+/// A bare IPv6 literal (`2001:db8::1`) gets brackets as well as the port. A
+/// scoped one (`fe80::1%en0`) does not: the standard resolver only takes a
+/// numeric scope inside brackets, but splits `host:port` on the last colon
+/// and hands the host to getaddrinfo, which does understand `%en0`. So the
+/// scoped form is written the way the resolver reads it, `fe80::1%en0:7750`.
 pub fn with_port(address: &str) -> String {
     if address.starts_with('[') {
         return if address.contains("]:") {
@@ -172,8 +177,27 @@ pub fn with_port(address: &str) -> String {
             format!("{address}:{DEFAULT_PORT}")
         };
     }
+    let v6 = |s: &str| {
+        s.split('%')
+            .next()
+            .is_some_and(|base| base.parse::<std::net::Ipv6Addr>().is_ok())
+    };
     if address.matches(':').count() >= 2 {
-        return format!("[{address}]:{DEFAULT_PORT}");
+        // `::1:7750` or `fe80::1%en0:7750`: a literal and a port, as the
+        // resolver reads it. Checked first: `::1:7750` is also a literal.
+        if let Some((host, p)) = address.rsplit_once(':')
+            && p.parse::<u16>().is_ok()
+            && v6(host)
+        {
+            return address.to_string();
+        }
+        if v6(address) {
+            return if address.contains('%') {
+                format!("{address}:{DEFAULT_PORT}")
+            } else {
+                format!("[{address}]:{DEFAULT_PORT}")
+            };
+        }
     }
     match address.rsplit_once(':') {
         Some((_, p)) if p.parse::<u16>().is_ok() => address.to_string(),
@@ -236,10 +260,44 @@ mod tests {
             with_port("2001:db8::1"),
             format!("[2001:db8::1]:{DEFAULT_PORT}")
         );
+        // Scoped: left for the resolver to split on the last colon.
         assert_eq!(
             with_port("fe80::1%en0"),
-            format!("[fe80::1%en0]:{DEFAULT_PORT}")
+            format!("fe80::1%en0:{DEFAULT_PORT}")
         );
+        assert_eq!(with_port("fe80::1%en0:7"), "fe80::1%en0:7");
+        // Already a literal and a port, read as such even though `::1:7750`
+        // would also parse as one address.
+        assert_eq!(with_port("::1:7"), "::1:7");
+        assert_eq!(with_port("2001:db8::1:7"), "2001:db8::1:7");
+        // Not an address at all: the port is appended and it fails later.
+        assert_eq!(with_port("host:bad"), format!("host:bad:{DEFAULT_PORT}"));
+        assert_eq!(with_port("a:b:c"), format!("a:b:c:{DEFAULT_PORT}"));
+
+        // Every shape written for a loopback literal is one the standard
+        // resolver reads back to the same socket address.
+        use std::net::ToSocketAddrs;
+        let v6 = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 7));
+        for written in [with_port("[::1]:7"), with_port("::1:7")] {
+            let got: Vec<_> = written.to_socket_addrs().unwrap().collect();
+            assert_eq!(got, vec![v6], "{written}");
+        }
+        let got: Vec<_> = with_port("::1").to_socket_addrs().unwrap().collect();
+        assert_eq!(
+            got,
+            vec![std::net::SocketAddr::from((
+                std::net::Ipv6Addr::LOCALHOST,
+                DEFAULT_PORT
+            ))]
+        );
+        // A scoped loopback literal resolves to loopback with that scope,
+        // where the host has a loopback interface by that name.
+        if let Ok(got) = with_port("::1%lo0").to_socket_addrs() {
+            for a in got {
+                assert_eq!(a.ip(), std::net::Ipv6Addr::LOCALHOST, "{a}");
+                assert_eq!(a.port(), DEFAULT_PORT);
+            }
+        }
     }
 
     #[test]

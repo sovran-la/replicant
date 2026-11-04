@@ -186,7 +186,12 @@ fn another_version_is_refused_by_name() {
     let err = read_answer(&mut BufReader::new(&cli), &mut |_| {})
         .unwrap_err()
         .to_string();
-    assert!(err.contains("wire version 5 and this daemon 6"), "{err}");
+    assert!(
+        err.contains(&format!(
+            "wire version 5 and this daemon {LOCAL_WIRE_VERSION}"
+        )),
+        "{err}"
+    );
 }
 
 #[path = "local_watch_tests.rs"]

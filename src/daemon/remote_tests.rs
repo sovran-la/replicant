@@ -394,6 +394,17 @@ fn a_silent_address_costs_the_handshake_bound_not_the_deadline() {
         s.sock.read_timeout().unwrap(),
         Some(Duration::from_secs(900))
     );
+    assert_eq!(
+        s.sock.write_timeout().unwrap(),
+        Some(Duration::from_secs(900))
+    );
+    // The bound a real dialer starts with is home's own handshake bound.
+    assert_eq!(
+        Dialer::new(&client_id, Duration::from_secs(5))
+            .unwrap()
+            .handshake_timeout(),
+        HANDSHAKE_TIMEOUT
+    );
     drop(s);
     let _ = server.join().unwrap();
     drop(silent);
@@ -503,6 +514,37 @@ fn connected_sees_a_peer_leave_and_leaves_the_socket_blocking() {
 
 fn sa(s: &str) -> SocketAddr {
     s.parse().unwrap()
+}
+
+#[test]
+fn candidates_put_the_ip_that_answered_first_and_forget_is_conditional() {
+    let (a, b, c) = (sa("10.0.0.1:1"), sa("10.0.0.2:1"), sa("[2001:db8::1]:1"));
+    // No memory: dial order as resolved, v4 first.
+    assert_eq!(dial::candidates(vec![c, a, b], None), vec![a, b, c]);
+    // The IP that answered last time moves to the front, even a v6 one.
+    assert_eq!(dial::candidates(vec![c, a, b], Some(b)), vec![b, a, c]);
+    assert_eq!(dial::candidates(vec![c, a, b], Some(c)), vec![c, a, b]);
+    // One the name no longer resolves to is ignored, not invented.
+    assert_eq!(
+        dial::candidates(vec![a, b], Some(sa("10.0.0.9:1"))),
+        vec![a, b]
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    let d = Dialer::new(&ids(tmp.path()).1, Duration::from_secs(1)).unwrap();
+    let l = Arc::new(MtlsListener::bind("127.0.0.1:0", &ids(tmp.path()).0).unwrap());
+    let live = vec![l.local_addr().to_string()];
+    let server = echo_once(l.clone());
+    let _: Ping = d.call_any(&live, &p(1), Duration::from_secs(5)).unwrap();
+    server.join().unwrap().unwrap();
+    let chosen = d.preferred();
+    assert!(chosen.is_some());
+    // A failed walk that started before this choice (it saw None) must not
+    // erase it; one that started with this choice does.
+    d.forget(&None);
+    assert_eq!(d.preferred(), chosen);
+    d.forget(&chosen);
+    assert_eq!(d.preferred(), None);
 }
 
 #[test]

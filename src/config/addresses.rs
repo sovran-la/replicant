@@ -167,7 +167,7 @@ mod tests {
             [
                 "[2001:db8::1]:7750".to_string(),
                 "[2001:db8::2]:7".to_string(),
-                "[fe80::1%en0]:7750".to_string()
+                "fe80::1%en0:7750".to_string()
             ]
         );
     }

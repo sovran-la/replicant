@@ -184,13 +184,7 @@ impl Dialer {
                 Err(miss) => misses.push((entry, miss)),
             }
         }
-        // Forget the choice only if nobody has made a newer one meanwhile.
-        {
-            let mut p = self.lock();
-            if *p == was {
-                *p = None;
-            }
-        }
+        self.forget(&was);
         Err(match misses.as_slice() {
             [] => Error::Remote("home has no address to dial".into()),
             [(entry, miss)] => miss.single(entry, &self.source),
@@ -213,6 +207,20 @@ impl Dialer {
         })
     }
 
+    /// Forget the choice, but only if it is still `was`: a dial that failed
+    /// must not erase a newer choice another thread made meanwhile.
+    pub(super) fn forget(&self, was: &Option<Preferred>) {
+        let mut p = self.lock();
+        if *p == *was {
+            *p = None;
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn handshake_timeout(&self) -> Duration {
+        self.handshake_timeout
+    }
+
     /// One listed address: resolve it, try `first` before the rest of what
     /// it resolved to, and complete the handshake.
     fn connect_entry(
@@ -226,11 +234,7 @@ impl Dialer {
             .map_err(|e| Miss::Unreachable(format!("does not resolve ({e})")))?
             .collect();
         let resolved_any = !addrs.is_empty();
-        let mut addrs = dial_order(addrs);
-        if let Some(f) = first.filter(|f| addrs.contains(f)) {
-            addrs.retain(|a| *a != f);
-            addrs.insert(0, f);
-        }
+        let addrs = candidates(addrs, first);
         let mut last = if resolved_any && addrs.is_empty() {
             "resolves only to link-local IPv6 addresses without a scope".to_string()
         } else {
@@ -318,4 +322,15 @@ pub(super) fn dial_order(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
 /// fe80::/10.
 fn is_link_local(ip: &std::net::Ipv6Addr) -> bool {
     (ip.segments()[0] & 0xffc0) == 0xfe80
+}
+
+/// What a name resolved to, in dial order, with `first` (the IP that
+/// answered last time, if it is still among them) moved to the front.
+pub(super) fn candidates(resolved: Vec<SocketAddr>, first: Option<SocketAddr>) -> Vec<SocketAddr> {
+    let mut addrs = dial_order(resolved);
+    if let Some(f) = first.filter(|f| addrs.contains(f)) {
+        addrs.retain(|a| *a != f);
+        addrs.insert(0, f);
+    }
+    addrs
 }
