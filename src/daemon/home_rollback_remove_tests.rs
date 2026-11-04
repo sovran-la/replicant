@@ -68,7 +68,7 @@ fn an_unsubscribe_does_not_remove_a_rolled_back_push_until_accepted() {
     assert!(home.push_dir(&id).join("rollback").is_dir());
 
     // Accepted: removed, and settled.
-    let r = sync_with(&bed, &home, &opts(&["work"]), crate::plan::RSYNC).unwrap();
+    let r = sync_with(&bed, &home, &opts(&["work"])).unwrap();
     assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
     assert!(
         r.applied.iter().any(|a| a.rel == "work"),

@@ -148,7 +148,7 @@ fn a_repo_vanished_on_the_leaf_is_deleted_on_the_leaf_and_never_pushed() {
     );
     assert_eq!(r.decision.direction(), None);
     assert_eq!(r.deletion_note("leaf", "home").as_deref(), Some(note));
-    assert!(r.diff.is_none(), "status never runs rsync");
+    assert!(r.diff.is_none(), "status never runs a dry run");
     assert!(s.blocked());
     let text = render::plan(&s, false, Style { color: false });
     assert!(text.contains(note), "{text}");

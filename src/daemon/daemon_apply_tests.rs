@@ -1,6 +1,6 @@
 //! `sync` through the real daemons on loopback: the CLI's request reaches
 //! the leaf daemon, which plans and applies against home over mTLS with the
-//! system rsync, and both journals keep the lines. And an interrupted pull
+//! native transfer, and both journals keep the lines. And an interrupted pull
 //! as `status` shows it: an open marker with its age, a `resume` row, a dry
 //! run that writes nothing, and the sync that finishes it.
 
@@ -109,7 +109,7 @@ fn an_interrupted_pull_shows_in_status_resumes_and_clears() {
     let bed = Bed::enrolled();
     testutil::repo(&bed.home_hd.join("work/r"));
     let (home, leaf) = pair(&bed);
-    // A pull that died two hours ago, half done: rsync had finished README
+    // A pull that died two hours ago, half done: the transfer had finished README
     // (home's bytes and, with `-a`, home's mtime) but not `.git`. The resume
     // matches README and only creates, so guardrail 6, which looks at what
     // it would replace or delete, has nothing to say (review A3). A file

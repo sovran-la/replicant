@@ -10,17 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// rsync_host value meaning "home's paths are on this machine's filesystem".
-///
-/// Only for a home daemon running on the same machine as the leaf (tests, and
-/// the dogfood timing run); a real leaf rsyncs over ssh.
-pub const LOCAL_RSYNC: &str = "local";
-
-/// Default wall-clock bound on one rsync to or from home. A dry run of a whole
-/// work tree takes seconds; past this, something is wedged (a partition, a
-/// dead ssh) and is holding the head of home's queue.
-pub const DEFAULT_RSYNC_TIMEOUT_SECS: u64 = 300;
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HomeEntry {
@@ -31,14 +20,18 @@ pub struct HomeEntry {
     /// Home's bundle; relative paths are beside leaf.toml.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<String>,
-    /// The ssh destination rsync uses for home. Defaults to `name`;
-    /// [`LOCAL_RSYNC`] means no ssh at all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Ignored since 0.4 (rsync is gone): read so an older leaf.toml still
+    /// loads, never written back.
+    #[serde(default, skip_serializing)]
     pub rsync_host: Option<String>,
-    /// Kill an rsync that has not finished after this many seconds. Defaults
-    /// to [`DEFAULT_RSYNC_TIMEOUT_SECS`]; at least 1.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Ignored since 0.4, as `rsync_host`. A transfer that stops making
+    /// progress fails on its ack timeout instead of a wall-clock bound.
+    #[serde(default, skip_serializing)]
     pub rsync_timeout_secs: Option<u64>,
+    /// Data connections per unit, at most home's `[daemon] streams`.
+    /// Defaults to home's; at least 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streams: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,22 +99,10 @@ impl LeafConfig {
         }
     }
 
-    /// The ssh destination for rsync, or `None` for a same-machine home.
-    pub fn rsync_host(&self) -> Option<String> {
-        match self.home.rsync_host.as_deref() {
-            Some(LOCAL_RSYNC) => None,
-            Some(h) => Some(h.to_string()),
-            None => Some(self.home.name.clone()),
-        }
-    }
-
-    /// The wall-clock bound on one rsync.
-    pub fn rsync_timeout(&self) -> std::time::Duration {
-        let secs = self
-            .home
-            .rsync_timeout_secs
-            .unwrap_or(DEFAULT_RSYNC_TIMEOUT_SECS);
-        std::time::Duration::from_secs(secs.max(1))
+    /// Data connections per unit: the lower of this leaf's `[home] streams`
+    /// and home's `[daemon] streams`, at least 1.
+    pub fn streams(&self, home: u32) -> u32 {
+        self.home.streams.unwrap_or(home).min(home).max(1)
     }
 
     /// Home's bundle on this machine.
@@ -176,6 +157,7 @@ mod tests {
                 credentials: None,
                 rsync_host: None,
                 rsync_timeout_secs: None,
+                streams: None,
             },
             as_local: BTreeMap::from([(
                 "work/tundra".into(),
@@ -216,39 +198,33 @@ mod tests {
     }
 
     #[test]
-    fn rsync_host_defaults_to_home_name_and_local_means_none() {
-        let mut c = cfg();
-        assert_eq!(c.rsync_host().as_deref(), Some("thistledown"));
-        c.home.rsync_host = Some("tc.tailnet".into());
-        assert_eq!(c.rsync_host().as_deref(), Some("tc.tailnet"));
-        c.home.rsync_host = Some(LOCAL_RSYNC.into());
-        assert_eq!(c.rsync_host(), None);
-    }
-
-    #[test]
-    fn rsync_timeout_defaults_and_floors_at_one_second() {
-        let mut c = cfg();
-        assert_eq!(
-            c.rsync_timeout(),
-            std::time::Duration::from_secs(DEFAULT_RSYNC_TIMEOUT_SECS)
-        );
-        c.home.rsync_timeout_secs = Some(42);
-        assert_eq!(c.rsync_timeout(), std::time::Duration::from_secs(42));
-        c.home.rsync_timeout_secs = Some(0);
-        assert_eq!(c.rsync_timeout(), std::time::Duration::from_secs(1));
-    }
-
-    #[test]
-    fn rsync_timeout_reads_from_leaf_toml() {
+    fn an_older_leaf_toml_with_rsync_keys_loads_and_is_saved_without_them() {
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("leaf.toml");
         std::fs::write(
             &p,
-            "[home]\nname=\"h\"\naddress=\"h:1\"\nrsync_timeout_secs = 7\n",
+            "[home]\nname=\"h\"\naddress=\"h:1\"\nrsync_host = \"local\"\nrsync_timeout_secs = 7\n",
         )
         .unwrap();
         let c = LeafConfig::load(&p).unwrap().unwrap();
-        assert_eq!(c.rsync_timeout(), std::time::Duration::from_secs(7));
+        assert_eq!(c.home.address, "h:1");
+        c.save(&p).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("rsync"), "{text}");
+        assert!(LeafConfig::load(&p).unwrap().is_some());
+    }
+
+    #[test]
+    fn streams_are_the_lower_of_both_sides_and_at_least_one() {
+        let mut c = cfg();
+        assert_eq!(c.streams(4), 4, "home's, by default");
+        assert_eq!(c.streams(0), 1);
+        c.home.streams = Some(2);
+        assert_eq!(c.streams(4), 2);
+        c.home.streams = Some(8);
+        assert_eq!(c.streams(4), 4, "a leaf cannot widen home's");
+        c.home.streams = Some(0);
+        assert_eq!(c.streams(4), 1);
     }
 
     #[test]

@@ -66,11 +66,10 @@ impl Leaf {
             LocalRequest::Subscribe {
                 home,
                 address,
-                rsync_host,
                 credentials,
                 paths,
                 as_local,
-            } => self.subscribe(home, address, rsync_host, credentials, paths, as_local),
+            } => self.subscribe(home, address, credentials, paths, as_local),
             LocalRequest::Unsubscribe { paths } => {
                 let mut cfg = self.cfg()?;
                 let reply = self
@@ -136,7 +135,6 @@ impl Leaf {
         let cfg = self.cfg()?;
         let link = self.link(&cfg)?.host()?;
         let (me, hd, state) = (cfg.name()?, cfg.home_dir()?, self.dirs.state());
-        let scratch = self.dirs.scratch();
         f(
             &link,
             LeafCtx {
@@ -144,8 +142,7 @@ impl Leaf {
                 home_dir: &hd,
                 cfg: &cfg,
                 state_dir: &state,
-                scratch_dir: &scratch,
-                rsync: plan::RSYNC,
+                plane: plan::Plane::default(),
                 accept_rollback: accept,
             },
         )
@@ -155,7 +152,6 @@ impl Leaf {
         &self,
         home: String,
         address: Option<String>,
-        rsync_host: Option<String>,
         credentials: Option<String>,
         raw: Vec<String>,
         as_local: Option<PathBuf>,
@@ -185,6 +181,7 @@ impl Leaf {
                     credentials: None,
                     rsync_host: None,
                     rsync_timeout_secs: None,
+                    streams: None,
                 },
                 as_local: Default::default(),
             },
@@ -192,7 +189,6 @@ impl Leaf {
         if let Some(a) = address {
             cfg.home.address = with_port(&a);
         }
-        cfg.home.rsync_host = rsync_host.or(cfg.home.rsync_host);
         cfg.home.credentials = credentials.or(cfg.home.credentials);
         cfg.save(&self.dirs.leaf())?;
 

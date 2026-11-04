@@ -94,7 +94,7 @@ pub struct SideUnit {
     /// What the repo's own `.gitignore` files ignore here, relative to the
     /// unit, minus what the unit's excludes already drop
     /// ([`repos::ignored`]'s form: a directory ends in `/`). Not state, not
-    /// walked, and never moved by rsync in either direction: the plan
+    /// walked, and never moved in either direction: the plan
     /// excludes both sides' lists. Empty for loose units, for a side with
     /// no repo, and from an older home.
     #[serde(default)]
@@ -181,7 +181,7 @@ pub(crate) fn first_component(rel: &str) -> &str {
 /// a unit of its own. A carve-out matches a file or a directory; repos and
 /// worktrees, directories only.
 ///
-/// rsync gets this list too, with *both* sides' worktrees: the source's so a
+/// The transfer gets this list too, with *both* sides' worktrees: the source's so a
 /// checkout is never sent, the target's so `--delete` never removes one.
 pub fn excludes(
     spec: &SubSpec,
@@ -197,7 +197,7 @@ pub fn excludes(
         &[]
     };
     // A carve-out may name a file or a directory, and the loose manifest drops
-    // either (`units/snapshot.rs`), so rsync must too: an anchored `/x`
+    // either (`units/snapshot.rs`), so the transfer must too: an anchored `/x`
     // matches both. Repos and worktrees are always directories.
     let carve_outs = spec.except.iter().map(|b| (b, false));
     let units = worktrees.iter().chain(repos).map(|b| (b, true));
@@ -211,7 +211,7 @@ pub fn excludes(
 
 /// `ex` plus one anchored literal per git-ignored path
 /// ([`SideUnit::ignored`]'s form). Given both sides' lists for a transfer,
-/// rsync neither sends an ignored path nor `--delete`s one from the target.
+/// a transfer neither sends an ignored path nor deletes one from the target.
 pub fn with_ignored<'a>(
     mut ex: Excludes,
     ignored: impl IntoIterator<Item = &'a String>,

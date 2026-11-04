@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::daemon::home::Home;
+use crate::plan::LeafCtx;
 use crate::plan::apply::Progress;
-use crate::plan::{LeafCtx, RSYNC};
 use crate::testutil::{self, Bed, InProcess};
 use std::cell::RefCell;
 
@@ -24,7 +24,7 @@ struct Run {
 fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) -> Run {
     let sent = RefCell::new(Vec::new());
     let cfg = bed.leaf_cfg();
-    let (state, scratch) = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let state = bed.leaf_dirs.state();
     let link = InProcess {
         home,
         host: "leaf".into(),
@@ -35,8 +35,7 @@ fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) ->
         home_dir: &bed.leaf_hd,
         cfg: &cfg,
         state_dir: &state,
-        scratch_dir: &scratch,
-        rsync: RSYNC,
+        plane: Default::default(),
         accept_rollback: &[],
     };
     let call = |req: LocalRequest, on: &mut dyn FnMut(ProgressEvent)| -> Result<LocalReply> {
@@ -67,13 +66,17 @@ fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) ->
                         false => format!(" accept:{:?}", opts.accept_rollback),
                     }
                 ));
-                // As the daemon does: each event handed over as it happens.
-                let on = RefCell::new(on);
-                let emit = |e: ProgressEvent| (on.borrow_mut())(e);
+                // Events in order, handed to the CLI's sink once the sync
+                // returns (a unit's counters come from its transfer's own
+                // thread, and the sink is the CLI's, not shareable).
+                let events = std::sync::Mutex::new(Vec::new());
+                let emit = |e: ProgressEvent| events.lock().unwrap().push(e);
                 let progress = Progress::new(&emit, Default::default());
-                Ok(LocalReply::Synced(Box::new(crate::plan::apply::sync_with(
-                    &link, ctx, &opts, &progress,
-                )?)))
+                let r = crate::plan::apply::sync_with(&link, ctx, &opts, &progress);
+                for e in events.into_inner().unwrap() {
+                    on(e);
+                }
+                Ok(LocalReply::Synced(Box::new(r?)))
             }
             other => panic!("unexpected {other:?}"),
         }

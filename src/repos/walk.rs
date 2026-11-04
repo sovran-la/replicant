@@ -1,10 +1,10 @@
 //! The parallel walk behind [`super::discover`].
 //!
 //! `ignore`'s parallel walker, the one the sovran filesystem crate uses, with
-//! every ignore source switched off: replicant has to see what rsync moves,
+//! every ignore source switched off: replicant has to see what a transfer moves,
 //! hidden and git-ignored files included. (Git-ignored files stop syncing
 //! only inside a repo, which this walk never descends: a repo unit's ignored
-//! paths come from [`super::ignored`] and reach every walk of it, and rsync,
+//! paths come from [`super::ignored`] and reach every walk of it, and the transfer,
 //! as excludes.) Each walker thread keeps its own
 //! findings and sends them down a channel when the walk finishes; the caller
 //! sorts, so the result does not depend on thread scheduling.
@@ -69,7 +69,7 @@ impl Visitor<'_> {
             return Ok(WalkState::Skip);
         };
         let meta = fs::symlink_metadata(abs)?;
-        if self.ex.matches(rel, meta.is_dir()) {
+        if self.ex.matches(rel, meta.is_dir()) || super::is_special(&meta) {
             return Ok(WalkState::Skip);
         }
         if meta.is_dir() {

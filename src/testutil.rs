@@ -33,18 +33,7 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// The rsync runner tests use: real ssh options, a bound no test reaches, and
-/// rsync 3's quoting so argument assertions do not depend on the machine.
-/// Its scratch dir cannot be created: a test that needs one sets its own.
-pub fn runner() -> crate::rsync::Runner {
-    crate::rsync::Runner::new(
-        std::time::Duration::from_secs(60),
-        crate::rsync::Client::Rsync,
-        "/nonexistent/replicant-scratch".into(),
-    )
-}
-
-/// An executable `sh` script at `dir/name`, for standing in for ssh.
+/// An executable `sh` script at `dir/name`.
 pub fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let p = dir.join(name);
@@ -164,8 +153,9 @@ impl Bed {
                 name: "home".into(),
                 address: "127.0.0.1:1".into(),
                 credentials: None,
-                rsync_host: Some(crate::config::leaf::LOCAL_RSYNC.into()),
+                rsync_host: None,
                 rsync_timeout_secs: None,
+                streams: None,
             },
             as_local: Default::default(),
         }
@@ -225,6 +215,35 @@ impl crate::plan::HomeLink for InProcess<'_> {
             request,
         };
         self.home.handle(call).result.map_err(crate::Error::Remote)
+    }
+
+    fn open_data(&self, _rel: &str) -> crate::Result<crate::plan::DataLink<'_>> {
+        let (conn, home_end) = crate::native::conn::Conn::pair()?;
+        let home = self.home;
+        Ok(crate::plan::DataLink {
+            conn,
+            serve: Some(Box::new(move || {
+                home.serve_data(&crate::daemon::home::Caller::Trusted, home_end)
+            })),
+        })
+    }
+}
+
+/// A hello for `rel` as `leaf`, with a short ack timeout.
+pub fn hello(
+    lease: u64,
+    rel: &str,
+    direction: crate::marker::Direction,
+) -> crate::native::session::Hello {
+    crate::native::session::Hello {
+        version: crate::native::frame::DATA_VERSION,
+        host: "leaf".into(),
+        lease,
+        rel: rel.into(),
+        kind: crate::units::UnitKind::Loose,
+        is_file: false,
+        direction,
+        ack_timeout_ms: 2000,
     }
 }
 

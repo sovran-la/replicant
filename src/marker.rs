@@ -1,7 +1,7 @@
-//! In-progress markers: the record that an rsync into this side started and
+//! In-progress markers: the record that a transfer into this side started and
 //! has not been seen to finish. PLAN.md, "Interrupted sync".
 //!
-//! The *target* side writes one before rsync starts and clears it in the same
+//! The *target* side writes one before the transfer starts and clears it in the same
 //! step that writes the baseline. A marker on a leaf is a dead pull, private
 //! to that leaf, resumed by its next sync. A marker on home is a dead push and
 //! **quarantines** the path: the pushing leaf resumes it; everyone else's pulls
@@ -35,7 +35,7 @@ impl std::fmt::Display for Direction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Marker {
     pub version: u32,
-    /// The path the interrupted rsync covered.
+    /// The path the interrupted transfer covered.
     pub rel: String,
     pub direction: Direction,
     /// The leaf that ran the sync.

@@ -24,12 +24,15 @@ fn notes_are_limited_and_interruptions_need_no_lease() {
         HomeRequest::Interrupted {
             rel: "work/r".into(),
             direction: Direction::Push,
-            why: "rsync exit 23".into(),
+            why: "the other side closed the data connection".into(),
             changes: vec![],
         },
     );
     assert!(a.result.is_ok());
-    assert!(a.journal[0].contains("push interrupted (rsync exit 23); marker kept"));
+    assert!(
+        a.journal[0]
+            .contains("push interrupted (the other side closed the data connection); marker kept")
+    );
     let log = home.log(&Filter::default()).unwrap();
     let events: Vec<&str> = log.iter().map(|l| l.event.as_str()).collect();
     assert!(events.ends_with(&["adopt", "sync"]), "{events:?}");

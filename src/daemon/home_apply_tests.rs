@@ -49,7 +49,6 @@ fn begin(lease: u64, rel: &str) -> HomeRequest {
         lease,
         rel: rel.into(),
         source_state: UnitState::Present("s".into()),
-        backup: vec![],
         is_file: false,
     }
 }

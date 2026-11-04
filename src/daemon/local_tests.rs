@@ -35,7 +35,7 @@ fn every_event() -> Vec<ProgressEvent> {
         started(1),
         done(UnitOutcome::Applied),
         done(UnitOutcome::Interrupted {
-            why: "the CLI hung up; rsync stopped".into(),
+            why: "the CLI hung up; transfer stopped".into(),
         }),
         done(UnitOutcome::Failed {
             why: "home unreachable\nsecond line".into(),
@@ -181,10 +181,13 @@ fn the_cli_hanging_up_raises_the_abort_with_why() {
 #[test]
 fn another_version_is_refused_by_name() {
     let (mut cli, daemon) = UnixStream::pair().unwrap();
-    request(&mut cli, 4);
+    request(&mut cli, 5);
     serve(daemon, &|_, _| panic!("not handled"));
     let err = read_answer(&mut BufReader::new(&cli), &mut |_| {})
         .unwrap_err()
         .to_string();
-    assert!(err.contains("wire version 4 and this daemon 5"), "{err}");
+    assert!(err.contains("wire version 5 and this daemon 6"), "{err}");
 }
+
+#[path = "local_watch_tests.rs"]
+mod watch;

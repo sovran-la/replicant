@@ -4,14 +4,15 @@
 //! retried for as long as the lease could still be alive on home; a definitive
 //! "not in the queue" (expired, or home restarted: the queue is in memory)
 //! marks the lease **lost**. A plan whose lease was lost fails, because the
-//! next entry may already have proceeded alongside it, and any rsync it is
-//! running is stopped ([`Watch::abort`]): two real rsyncs must never
-//! interleave on home (review F3).
+//! next entry may already have proceeded alongside it, and any transfer it
+//! is running is stopped ([`Watch::abort`]): two transfers must never
+//! interleave on home (review F3); home also refuses the next frame of one
+//! whose lease is no longer the head of its queue.
 
 use super::HomeLink;
+use crate::abort::Abort;
 use crate::daemon::queue::NOT_QUEUED;
 use crate::daemon::wire::HomeRequest;
-use crate::rsync::Abort;
 use crate::{Error, Result};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -43,7 +44,7 @@ impl Watch {
         self.id
     }
 
-    /// Raised when the lease is lost: give it to every rsync the plan runs,
+    /// Raised when the lease is lost: give it to every transfer the plan runs,
     /// and the running one is stopped.
     pub fn abort(&self) -> &Abort {
         &self.abort
@@ -95,7 +96,7 @@ fn heartbeat(link: &dyn HomeLink, watch: &Watch, window: Duration, stopped: mpsc
 /// Run `f` while a thread heartbeats `lease` (`(id, secs)`), if there is one.
 /// A lost lease fails the result whatever `f` returned. `abort` is the
 /// watch's: a lost lease raises it, and so may whoever else holds a clone
-/// (the CLI hanging up), which stops the running rsync without voiding the
+/// (the CLI hanging up), which stops the running transfer without voiding the
 /// plan.
 pub(super) fn with_heartbeat<T>(
     link: &dyn HomeLink,

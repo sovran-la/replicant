@@ -3,15 +3,15 @@
 use crate::baseline::Baseline;
 use crate::decide::Decision;
 use crate::marker::Direction;
+use crate::plan::xfer::PlannedXfer;
 use crate::plan::{LeafCtx, PlannedUnit};
-use crate::rsync::Transfer;
 
 /// What to do with one planned unit.
 pub(super) enum Step<'p> {
     /// Run its transfer. `deleting`: the source is gone, so afterwards the
     /// baseline is removed rather than written.
     Transfer {
-        t: &'p Transfer,
+        t: &'p PlannedXfer,
         action: &'static str,
         resumed: bool,
         deleting: bool,
@@ -26,7 +26,7 @@ pub(super) enum Step<'p> {
 pub(super) fn step<'p>(
     ctx: LeafCtx<'_>,
     u: &PlannedUnit,
-    t: Option<&'p Transfer>,
+    t: Option<&'p PlannedXfer>,
     b: Option<&Baseline>,
 ) -> Step<'p> {
     let Some(t) = t else {
@@ -60,6 +60,6 @@ pub(super) fn step<'p>(
         t,
         action,
         resumed,
-        deleting: t.source_absent,
+        deleting: t.xfer.source_absent,
     }
 }

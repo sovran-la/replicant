@@ -21,7 +21,6 @@ fn go(bed: &Bed, home: &Home, cfg: &LeafConfig, dry: bool) -> Result<Plan> {
     };
     let hd = cfg.home_dir().unwrap();
     let state = bed.leaf_dirs.state();
-    let scratch = bed.leaf_dirs.scratch();
     plan(
         &link,
         LeafCtx {
@@ -29,8 +28,7 @@ fn go(bed: &Bed, home: &Home, cfg: &LeafConfig, dry: bool) -> Result<Plan> {
             home_dir: &hd,
             cfg,
             state_dir: &state,
-            scratch_dir: &scratch,
-            rsync: crate::plan::RSYNC,
+            plane: Default::default(),
             accept_rollback: &[],
         },
         dry,
@@ -239,7 +237,7 @@ fn baseline_rows_pull_push_nothing_and_guard1_on_pull() {
     );
     assert!(
         unit(&status, "work/r").diff.is_none(),
-        "status never runs rsync"
+        "status never runs a dry run"
     );
 
     // home changed, leaf same → pull, and the leaf's dirty README would die.
@@ -319,3 +317,6 @@ mod symlink;
 
 #[path = "tests_lease_kill.rs"]
 pub(crate) mod lease_kill;
+
+#[path = "tests_inject.rs"]
+pub(crate) mod inject;

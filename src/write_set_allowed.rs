@@ -2,7 +2,8 @@
 //! with the part of the write set it is.
 
 /// (file, pattern, count, why).
-/// Processes, and every way into rsync, are in `write_set_spawns.rs`.
+/// Processes, and every way into a transfer, are in `write_set_spawns.rs`;
+/// the native receiver's writes of synced paths in `write_set_native.rs`.
 pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
     // Records under state/: baselines, markers, contacts.
     ("record.rs", "write_atomic(", 1, "Store::put: state dir"),
@@ -161,73 +162,12 @@ pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
         1,
         "the leaf's copy of home's journal lines",
     ),
-    // Private scratch under the config dir.
-    (
-        "rsync/scratch.rs",
-        "DirBuilder::new(",
-        1,
-        "the scratch dir: config dir",
-    ),
-    (
-        "rsync/scratch.rs",
-        "libc::mkdtemp(",
-        1,
-        "an empty source: scratch",
-    ),
-    (
-        "rsync/scratch.rs",
-        "libc::mkstemp(",
-        1,
-        "a list file: scratch",
-    ),
-    (
-        "rsync/scratch.rs",
-        "remove_file(",
-        1,
-        "a list file: scratch",
-    ),
-    (
-        "rsync/scratch.rs",
-        "remove_dir(",
-        1,
-        "an empty source: scratch",
-    ),
-    (
-        "rsync/spill.rs",
-        "libc::mkstemp(",
-        1,
-        "an exclude file: scratch",
-    ),
-    (
-        "rsync/spill.rs",
-        "remove_file(",
-        1,
-        "an exclude file: scratch",
-    ),
-    (
-        "rsync/apply.rs",
-        "create_dir_all(",
-        1,
-        "a delete skeleton: scratch",
-    ),
-    (
-        "rsync/apply.rs",
-        "remove_dir(",
-        1,
-        "a delete skeleton: scratch",
-    ),
     // Home's push backups (backup/) and their manifests (state/pushes/).
     (
         "daemon/home_backup.rs",
         "create_dir_all(",
         1,
         "a push run's backup dir: backup/",
-    ),
-    (
-        "daemon/home_backup.rs",
-        "remove_dir_all(",
-        1,
-        "a failed run's backup dir: backup/",
     ),
     (
         "daemon/home_backup.rs",

@@ -207,7 +207,7 @@ fn snapshot_some(
 
 /// A real repo's facts with its git-ignored paths taken out: the facts, the
 /// ignored list (minus what `ex` already drops), and `ex` with that list
-/// added, which is what the case walk and rsync must use for this side.
+/// added, which is what the case walk and the transfer must use for this side.
 pub(crate) fn repo_facts(
     abs: &Path,
     ex: &Excludes,

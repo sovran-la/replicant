@@ -13,8 +13,8 @@
 //! Everything else is **loose**: a file, symlink or directory that belongs to
 //! no repo, recorded with enough metadata for the manifest in [`crate::state`].
 //!
-//! Symlinks inside the tree are never followed: they are entries, and rsync
-//! `-a` copies them as links. The one exception is a subscription's base
+//! Symlinks inside the tree are never followed: they are entries, and a
+//! transfer makes them as links. The one exception is a subscription's base
 //! ([`discover_base`], review P4): `~/work2 → /Volumes/data/work2` is the
 //! directory it names, and a dangling one is missing. The walk is parallel
 //! ([`walk`]); every list in a [`Discovery`] is sorted, so the result is the
@@ -84,6 +84,9 @@ pub fn discover(base: &Path, ex: &Excludes) -> Result<Discovery> {
         Err(e) => return Err(e.into()),
     };
     d.exists = true;
+    if is_special(&meta) {
+        return Ok(d);
+    }
     if !meta.is_dir() {
         d.loose.push(entry(base, "", &meta)?);
         return Ok(d);
@@ -115,6 +118,14 @@ pub fn discover_base(base: &Path, ex: &Excludes) -> Result<Discovery> {
     }
 }
 
+/// A socket, FIFO or device: nothing a sync carries. It is never listed (not
+/// by discovery, a state hash or a manifest, so no diff asks for one and no
+/// verification counts one) and never opened: opening a FIFO blocks.
+pub fn is_special(meta: &fs::Metadata) -> bool {
+    let ft = meta.file_type();
+    !(ft.is_file() || ft.is_symlink() || ft.is_dir())
+}
+
 /// What a directory's `.git` says it is.
 #[derive(Debug, PartialEq, Eq)]
 pub enum GitMarker {
@@ -125,10 +136,16 @@ pub enum GitMarker {
     OtherFile,
 }
 
+/// A directory is a repo when its `.git` is a directory holding `HEAD`, as
+/// git itself requires: a `.git` still arriving (an interrupted pull of a
+/// new repo, before its `HEAD`) is plain content until it is whole, rather
+/// than a repo `git status` cannot read, which would fail every plan and
+/// so the resume that completes it.
 pub fn git_marker(dir: &Path) -> GitMarker {
     let dot = dir.join(".git");
     match fs::symlink_metadata(&dot) {
-        Ok(m) if m.is_dir() => GitMarker::Repo,
+        Ok(m) if m.is_dir() && fs::symlink_metadata(dot.join("HEAD")).is_ok() => GitMarker::Repo,
+        Ok(m) if m.is_dir() => GitMarker::None,
         Ok(m) if m.is_file() => match fs::read_to_string(&dot) {
             Ok(text) if points_into_worktrees(&text, dir) => GitMarker::Worktree,
             _ => GitMarker::OtherFile,
@@ -208,8 +225,9 @@ fn walk_names(abs: &Path, rel: &str, ex: &Excludes, out: &mut Vec<String>) -> Re
         } else {
             format!("{rel}/{name}")
         };
-        let is_dir = item.file_type()?.is_dir();
-        if ex.matches(&child_rel, is_dir) {
+        let ft = item.file_type()?;
+        let is_dir = ft.is_dir();
+        if ex.matches(&child_rel, is_dir) || !(is_dir || ft.is_file() || ft.is_symlink()) {
             continue;
         }
         if is_dir {

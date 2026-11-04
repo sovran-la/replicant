@@ -95,6 +95,37 @@ impl Home {
         request: &HomeRequest,
         j: &mut Vec<String>,
     ) -> Result<Admitted> {
+        let bootstrap_ok = matches!(
+            request,
+            HomeRequest::Subscribe { .. } | HomeRequest::CollectCert
+        );
+        let lease_op = matches!(
+            request,
+            HomeRequest::Heartbeat { .. } | HomeRequest::Release { .. }
+        );
+        self.admit_as(caller, claimed, bootstrap_ok, lease_op, j)
+    }
+
+    /// A data connection: only a pinned host's own certificate, never the
+    /// bootstrap, and its pins read from fleet.toml now.
+    pub(super) fn admit_data(
+        &self,
+        caller: &Caller,
+        claimed: &str,
+        j: &mut Vec<String>,
+    ) -> Result<String> {
+        self.admit_as(caller, claimed, false, false, j)
+            .map(|a| a.host)
+    }
+
+    fn admit_as(
+        &self,
+        caller: &Caller,
+        claimed: &str,
+        bootstrap_ok: bool,
+        lease_op: bool,
+        j: &mut Vec<String>,
+    ) -> Result<Admitted> {
         let Some(fp) = caller.fingerprint() else {
             return Ok(Admitted {
                 host: claimed.into(),
@@ -102,20 +133,16 @@ impl Home {
             });
         };
         if self.bootstrap.as_deref() == Some(fp) {
-            return match request {
-                HomeRequest::Subscribe { .. } | HomeRequest::CollectCert => Ok(Admitted {
+            return match bootstrap_ok {
+                true => Ok(Admitted {
                     host: claimed.into(),
                     bootstrap: true,
                 }),
-                _ => Err(Error::Refused(format!(
+                false => Err(Error::Refused(format!(
                     "{BOOTSTRAP_ONLY}; {claimed} must use its own certificate"
                 ))),
             };
         }
-        let lease_op = matches!(
-            request,
-            HomeRequest::Heartbeat { .. } | HomeRequest::Release { .. }
-        );
         let Some(host) = self.pinned(fp, lease_op)? else {
             let detail = format!("unknown certificate {fp}; the request named {claimed}");
             self.journal(j, Line::new("refused", claimed, "", detail));

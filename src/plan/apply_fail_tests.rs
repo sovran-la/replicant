@@ -1,24 +1,12 @@
-//! What a failed or stopped unit leaves: its marker, no baseline for it, an
+//! What a failed or stopped unit leaves (on the suite's plane,
+//! `tests_inject`): its marker, no baseline for it, an
 //! `interrupted` journal line, exit 1, and every later unit untouched. And
 //! that the next dry run shows `resume` and writes nothing, and the next
 //! sync resumes and clears the marker.
 
 use super::*;
-use crate::plan::tests::lease_kill::{gone, wait_for_pid};
+use crate::plan::tests::inject::{How, Inject};
 use std::time::Duration;
-
-/// rsync, except that a real run (no `--dry-run`) whose arguments mention
-/// `pat` does `then` instead.
-pub(crate) fn wrapper(dir: &Path, pat: &str, then: &str) -> String {
-    let body = format!(
-        "for a in \"$@\"; do [ \"$a\" = --dry-run ] && exec rsync \"$@\"; done\n\
-         for a in \"$@\"; do case \"$a\" in *{pat}*) {then} ;; esac; done\n\
-         exec rsync \"$@\""
-    );
-    testutil::script(dir, "rsync-wrapper", &body)
-        .display()
-        .to_string()
-}
 
 fn baseline(bed: &Bed, rel: &str) -> Option<Baseline> {
     crate::baseline::store(&bed.leaf_dirs.state())
@@ -112,45 +100,29 @@ pub(crate) fn resumes(bed: &Bed, home: &Home) {
 }
 
 #[test]
-fn an_rsync_that_fails_stops_the_sync_at_its_unit() {
+fn a_transfer_that_fails_stops_the_sync_at_its_unit() {
     let bed = Bed::enrolled();
     tree(&bed.home_hd.join("work"));
     let home = bed.home();
-    let fake = wrapper(
-        bed.tmp.path(),
-        "/work/beta",
-        "echo '>f+++++++ README'; echo 'rsync: connection lost' >&2; exit 23",
-    );
-    let r = sync_with(&bed, &home, &SyncOpts::default(), &fake).unwrap();
-    stopped_at_beta(&bed, &home, &r, "rsync exit 23");
+    let inj = Inject::new(&bed, "work/beta", How::Fails);
+    let r = sync_inject(&bed, &home, &SyncOpts::default(), &inj).unwrap();
+    stopped_at_beta(&bed, &home, &r, inj.why());
     resumes(&bed, &home);
 }
 
 #[test]
-fn a_killed_rsync_stops_the_sync_at_its_unit() {
+fn a_killed_transfer_stops_the_sync_at_its_unit() {
     let bed = Bed::enrolled();
     tree(&bed.home_hd.join("work"));
     let home = bed.home();
-    let pid = bed.tmp.path().join("rsync.pid");
-    let fake = wrapper(
-        bed.tmp.path(),
-        "/work/beta",
-        &format!("echo $$ > {}; sleep 30; exit 0", pid.display()),
-    );
-    let r = std::thread::scope(|s| {
-        s.spawn(|| {
-            let p = wait_for_pid(&pid);
-            // SAFETY: signalling a test's own child script.
-            unsafe { libc::kill(p, libc::SIGKILL) };
-        });
-        sync_with(&bed, &home, &SyncOpts::default(), &fake).unwrap()
-    });
-    stopped_at_beta(&bed, &home, &r, "killed by a signal");
+    let inj = Inject::new(&bed, "work/beta", How::Killed);
+    let r = sync_inject(&bed, &home, &SyncOpts::default(), &inj).unwrap();
+    stopped_at_beta(&bed, &home, &r, inj.why());
     resumes(&bed, &home);
 }
 
 #[test]
-fn a_lost_lease_kills_the_unit_rsync_and_stops_the_sync() {
+fn a_lost_lease_stops_the_units_transfer_and_the_sync() {
     let bed = Bed::enrolled();
     testutil::hand_edit(
         &bed.home_dirs.fleet(),
@@ -159,33 +131,25 @@ fn a_lost_lease_kills_the_unit_rsync_and_stops_the_sync() {
     );
     tree(&bed.home_hd.join("work"));
     let home = bed.home();
-    let (pid, kid) = (bed.tmp.path().join("p"), bed.tmp.path().join("k"));
-    let fake = wrapper(
-        bed.tmp.path(),
-        "/work/beta",
-        &format!(
-            "echo $$ > {}; sleep 30 & echo $! > {}; wait; exit 0",
-            pid.display(),
-            kid.display()
-        ),
-    );
+    let inj = Inject::new(&bed, "work/beta", How::Stalls);
+    let link = inj.link(&bed, &home);
+    let cfg = bed.leaf_cfg();
+    let dirs = bed.leaf_dirs.state();
+    let ctx = ctx(&bed, &cfg, &dirs);
     let started = std::time::Instant::now();
     let r = std::thread::scope(|s| {
         s.spawn(|| {
-            wait_for_pid(&pid);
+            inj.wait_running(&link);
             let head = home.queue.view()[0].id;
             home.queue.release(head).unwrap();
         });
-        sync_with(&bed, &home, &SyncOpts::default(), &fake).unwrap()
+        sync(&link, ctx, &SyncOpts::default()).unwrap()
     });
     assert!(
         started.elapsed() < Duration::from_secs(20),
         "stopped, not waited out"
     );
-    for f in [&pid, &kid] {
-        let p = wait_for_pid(f);
-        assert!(gone(p), "{} {p} survived", f.display());
-    }
+    inj.assert_stopped(&link);
     stopped_at_beta(&bed, &home, &r, "lease lost");
     resumes(&bed, &home);
 }
@@ -195,8 +159,8 @@ fn an_interrupted_push_quarantines_home_and_its_own_leaf_resumes_it() {
     let bed = Bed::enrolled();
     tree(&bed.leaf_hd.join("work"));
     let home = bed.home();
-    let fake = wrapper(bed.tmp.path(), "/work/beta", "exit 12");
-    let r = sync_with(&bed, &home, &SyncOpts::default(), &fake).unwrap();
+    let inj = Inject::new(&bed, "work/beta", How::Fails);
+    let r = sync_inject(&bed, &home, &SyncOpts::default(), &inj).unwrap();
     assert!(matches!(r.outcome, Outcome::Interrupted { ref rel, .. } if rel == "work/beta"));
     let m: Vec<Marker> = crate::marker::store(&bed.home_dirs.state()).all().unwrap();
     assert_eq!(m.len(), 1);
@@ -227,4 +191,33 @@ fn an_interrupted_push_quarantines_home_and_its_own_leaf_resumes_it() {
             .is_empty()
     );
     assert!(baseline(&bed, "work/beta").is_some());
+}
+
+#[test]
+fn a_panic_in_a_transfer_worker_interrupts_the_unit_and_frees_the_queue() {
+    crate::native::tests_fixture::bounded(Duration::from_secs(60), || {
+        let bed = Bed::enrolled();
+        testutil::write(&bed.home_hd.join("work/plain.txt"), "plain\n");
+        testutil::write(&bed.home_hd.join("work/panic-me-sync"), "boom\n");
+        let home = bed.home();
+        let r = yes(&bed, &home);
+        match &r.outcome {
+            Outcome::Interrupted {
+                rel,
+                why,
+                journaled,
+            } => {
+                assert_eq!(rel, "work");
+                assert!(why.contains("panicked"), "{why}");
+                assert!(journaled);
+            }
+            o => panic!("not interrupted: {o:?}"),
+        }
+        let m: Vec<Marker> = crate::marker::store(&bed.leaf_dirs.state()).all().unwrap();
+        assert_eq!(m.len(), 1, "the marker stays");
+        // The lease came back: the next sync gets through, and resumes.
+        std::fs::remove_file(bed.home_hd.join("work/panic-me-sync")).unwrap();
+        assert_eq!(yes(&bed, &home).outcome, Outcome::Done);
+        assert!(bed.leaf_hd.join("work/plain.txt").exists());
+    });
 }

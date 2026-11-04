@@ -12,7 +12,7 @@ use crate::decide::UnservedReason;
 /// `leaf` subscribed to `work/a` and `work/b`, a repo in each on both sides,
 /// identical, plus a loose file in `work/b` on both.
 ///
-/// The leaf's copies are `cp -p`'d, as rsync `-a` would land them: the loose
+/// The leaf's copies are `cp -p`'d, as a transfer would land them: the loose
 /// manifest hashes mtime in whole seconds, so writing the file twice made the
 /// two sides differ whenever the writes straddled a second boundary.
 fn two_subs() -> Bed {

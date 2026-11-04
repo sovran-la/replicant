@@ -75,11 +75,11 @@ fn a_resumed_pull_will_not_delete_a_leaf_file_made_after_it_was_interrupted() {
         "nothing written"
     );
     // A confirmation for another unit does not waive it, and names nothing.
-    let r = sync_with(&bed, &home, &confirm("work/alpha"), crate::plan::RSYNC).unwrap();
+    let r = sync_with(&bed, &home, &confirm("work/alpha")).unwrap();
     assert!(matches!(r.outcome, Outcome::Blocked { .. }));
     assert!(later.exists());
 
-    let r = sync_with(&bed, &home, &confirm("work"), crate::plan::RSYNC).unwrap();
+    let r = sync_with(&bed, &home, &confirm("work")).unwrap();
     assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
     assert!(!later.exists(), "confirmed: the resume deleted it");
     assert_eq!(
@@ -116,7 +116,7 @@ fn a_resumed_pull_will_not_delete_a_file_moved_in_with_an_old_mtime() {
         "nothing written"
     );
 
-    let r = sync_with(&bed, &home, &confirm("work"), crate::plan::RSYNC).unwrap();
+    let r = sync_with(&bed, &home, &confirm("work")).unwrap();
     assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
     assert!(!moved.exists(), "confirmed: the resume deleted it");
 }
@@ -165,11 +165,11 @@ fn a_resumed_removal_will_not_delete_what_the_leaf_made_after_it_was_interrupted
     .unwrap();
     // The marker starts after the first sync's writes (see `interrupted`).
     testutil::next_second();
-    let r = sync_with(
+    let r = sync_inject(
         &bed,
         &home,
         &SyncOpts::default(),
-        &fail_at(&bed, "/work/r/"),
+        &fail_at(&bed, "/work/r/").deleting(),
     )
     .unwrap();
     assert!(
@@ -202,7 +202,7 @@ fn a_resumed_removal_will_not_delete_what_the_leaf_made_after_it_was_interrupted
     blocked_on(&yes(&bed, &home), "work/r");
     assert_eq!(testutil::fingerprint(&bed.leaf_hd), before);
 
-    let r = sync_with(&bed, &home, &confirm("~/work/r"), crate::plan::RSYNC).unwrap();
+    let r = sync_with(&bed, &home, &confirm("~/work/r")).unwrap();
     assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
     assert!(!later.exists() && !bed.leaf_hd.join("work/r/README").exists());
 }
@@ -214,7 +214,13 @@ fn a_resumed_confirmed_deletion_does_not_reuse_its_confirmation_for_newer_files(
     let home = bed.home();
     assert_eq!(yes(&bed, &home).outcome, Outcome::Done);
     std::fs::remove_dir_all(bed.home_hd.join("work/r")).unwrap();
-    let r = sync_with(&bed, &home, &confirm("work/r"), &fail_at(&bed, "/work/r/")).unwrap();
+    let r = sync_inject(
+        &bed,
+        &home,
+        &confirm("work/r"),
+        &fail_at(&bed, "/work/r/").deleting(),
+    )
+    .unwrap();
     assert!(
         matches!(&r.outcome, Outcome::Interrupted { rel, .. } if rel == "work/r"),
         "{r:#?}"

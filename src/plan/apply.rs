@@ -7,7 +7,7 @@
 //! confirmed, a broken home root), a refused subscription, or a plan that
 //! differs from the one the person confirmed stops the sync before the
 //! first marker. Then, per unit in plan order (`apply_unit.rs`): the target
-//! side's marker, the real rsync, and only after exit 0 the baselines on both
+//! side's marker, the transfer, and only once it finished the baselines on both
 //! sides, the marker cleared, the journal line. The first unit that does not
 //! finish stops the sync; its marker stays, so the next `sync` resumes it,
 //! and the units after it are untouched.
@@ -56,7 +56,7 @@ pub enum Outcome {
     Blocked { why: Vec<String> },
     /// The plan is not the one confirmed. Nothing was written.
     Changed,
-    /// `rel`'s rsync did not finish (or its lease was lost): the units
+    /// `rel`'s transfer did not finish (or its lease was lost): the units
     /// before it are done, its marker stays, the rest are untouched.
     Interrupted {
         rel: String,
@@ -64,7 +64,7 @@ pub enum Outcome {
         /// Whether home journaled it; if not, the leaf does.
         journaled: bool,
     },
-    /// A step around `rel`'s rsync failed (home unreachable, a record that
+    /// A step around `rel`'s transfer failed (home unreachable, a record that
     /// could not be written). Whatever marker it had stays.
     Failed { rel: String, why: String },
 }
@@ -89,7 +89,7 @@ pub struct AppliedUnit {
     /// `pull`, `push`, `remove`, `delete on home`, `delete here`, `adopt`.
     pub action: String,
     pub resumed: bool,
-    /// What rsync reported doing, in the dry run's notation.
+    /// What the transfer did, in the dry run's notation.
     pub changes: Vec<String>,
     pub files_changed: usize,
     pub deleted: usize,
@@ -129,7 +129,7 @@ pub fn sync(link: &dyn HomeLink, ctx: LeafCtx<'_>, opts: &SyncOpts) -> Result<Sy
 }
 
 /// [`sync`], announcing each unit to `progress` as it starts and ends. Its
-/// abort, once raised, stops the plan's rsyncs (planning fails, nothing
+/// abort, once raised, stops the plan's dry runs (planning fails, nothing
 /// written) or the unit's (interrupted, its marker kept), and no later
 /// unit begins.
 pub fn sync_with(

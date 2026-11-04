@@ -6,16 +6,16 @@
 //! it is computed exactly as an apply would compute it, so `--dry-run` says
 //! what the real sync would refuse.
 
+use crate::changes::Itemized;
 use crate::marker::Direction;
 use crate::paths;
-use crate::rsync::Itemized;
 use crate::units::{SideUnit, UnitKind};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Guard {
-    /// 1: the target has uncommitted work rsync would overwrite.
+    /// 1: the target has uncommitted work the transfer would overwrite.
     DirtyTarget,
     /// 3: the source has a git lock held: a write is in progress.
     SourceMidWrite,
@@ -71,10 +71,10 @@ impl Refusal {
     }
 }
 
-/// Guardrail 1: Uncommitted target work that rsync would replace or delete.
+/// Guardrail 1: Uncommitted target work that the transfer would replace or delete.
 ///
 /// `target` is the target side's view of a repo unit; `diff` the dry run in
-/// that direction. A dirty path rsync leaves alone is not at risk: either the
+/// that direction. A dirty path the transfer leaves alone is not at risk: either the
 /// source has the same bytes, or the path is excluded.
 pub fn dirty_target(target: &SideUnit, diff: &Itemized) -> Option<Refusal> {
     if target.kind != UnitKind::Repo || target.dirty.is_empty() {
@@ -153,8 +153,8 @@ pub fn bounds(
     })
 }
 
-/// Guardrail 5, on what rsync reports: every itemized path must stay inside the unit.
-/// rsync is handed exactly the unit's directory, so this cannot fire unless
+/// Guardrail 5, on what the dry run reports: every path must stay inside the unit.
+/// The diff is of the unit's own manifests, so this cannot fire unless
 /// something upstream is wrong — which is exactly when it should.
 pub fn diff_bounds(unit: &str, diff: &Itemized) -> Option<Refusal> {
     let escapes: Vec<String> = diff
@@ -168,7 +168,7 @@ pub fn diff_bounds(unit: &str, diff: &Itemized) -> Option<Refusal> {
         unit: unit.to_string(),
         detail: escapes
             .into_iter()
-            .map(|p| format!("rsync reported a path outside the unit: {p}"))
+            .map(|p| format!("the dry run reported a path outside the unit: {p}"))
             .collect(),
     })
 }

@@ -83,7 +83,7 @@ fn each_outcome_says_what_was_written_and_what_comes_next() {
         &report(
             Outcome::Interrupted {
                 rel: "work/b".into(),
-                why: "rsync exit 23".into(),
+                why: "the other side closed the data connection".into(),
                 journaled: true,
             },
             vec![unit("work/a", "push", true)],
@@ -92,7 +92,10 @@ fn each_outcome_says_what_was_written_and_what_comes_next() {
         plain(),
     );
     assert!(s.contains(", resumed"), "{s}");
-    assert!(s.contains("interrupted at work/b: rsync exit 23"), "{s}");
+    assert!(
+        s.contains("interrupted at work/b: the other side closed the data connection"),
+        "{s}"
+    );
     assert!(
         s.contains("marker stays") && s.contains("nothing after it was touched"),
         "{s}"
@@ -189,6 +192,7 @@ fn pushes_list_their_state_and_backups() {
         runs: vec![Run {
             started_at: 100,
             backed_up: vec!["a".into(), "b".into()],
+            dirs: vec![],
             absent: vec![],
             changes: vec![],
             reported: true,

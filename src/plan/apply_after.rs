@@ -1,4 +1,4 @@
-//! After a unit's rsync: the baseline it leaves, an adoption (no rsync at
+//! After a unit's transfer: the baseline it leaves, an adoption (no transfer at
 //! all), and what the report says it did.
 
 use super::super::AppliedUnit;
@@ -8,9 +8,9 @@ use crate::daemon::wire::{HomeReply, HomeRequest};
 use crate::decide::Decision;
 use crate::marker::Direction;
 use crate::plan::lease::Watch;
+use crate::plan::xfer::Applied;
 use crate::plan::{HomeLink, LeafCtx, Planned, PlannedUnit, diff};
 use crate::record::RECORD_VERSION;
-use crate::rsync::Ran;
 use crate::{Error, Result, paths, units};
 
 /// The baseline after a transfer: the source as planned, the target hashed
@@ -130,7 +130,7 @@ pub(super) fn adopt(
     })
 }
 
-pub(super) fn applied(u: &PlannedUnit, action: &str, resumed: bool, ran: &Ran) -> AppliedUnit {
+pub(super) fn applied(u: &PlannedUnit, action: &str, resumed: bool, ran: &Applied) -> AppliedUnit {
     let d = diff::summarize(&ran.itemized);
     AppliedUnit {
         rel: u.rel.clone(),

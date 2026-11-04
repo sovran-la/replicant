@@ -3,8 +3,10 @@
 //!
 //! Each path the push touched is put back as it was before the push's
 //! first run touched it: a file that run replaced or deleted comes back from
-//! that run's backup; a path it created is deleted. Both through rsync
-//! (`copy_listed`, `delete_listed`). What the push holds now of those paths
+//! that run's backup; a path it created is deleted; a directory it removed or
+//! changed the mode of comes back with the mode it had (`native::local`).
+//! What each run backed up is what its directory holds, read again here,
+//! with the directories it noted. What the push holds now of those paths
 //! is first copied to `<push>/rollback/`, so a rollback can be undone by
 //! hand. Baselines are untouched: the pushing leaf next sees home changed,
 //! and holds the unit as a conflict until it accepts the rollback and
@@ -20,82 +22,22 @@
 //! quarantine ends.
 
 use super::Home;
-use super::backup::{Push, check_id, list_root, pushes};
+use super::backup::{Push, check_id, kept, list_root, pushes};
 use crate::daemon::journal::Line;
 use crate::daemon::queue::EntryKind;
 use crate::daemon::wire::RolledBack;
 use crate::marker::{self, Marker};
-use crate::rsync::{self, Ran};
+use crate::native::local;
 use crate::{Error, Result};
 use std::collections::BTreeSet;
 use std::sync::mpsc;
 
-/// What undoing a push takes: per run, the files to restore from it; the
-/// paths to delete; the files nothing was backed up for.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(super) struct Undo {
-    pub restore: Vec<Vec<String>>,
-    pub delete: Vec<(String, bool)>,
-    pub unbacked: Vec<String>,
-    /// Runs rsync never reported on: what they created is not known.
-    pub unreported: Vec<usize>,
-}
+#[path = "home_rollback_undo.rs"]
+mod plan;
+pub(super) use plan::undo;
 
-/// Each path decided by the first run that touched it.
-pub(super) fn undo(push: &Push) -> Undo {
-    let mut u = Undo {
-        restore: vec![vec![]; push.runs.len()],
-        ..Default::default()
-    };
-    let mut seen = BTreeSet::new();
-    for (i, run) in push.runs.iter().enumerate() {
-        for c in &run.changes {
-            let Some((kind, path)) = c.split_once(' ') else {
-                continue;
-            };
-            let is_dir = path.ends_with('/');
-            let path = path.trim_end_matches('/').to_string();
-            // A manifest from before record_run checked its paths (review
-            // N2): never delete or restore outside the unit.
-            if !path.is_empty() && crate::paths::check_rel(&path).is_err() {
-                u.unbacked.push(path);
-                continue;
-            }
-            if !seen.insert(path.clone()) {
-                continue;
-            }
-            match (kind, is_dir) {
-                ("+", _) => u.delete.push((path, is_dir)),
-                // A directory's contents have lines of their own.
-                (_, true) => {}
-                _ if run.backed_up.contains(&path) => u.restore[i].push(path),
-                _ if run.absent.contains(&path) => u.delete.push((path, false)),
-                _ => u.unbacked.push(path),
-            }
-        }
-        // Backed up but not reported (a run that died): restore it all.
-        for f in &run.backed_up {
-            if seen.insert(f.clone()) {
-                u.restore[i].push(f.clone());
-            }
-        }
-        if !run.reported {
-            u.unreported.push(i + 1);
-        }
-    }
-    u.delete.sort();
-    u
-}
-
-fn ok(ran: Ran, what: &str) -> Result<Ran> {
-    match ran.ok() {
-        true => Ok(ran),
-        false => Err(Error::Rsync(format!(
-            "rollback: {what} failed ({}): {}",
-            ran.why(),
-            ran.stderr
-        ))),
-    }
+fn ok<T>(r: Result<T>, what: &str) -> Result<T> {
+    r.map_err(|e| Error::Transfer(format!("rollback: {what} failed: {e}")))
 }
 
 impl Home {
@@ -176,7 +118,7 @@ impl Home {
             ));
         }
         if !unreported.is_empty() {
-            detail.push_str("; a run rsync never reported on may have added files that stay");
+            detail.push_str("; a run never reported on may have added files that stay");
         }
         let mut j = Vec::new();
         self.journal(&mut j, Line::new("rollback", &f_name, &push.unit, detail));
@@ -208,51 +150,77 @@ impl Home {
             )));
         }
         let unit_path = self.fleet()?.home_dir.join(&push.unit);
-        let u = undo(push);
-        let runner = self.runner()?;
         let dir = self.push_dir(&push.id);
+        // Each run's directory is the record of what it kept.
+        let mut push = push.clone();
+        for (i, run) in push.runs.iter_mut().enumerate() {
+            let run_dir = dir.join(format!("run-{}", i + 1));
+            if run_dir.is_dir() {
+                run.backed_up = kept(&run_dir, &unit_path, push.is_file)?;
+                run.dirs = crate::native::backup::dirs_noted(&run_dir)?;
+            }
+        }
+        let push = &push;
+        let u = undo(push);
         let at = |files: &[String]| list_root(&unit_path, push.is_file, files);
+
+        // A directory to bring back where a run that never reported put a
+        // file or link: nothing else writes here while the queue is held.
+        let mut delete = u.delete.clone();
+        delete.extend(
+            u.dirs
+                .iter()
+                .filter(|(d, _)| local::holds_file(&unit_path, d))
+                .map(|(d, _)| (d.clone(), false)),
+        );
 
         // What the push holds now of every path about to change.
         let now: Vec<String> = u
             .restore
             .iter()
             .flatten()
-            .chain(u.delete.iter().filter(|(_, d)| !d).map(|(p, _)| p))
+            .chain(delete.iter().filter(|(_, d)| !d).map(|(p, _)| p))
             .filter(|p| {
                 let (root, names) = at(std::slice::from_ref(p));
-                std::fs::symlink_metadata(root.join(&names[0])).is_ok()
+                local::holds_file(&root, &names[0])
             })
             .cloned()
+            .collect::<BTreeSet<String>>()
+            .into_iter()
             .collect();
         if !now.is_empty() {
             let kept = dir.join("rollback");
             std::fs::create_dir_all(&kept)?;
             let (from, list) = at(&now);
             ok(
-                rsync::copy_listed(&runner, &from, &kept, &list)?,
+                local::copy_listed(&from, &kept, &list),
                 "keeping the pushed copies",
             )?;
         }
-        if !u.delete.is_empty() {
-            let (root, names) = at(&u.delete.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>());
+        if !delete.is_empty() {
+            let (root, names) = at(&delete.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>());
             let delete: Vec<(String, bool)> = match push.is_file {
                 true => names.into_iter().map(|n| (n, false)).collect(),
-                false => u.delete.clone(),
+                false => delete,
             };
             ok(
-                rsync::delete_listed(&runner, None, &root, &delete)?,
+                local::delete_listed(&root, &delete),
                 "deleting what it created",
             )?;
         }
+        ok(
+            local::open_dirs(&unit_path, &u.dirs),
+            "bringing its directories back",
+        )?;
         for (i, files) in u.restore.iter().enumerate().filter(|(_, f)| !f.is_empty()) {
             let run_dir = dir.join(format!("run-{}", i + 1));
             let (to, list) = at(files);
-            ok(
-                rsync::copy_listed(&runner, &run_dir, &to, &list)?,
-                "restoring",
-            )?;
+            ok(local::copy_listed(&run_dir, &to, &list), "restoring")?;
         }
+        ok(
+            local::set_dir_modes(&unit_path, &u.dirs),
+            "restoring directory modes",
+        )?;
         if let Some(m) = markers.get::<Marker>(&push.unit)?
             && m.push.as_deref() == Some(push.id.as_str())
         {

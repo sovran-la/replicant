@@ -22,7 +22,7 @@
 //! unchanged and still populated. A unit that vanished on one side and changed
 //! on the other is still a conflict. Everything becoming Empty is far more
 //! often a renamed directory or an unmounted volume than a real delete, and
-//! as an ordinary change it would send a whole-unit `rsync --delete`.
+//! as an ordinary change it would plan a whole-unit delete.
 //!
 //! And, for a baseline home no longer serves (review F5, [`decide_unserved`]):
 //!
@@ -74,7 +74,7 @@ pub enum Decision {
     Conflict {
         why: String,
     },
-    /// Rerun an interrupted rsync in its original direction.
+    /// Rerun an interrupted transfer in its original direction.
     Resume {
         direction: Direction,
     },
@@ -112,7 +112,7 @@ pub enum Decision {
 }
 
 impl Decision {
-    /// The direction rsync would run, if any.
+    /// The direction a transfer would run, if any.
     pub fn direction(&self) -> Option<Direction> {
         match self {
             Decision::Pull => Some(Direction::Pull),

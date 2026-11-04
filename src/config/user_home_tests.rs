@@ -21,6 +21,7 @@ fn a_leaf_config_without_home_dir_panics_in_a_test() {
             credentials: None,
             rsync_host: None,
             rsync_timeout_secs: None,
+            streams: None,
         },
         as_local: Default::default(),
     };

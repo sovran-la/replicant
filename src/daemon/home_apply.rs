@@ -23,10 +23,20 @@ pub fn leaf_baselines(state_dir: &std::path::Path, host: &str) -> Store {
 
 impl Home {
     /// The caller must hold the head of the queue: only then may it write.
-    fn at_head(&self, lease: u64, host: &str) -> Result<()> {
+    pub(super) fn at_head(&self, lease: u64, host: &str) -> Result<()> {
+        self.head_of(lease, host, true)
+    }
+
+    /// The caller holds the head of the queue, under an entry taken for a
+    /// sync when `writes`, or any entry (a dry run's too) when it only reads.
+    pub(super) fn head_of(&self, lease: u64, host: &str, writes: bool) -> Result<()> {
         let q = self.queue.view();
         match q.iter().find(|e| e.id == lease) {
-            Some(e) if e.host == host && e.started_at.is_some() && e.kind == EntryKind::Sync => {
+            Some(e)
+                if e.host == host
+                    && e.started_at.is_some()
+                    && (e.kind == EntryKind::Sync || !writes) =>
+            {
                 Ok(())
             }
             Some(e) if e.host == host && e.started_at.is_some() => Err(Error::Refused(format!(
@@ -46,7 +56,7 @@ impl Home {
     }
 
     /// The subscription of `host`'s that `rel` is in, as home serves it.
-    fn spec_of(&self, host: &str, rel: &str) -> Result<(SubSpec, PathBuf)> {
+    pub(super) fn spec_of(&self, host: &str, rel: &str) -> Result<(SubSpec, PathBuf)> {
         paths::check_rel(rel).map_err(|why| Error::Path(format!("{rel:?}: {why}")))?;
         let f = self.fleet()?;
         let specs = self.served(&f, host)?.0;
@@ -72,14 +82,11 @@ impl Home {
                 lease,
                 rel,
                 source_state,
-                backup,
                 is_file,
             } => {
                 self.at_head(lease, host)?;
                 let (_, _) = self.spec_of(host, &rel)?;
-                let unit_path = self.fleet()?.home_dir.join(&rel);
-                let push =
-                    self.begin_push(host, &rel, &unit_path, is_file, source_state, &backup)?;
+                let push = self.begin_push(host, &rel, is_file, source_state)?;
                 Ok(HomeReply::Begun { push })
             }
             HomeRequest::Rehash {
@@ -184,10 +191,8 @@ impl Home {
         &self,
         host: &str,
         rel: &str,
-        unit_path: &std::path::Path,
         is_file: bool,
         source_state: UnitState,
-        backup: &[String],
     ) -> Result<String> {
         let store = marker::store(&self.dirs.state());
         let all: Vec<Marker> = store.all()?;
@@ -201,8 +206,8 @@ impl Home {
             )));
         }
         let own = all.into_iter().find(|m| m.rel == rel);
-        // The backup first: if it fails, nothing is marked.
-        let push = self.back_up(host, rel, unit_path, is_file, backup, own.as_ref())?;
+        // The run first: if it cannot be opened, nothing is marked.
+        let push = self.open_run(host, rel, is_file, own.as_ref())?;
         store.put(&Marker {
             version: RECORD_VERSION,
             rel: rel.into(),

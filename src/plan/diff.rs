@@ -1,18 +1,21 @@
-//! The dry-run half of a plan: one rsync `--dry-run` per unit that would move,
-//! and guardrails 1, 3, 4 and 5 against what it reports.
+//! The dry-run half of a plan: one dry run per unit that would move (the
+//! diff of both sides' manifests), and guardrails 1, 3, 4 and 5 against what
+//! it reports.
 
-use super::{DiffSummary, LeafCtx, PlannedUnit, leaf_case_insensitive};
+use super::xfer::{Ops, PlannedXfer, Xfer};
+use super::{DiffSummary, PlannedUnit, leaf_case_insensitive};
+use crate::changes::{ChangeKind, Itemized};
 use crate::daemon::wire::HomeSnapshot;
 use crate::decide::Decision;
 use crate::guard::{self, Refusal};
 use crate::marker::{Direction, Marker};
-use crate::rsync::{Abort, ChangeKind, Client, Itemized, Runner, Transfer};
+use crate::native::manifest::Manifest;
+use crate::native::transfer::Diffed;
 use crate::units::{self, Discovered, SideUnit, SubSpec};
 use crate::{Result, paths, state};
 
-/// Concurrent rsync dry runs. Each is an ssh session to home; a handful is
-/// plenty and does not look like an attack to sshd.
-const RSYNC_WORKERS: usize = 4;
+/// Concurrent dry runs: each walks a unit here and asks home for its side.
+const DRY_RUN_WORKERS: usize = 4;
 
 pub(super) fn spec_for<'s>(specs: &'s [SubSpec], rel: &str) -> Option<&'s SubSpec> {
     specs
@@ -43,6 +46,24 @@ pub(super) fn summarize(it: &Itemized) -> DiffSummary {
     }
 }
 
+/// Whether a path `fresh` would overwrite or delete holds something else than
+/// `planned`, the target the plan's own dry run saw. A change list says what
+/// happens to a path, not what is there: edited since, `~ path` still reads
+/// `~ path`. `fresh`'s list is the plan's by now, and a path it does not list
+/// loses nothing.
+pub(super) fn target_moved(planned: &Manifest, fresh: &Diffed) -> bool {
+    let target = &fresh.target;
+    fresh
+        .itemized
+        .changes
+        .iter()
+        .any(|c| match (planned.get(&c.path), target.get(&c.path)) {
+            (Some(then), Some(now)) => !then.unmoved(now),
+            (None, None) => false,
+            _ => true,
+        })
+}
+
 /// Which way a unit's dry run goes, if it gets one. A "deleted on X" unit is
 /// diffed the way its deletion would travel, toward the side that still has
 /// it, so the human confirming it sees what would go; it still has no
@@ -57,19 +78,19 @@ pub(super) fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
 }
 
 /// Fill `diff` and `refusals` on every unit that would move, and return the
-/// transfer each one's dry run used (index-aligned; `None` for the rest):
-/// apply runs exactly those, without `--dry-run`.
-#[allow(clippy::too_many_arguments)]
+/// transfer each one's dry run used and the target it saw (index-aligned;
+/// `None` for the rest): apply runs exactly those, without `--dry-run`, and
+/// holds them to that target.
 pub(super) fn run(
-    ctx: LeafCtx<'_>,
+    ops: &Ops<'_>,
     snap: &HomeSnapshot,
     found: &Discovered,
     union: &[String],
     leaf_units: &[SideUnit],
     planned: &mut [PlannedUnit],
     leaf_markers: &[Marker],
-    abort: &Abort,
-) -> Result<Vec<Option<Transfer>>> {
+) -> Result<Vec<Option<PlannedXfer>>> {
+    let ctx = ops.ctx;
     let mut worktrees = found.worktrees();
     worktrees.extend(snap.worktrees.iter().cloned());
     let sub_rels: Vec<String> = snap.specs.iter().map(|s| s.rel.clone()).collect();
@@ -83,19 +104,10 @@ pub(super) fn run(
     if jobs.is_empty() {
         return Ok(transfers);
     }
-    let runner = Runner {
-        program: ctx.rsync.into(),
-        abort: abort.clone(),
-        ..Runner::new(
-            ctx.cfg.rsync_timeout(),
-            Client::detect()?,
-            ctx.scratch_dir.to_path_buf(),
-        )
-    };
     let results = state::parallel_map(
         &jobs,
-        RSYNC_WORKERS,
-        |&i| -> Result<(DiffSummary, Vec<Refusal>, Transfer)> {
+        DRY_RUN_WORKERS,
+        |&i| -> Result<(DiffSummary, Vec<Refusal>, PlannedXfer)> {
             let p = &planned[i];
             let remove = p.decision == Decision::Remove;
             let direction = diff_direction(ctx.me, &p.decision).expect("filtered above");
@@ -121,24 +133,47 @@ pub(super) fn run(
             };
             // Git-ignored paths on either side never move: the source's are
             // not sent, the target's are not deleted for being absent.
-            let ignored = l.into_iter().chain(h).chain(removed.as_ref());
-            let excludes = units::with_ignored(excludes, ignored.flat_map(|u| &u.ignored));
+            let ignored: Vec<String> = l
+                .into_iter()
+                .chain(h)
+                .chain(removed.as_ref())
+                .flat_map(|u| u.ignored.iter().cloned())
+                .collect();
+            let excludes = units::with_ignored(excludes, &ignored);
             let (source, target) = match direction {
                 Direction::Pull => (h, l),
                 Direction::Push => (l, h),
             };
-            let transfer = Transfer {
-                direction,
-                leaf_path: p.leaf_path.clone(),
-                home_path: p.home_path.clone(),
-                home_host: ctx.cfg.rsync_host(),
-                is_file: l.is_some_and(|u| u.is_file)
-                    || h.is_some_and(|u| u.is_file)
-                    || (remove && p.leaf_path.is_file()),
-                excludes,
-                source_absent: remove || source.is_none_or(|u| u.state.is_empty()),
+            let is_file = l.is_some_and(|u| u.is_file)
+                || h.is_some_and(|u| u.is_file)
+                || (remove && p.leaf_path.is_file());
+            let source_absent = remove || source.is_none_or(|u| u.state.is_empty());
+            let within = |v: &[String]| -> Vec<String> {
+                v.iter()
+                    .filter(|r| paths::is_within(r, &p.rel))
+                    .cloned()
+                    .collect()
             };
-            let it = transfer.dry_run(&runner)?;
+            let transfer = Xfer {
+                direction,
+                rel: p.rel.clone(),
+                kind: p.kind,
+                leaf_path: p.leaf_path.clone(),
+                is_file,
+                source_absent,
+                excludes,
+                union: match p.kind {
+                    units::UnitKind::Loose => within(union),
+                    units::UnitKind::Repo => vec![],
+                },
+                worktrees: within(&worktrees),
+                ignored,
+            };
+            let Diffed {
+                itemized: it,
+                target: seen,
+                ..
+            } = ops.dry_run(&transfer)?;
 
             let mut refusals = Vec::new();
             if !remove {
@@ -167,7 +202,11 @@ pub(super) fn run(
                 let late = changed_since(p, transfer.is_file, &it, m.started_at);
                 refusals.extend(guard::changed_since_interrupted(&p.rel, m.started_at, late));
             }
-            Ok((summarize(&it), refusals, transfer))
+            let planned = PlannedXfer {
+                xfer: transfer,
+                target: seen,
+            };
+            Ok((summarize(&it), refusals, planned))
         },
     );
 
@@ -185,7 +224,7 @@ pub(super) fn run(
 /// the later of mtime and ctime (review R1): `mv`, `cp -p`, `tar x` and
 /// `unzip` carry an old mtime into the unit, but the rename or `utimes`
 /// that put it there moves ctime, which no user tool can set back.
-/// Directories are left out: their times move whenever an interrupted rsync
+/// Directories are left out: their times move whenever an interrupted transfer
 /// wrote into them, and their contents are itemized path by path. A repo's
 /// `.git` is not: a commit made since moves its refs.
 fn changed_since(p: &PlannedUnit, is_file: bool, it: &Itemized, since: u64) -> Vec<String> {
@@ -233,3 +272,7 @@ fn remove_target(p: &PlannedUnit) -> Result<Option<SideUnit>> {
         ignored,
     }))
 }
+
+#[cfg(test)]
+#[path = "diff_moved_tests.rs"]
+mod moved_tests;

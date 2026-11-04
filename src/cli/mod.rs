@@ -77,7 +77,6 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
             paths,
             as_local,
             address,
-            rsync_host,
             credentials,
         } => {
             let paths = paths.iter().map(|p| absolutize(p, &cwd)).collect();
@@ -85,7 +84,6 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
             let req = LocalRequest::Subscribe {
                 home,
                 address,
-                rsync_host,
                 credentials,
                 paths,
                 as_local,

@@ -7,12 +7,9 @@
 
 use super::fleet::FleetState;
 use crate::baseline::Baseline;
-use crate::decide::{Decision, RolledBackPush, UnservedReason};
-use crate::guard::Refusal;
 use crate::marker::{Direction, Marker};
 use crate::state::UnitState;
 use crate::units::UnitKind;
-use crate::units::{SideUnit, SubSpec};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -21,7 +18,9 @@ use std::path::PathBuf;
 /// 3: apply ([`HomeRequest::BeginPush`] and the rest of `sync`'s writes).
 /// 4: [`HomeSnapshot::rolled_back`] (review A2), and `--accept-rollback`
 /// (and `rollback_accepted` on [`HomeRequest::Agree`], re-review R2).
-pub const WIRE_VERSION: u32 = 4;
+/// 5: the native data plane: [`HomeRequest::Manifest`], data connections
+/// on the same listener, [`SubscriptionsView::streams`].
+pub const WIRE_VERSION: u32 = 5;
 
 // ---------------------------------------------------------------- leaf → home
 
@@ -85,23 +84,19 @@ pub enum HomeRequest {
         sync_ok: Option<bool>,
     },
     FleetState,
-    /// Apply, before a push's real rsync: home is the target, so home writes
-    /// the in-progress marker (or keeps this host's own, resuming).
-    /// Requires the caller to hold the head of the queue.
+    /// Apply, before a push's transfer: home is the target, so home writes
+    /// the in-progress marker (or keeps this host's own, resuming) and opens
+    /// the push's run, whose backup directory the receiver renames what it
+    /// replaces into. Requires the caller to hold the head of the queue.
     BeginPush {
         lease: u64,
         rel: String,
         source_state: UnitState,
-        /// The files (unit-relative) the push will replace or delete, from
-        /// its dry run just before: home copies them to the push's backup
-        /// before it answers.
-        #[serde(default)]
-        backup: Vec<String>,
         /// The unit is a single file.
         #[serde(default)]
         is_file: bool,
     },
-    /// Apply, after a push's rsync exited 0: home's state of the unit now,
+    /// Apply, after a push's transfer finished: home's state of the unit now,
     /// hashed as the plan hashed it. `union` is the plan's repos within the
     /// unit.
     Rehash {
@@ -129,26 +124,43 @@ pub enum HomeRequest {
         rel: String,
         direction: Option<Direction>,
         detail: String,
-        /// What rsync reported writing (a push's manifest keeps it).
+        /// What the transfer reported writing (a push's manifest keeps it).
         #[serde(default)]
         changes: Vec<String>,
     },
-    /// Apply: a unit's rsync failed or was stopped. Journaled; every marker
+    /// Apply: a unit's transfer failed or was stopped. Journaled; every marker
     /// stays. No lease needed: it is evidence, also after the lease is lost.
     Interrupted {
         rel: String,
         direction: Direction,
         why: String,
-        /// What rsync reported writing before it stopped.
+        /// What the transfer reported writing before it stopped.
         #[serde(default)]
         changes: Vec<String>,
     },
-    /// Apply: a journal line about this host that is not an rsync:
+    /// Apply: a journal line about this host that is not a transfer:
     /// [`NOTE_EVENTS`] only.
     Note {
         event: String,
         rel: String,
         detail: String,
+    },
+    /// Home's manifest of one unit, walked with the unit's excludes: the
+    /// root's (as home serves them) plus what only the leaf can say, every
+    /// one of which can only leave more out. Requires the head of the queue
+    /// (a dry run's entry will do: it reads).
+    Manifest {
+        lease: u64,
+        rel: String,
+        kind: UnitKind,
+        is_file: bool,
+        /// The plan's repos inside the unit (a loose unit leaves them out).
+        union: Vec<String>,
+        /// Both sides' worktree checkouts inside the unit.
+        worktrees: Vec<String>,
+        /// Both sides' git-ignored paths, unit-relative (a directory ends
+        /// in `/`).
+        ignored: Vec<String>,
     },
     /// Over the bootstrap bundle: the certificate `approve` issued this
     /// host, if one is waiting. One-shot: home deletes its copy as it
@@ -187,6 +199,10 @@ pub enum HomeReply {
     /// names its backup.
     Begun {
         push: String,
+    },
+    /// [`HomeRequest::Manifest`]'s answer.
+    Manifest {
+        manifest: crate::native::Manifest,
     },
 }
 
@@ -238,79 +254,9 @@ pub enum Enrollment {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SubscriptionsView {
-    pub home: String,
-    pub enrollment: Enrollment,
-    /// In-bounds subscriptions, with their root excludes and carve-outs.
-    pub specs: Vec<SubSpec>,
-    pub cap: Option<Vec<String>>,
-    /// Subscriptions home will not serve because no root covers them:
-    /// home's config is broken, so the leaf blocks.
-    pub refused: Vec<Refusal>,
-    /// Subscriptions home will not serve by policy: outside a cap narrowed
-    /// since, or wholly inside a root exclude. Shown, never blocking (review
-    /// F5). Absent from an older home: none.
-    #[serde(default)]
-    pub orphaned: Vec<Refusal>,
-    /// For a pending host, what it asked for.
-    pub pending_paths: Vec<String>,
-    pub lease_secs: u64,
-    /// A marker older than this is reported as interrupted (fleet.toml
-    /// `[daemon] marker_alert_mins`). Absent from an older home: an hour.
-    #[serde(default = "default_marker_alert")]
-    pub marker_alert_secs: u64,
-}
-
-fn default_marker_alert() -> u64 {
-    crate::config::fleet::DEFAULT_MARKER_ALERT_MINS * 60
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HomeSnapshot {
-    /// Home's home dir: a unit `rel` lives at `home_dir/rel` on home.
-    pub home_dir: PathBuf,
-    pub specs: Vec<SubSpec>,
-    pub units: Vec<SideUnit>,
-    pub repos: Vec<String>,
-    pub worktrees: Vec<String>,
-    /// Home's markers covering any of this host's subscriptions.
-    pub markers: Vec<Marker>,
-    /// Subscriptions whose base does not exist on home (its root does). The
-    /// leaf, which holds the baselines, decides whether that is a first
-    /// sync or an error (review F4). Absent from an older home: none.
-    #[serde(default)]
-    pub absent: Vec<String>,
-    /// The leaf's baselines home no longer serves, and why. A baseline out
-    /// of bounds and missing here is [`UnservedReason::NotServed`]. Absent
-    /// from an older home: none.
-    #[serde(default)]
-    pub unserved: Vec<Unserved>,
-    /// This host's pushes home rolled back that it has not settled (review
-    /// A2): the newest per unit. Such a unit holds rather than pulls.
-    #[serde(default)]
-    pub rolled_back: Vec<RolledBackPush>,
-}
-
-/// A path a leaf has a baseline for and home no longer serves.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Unserved {
-    /// The baseline's path, with the excludes and carve-outs home would
-    /// apply to it if it still served it (none when no root covers it), so
-    /// the leaf hashes its copy the way the baseline was hashed.
-    pub spec: SubSpec,
-    pub reason: UnservedReason,
-    /// What home can say about it: for a missing root, which subscription
-    /// lost it and which roots fleet.toml has.
-    #[serde(default)]
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReportedUnit {
-    pub rel: String,
-    pub decision: Decision,
-}
+#[path = "wire_views.rs"]
+mod views;
+pub use views::*;
 
 // ---------------------------------------------------------------- CLI → daemon
 

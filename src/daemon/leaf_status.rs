@@ -1,5 +1,5 @@
 //! A leaf's `status`: its subscriptions as home serves them, the plan (no
-//! queue entry, no rsync), the queue, and the open markers on both sides.
+//! queue entry, no dry runs), the queue, and the open markers on both sides.
 
 use super::{Leaf, Link};
 use crate::Result;
@@ -35,7 +35,7 @@ impl Leaf {
             }
         };
         let view = plan::subscriptions(&link)?;
-        let (hd, state, scratch) = (cfg.home_dir()?, self.dirs.state(), self.dirs.scratch());
+        let (hd, state) = (cfg.home_dir()?, self.dirs.state());
         let planned = match view.enrollment {
             Enrollment::Enrolled => Some(plan::plan(
                 &link,
@@ -44,8 +44,7 @@ impl Leaf {
                     home_dir: &hd,
                     cfg: &cfg,
                     state_dir: &state,
-                    scratch_dir: &scratch,
-                    rsync: plan::RSYNC,
+                    plane: plan::Plane::default(),
                     accept_rollback: &[],
                 },
                 false,

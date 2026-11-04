@@ -14,11 +14,11 @@ fn confirmed(bed: &Bed, home: &Home, seen: &Plan) -> SyncReport {
         expect: Some(seen.digest()),
         ..Default::default()
     };
-    sync_with(bed, home, &opts, crate::plan::RSYNC).unwrap()
+    sync_with(bed, home, &opts).unwrap()
 }
 
-/// Set `path`'s mtime an hour back, to the whole second (what every rsync
-/// carries): a touch that changes no content.
+/// Set `path`'s mtime an hour back, to the whole second: a touch that
+/// changes no content.
 fn touch(path: &Path) {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let f = std::fs::File::options().write(true).open(path).unwrap();

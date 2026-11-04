@@ -1,7 +1,7 @@
 //! Apply's loop: every unit of the plan in order, each announced as it
 //! starts and as it ends ([`Progress`]), stopping at the first that does not
 //! finish. Once the abort is raised (the lease lost, the CLI gone), the
-//! running rsync is stopped and no later unit begins; a unit it is raised
+//! running transfer is stopped and no later unit begins; a unit it is raised
 //! for before its marker (as it is announced) writes nothing at all.
 
 use super::super::{AppliedUnit, Outcome, Progress, ProgressEvent, Stash, UnitOutcome};
@@ -10,8 +10,8 @@ use super::{Done, adopt, failed, transfer};
 use crate::baseline::{self, Baseline};
 use crate::marker::Direction;
 use crate::plan::lease::Watch;
+use crate::plan::xfer::Ops;
 use crate::plan::{HomeLink, LeafCtx, Planned, PlannedUnit, ms};
-use crate::rsync::{Client, Runner};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -25,23 +25,6 @@ pub(in crate::plan) fn apply_all(
     stash: &Mutex<Stash>,
     progress: &Progress<'_>,
 ) -> Outcome {
-    let runner = match Client::detect() {
-        Ok(client) => Runner {
-            program: ctx.rsync.into(),
-            abort: watch.abort().clone(),
-            ..Runner::new(
-                ctx.cfg.rsync_timeout(),
-                client,
-                ctx.scratch_dir.to_path_buf(),
-            )
-        },
-        Err(e) => {
-            return Outcome::Failed {
-                rel: "-".into(),
-                why: e.to_string(),
-            };
-        }
-    };
     // What each unit will do, first, so the count is known before the first
     // starts. A baseline that cannot be read fails its unit when it is
     // reached, as before: the units ahead of it still go.
@@ -66,7 +49,7 @@ pub(in crate::plan) fn apply_all(
             Err(e) => return failed(u, e),
         };
         let (action, direction) = match &s {
-            Step::Transfer { t, action, .. } => (*action, Some(t.direction)),
+            Step::Transfer { t, action, .. } => (*action, Some(t.xfer.direction)),
             Step::Adopt => ("adopt", None),
             Step::Forget => ("forget", None),
             Step::Skip => unreachable!("skipped units are not in the work"),
@@ -91,9 +74,26 @@ pub(in crate::plan) fn apply_all(
                 action,
                 resumed,
                 deleting,
-            } => transfer(
-                link, ctx, watch, p, &runner, u, t, deleting, action, resumed, started,
-            ),
+            } => {
+                // The unit's live counters, as its start line's fields.
+                let counts = |c: crate::native::transfer::Counts| {
+                    progress.emit(ProgressEvent::UnitProgress {
+                        rel: u.rel.clone(),
+                        action: action.into(),
+                        index: n + 1,
+                        total,
+                        files_done: c.files_done,
+                        files_total: c.files_total,
+                        bytes_done: c.bytes_done,
+                        bytes_total: c.bytes_total,
+                    })
+                };
+                let ops = Ops {
+                    progress: &counts,
+                    ..Ops::new(link, ctx, watch.id(), watch.abort(), p.streams)
+                };
+                transfer(&ops, watch, p, u, t, deleting, action, resumed, started)
+            }
             Step::Skip => unreachable!("skipped units are not in the work"),
         };
         let done = UnitEnd {

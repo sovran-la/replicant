@@ -8,7 +8,7 @@ fn an_interruption_home_did_not_hear_of_is_kept_here() {
     let j = Journal::at(tmp.path().join("journal.log"));
     let heard = Outcome::Interrupted {
         rel: "work/a".into(),
-        why: "rsync exit 23".into(),
+        why: "the other side closed the data connection".into(),
         journaled: true,
     };
     journal_unheard(&j, "leaf", &heard);
@@ -19,7 +19,7 @@ fn an_interruption_home_did_not_hear_of_is_kept_here() {
     );
     let unheard = Outcome::Interrupted {
         rel: "work/a".into(),
-        why: "rsync exit 23".into(),
+        why: "the other side closed the data connection".into(),
         journaled: false,
     };
     journal_unheard(&j, "leaf", &unheard);
@@ -33,5 +33,9 @@ fn an_interruption_home_did_not_hear_of_is_kept_here() {
         ),
         ("sync", "leaf", "work/a")
     );
-    assert!(lines[0].detail.contains("interrupted (rsync exit 23)"));
+    assert!(
+        lines[0]
+            .detail
+            .contains("interrupted (the other side closed the data connection)")
+    );
 }

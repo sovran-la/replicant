@@ -63,7 +63,10 @@ fn wide_tree(root: &Path) {
         testutil::write(&root.join(format!("wide/d{i}/target/junk")), "x");
         testutil::write(&root.join(format!("wide/d{i}/.hidden")), "x");
         if i % 7 == 0 {
-            fs::create_dir_all(root.join(format!("wide/d{i}/repo{i}/.git"))).unwrap();
+            testutil::write(
+                &root.join(format!("wide/d{i}/repo{i}/.git/HEAD")),
+                "ref: x\n",
+            );
             testutil::write(&root.join(format!("wide/d{i}/repo{i}/src.rs")), "x");
         }
     }
@@ -103,7 +106,7 @@ fn parallel_walk_equals_the_serial_walk() {
     }
 }
 
-/// Replicant has to see everything rsync would move, so none of `ignore`'s
+/// Replicant has to see everything a transfer would move, so none of `ignore`'s
 /// filters may be on.
 #[test]
 fn hidden_and_ignored_files_are_seen() {
@@ -141,7 +144,7 @@ fn deep_worktrees_and_repos_are_not_descended() {
         "gitdir: /elsewhere/.git/worktrees/wt\n",
     );
     testutil::write(&b.join("a/b/c/wt/inside"), "x");
-    fs::create_dir_all(b.join("a/r/.git")).unwrap();
+    testutil::write(&b.join("a/r/.git/HEAD"), "ref: x\n");
     testutil::write(&b.join("a/r/inner/.git/HEAD"), "x");
     let d = discover(b, &Excludes::default()).unwrap();
     assert_eq!(d.worktrees, ["a/b/c/wt"]);
@@ -157,7 +160,7 @@ fn deep_worktrees_and_repos_are_not_descended() {
 #[test]
 fn a_repo_under_an_excluded_directory_is_not_found() {
     let tmp = tempfile::tempdir().unwrap();
-    fs::create_dir_all(tmp.path().join("vendor/dep/.git")).unwrap();
+    testutil::write(&tmp.path().join("vendor/dep/.git/HEAD"), "ref: x\n");
     let d = discover(tmp.path(), &Excludes::new(&["vendor/"]).unwrap()).unwrap();
     assert!(d.repos.is_empty() && d.loose.is_empty(), "{d:?}");
 }
@@ -178,4 +181,27 @@ fn an_unreadable_directory_is_an_error() {
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
     let err = r.expect_err("an unreadable directory must not read as empty");
     assert!(matches!(err, crate::Error::Io(_)), "{err}");
+}
+
+#[test]
+fn a_git_directory_without_head_is_not_yet_a_repo() {
+    // What an interrupted pull of a new repo leaves before its HEAD: plain
+    // content, not a repo whose status cannot be read (which would fail
+    // every plan, the resume that completes it included).
+    let tmp = tempfile::tempdir().unwrap();
+    testutil::write(&tmp.path().join("half/.git/objects/ab/cdef"), "x");
+    testutil::write(
+        &tmp.path().join("whole/.git/HEAD"),
+        "ref: refs/heads/main\n",
+    );
+    assert_eq!(
+        crate::repos::git_marker(&tmp.path().join("half")),
+        crate::repos::GitMarker::None
+    );
+    let d = discover(tmp.path(), &Excludes::for_root(&[]).unwrap()).unwrap();
+    assert_eq!(d.repos, ["whole"]);
+    assert!(
+        d.loose.iter().any(|e| e.rel == "half/.git/objects/ab/cdef"),
+        "{d:?}"
+    );
 }

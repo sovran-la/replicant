@@ -17,10 +17,39 @@ fn at_the_prompt(verbose: bool) -> Run {
     r
 }
 
-/// The lines after the question, each unit's start and end on one line.
+/// The lines after the question, each unit's start and end on one line,
+/// as the terminal shows them in the end: live counters redraw the line
+/// (`\r\x1b[2K`), so only what follows the last redraw is left.
 fn unit_lines(out: &str) -> Vec<&str> {
     let after = out.split_once("Apply this plan? [y/N] ").expect(out).1;
-    after.lines().filter(|l| l.starts_with("  [")).collect()
+    after
+        .lines()
+        .map(|l| l.rsplit("\x1b[2K").next().unwrap_or(l))
+        .filter(|l| l.starts_with("  ["))
+        .collect()
+}
+
+/// A stream's objects without the live counters, after checking that each
+/// counter object lies between its own unit's start and end, within its
+/// totals.
+fn without_counters(objs: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut running: Option<String> = None;
+    let mut out = Vec::new();
+    for o in objs {
+        match o["event"].as_str() {
+            Some("unit_started") => running = o["rel"].as_str().map(String::from),
+            Some("unit_done") => running = None,
+            Some("unit_progress") => {
+                assert_eq!(o["rel"].as_str(), running.as_deref(), "{o}");
+                assert!(o["files_done"].as_u64() <= o["files_total"].as_u64(), "{o}");
+                assert!(o["bytes_done"].as_u64() <= o["bytes_total"].as_u64(), "{o}");
+                continue;
+            }
+            _ => {}
+        }
+        out.push(o);
+    }
+    out
 }
 
 #[test]
@@ -86,6 +115,7 @@ fn json_is_one_object_per_line_events_then_the_report() {
         .lines()
         .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
         .collect();
+    let objs = without_counters(objs);
     assert_eq!(objs.len(), 5, "{}", r.out);
     let kinds: Vec<&str> = objs[..4]
         .iter()
@@ -150,5 +180,10 @@ fn without_a_terminal_the_stream_goes_to_stderr_and_stdout_keeps_the_report() {
     assert_eq!(r.out.lines().count(), 1, "{}", r.out);
     let report: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
     assert_eq!(report["outcome"]["outcome"], "done");
-    assert_eq!(r.err.lines().count(), 4, "{}", r.err);
+    let events: Vec<serde_json::Value> = r
+        .err
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}")))
+        .collect();
+    assert_eq!(without_counters(events).len(), 4, "{}", r.err);
 }

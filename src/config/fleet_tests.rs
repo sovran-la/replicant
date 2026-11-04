@@ -89,7 +89,7 @@ fn anchored_exclude_is_refused() {
     assert!(err.to_string().contains("anchored"), "{err}");
 }
 
-/// A pattern rsync cannot read the same way is refused when fleet.toml loads,
+/// A pattern outside the accepted subset is refused when fleet.toml loads,
 /// not discovered later as a sync that moves what replicant thought excluded.
 #[test]
 fn untranslatable_exclude_is_refused_at_load() {
@@ -139,6 +139,16 @@ fn relative_home_dir_is_refused() {
 fn lease_is_at_least_one_second() {
     let f = parse("[daemon]\nname=\"h\"\nhome_dir=\"/h\"\nlease_secs=0\n").unwrap();
     assert_eq!(f.lease, Duration::from_secs(1));
+}
+
+#[test]
+fn streams_default_to_four_and_are_at_least_one() {
+    let f = parse("[daemon]\nname=\"h\"\nhome_dir=\"/h\"\n").unwrap();
+    assert_eq!(f.streams, 4);
+    let f = parse("[daemon]\nname=\"h\"\nhome_dir=\"/h\"\nstreams=16\n").unwrap();
+    assert_eq!(f.streams, 16);
+    let f = parse("[daemon]\nname=\"h\"\nhome_dir=\"/h\"\nstreams=0\n").unwrap();
+    assert_eq!(f.streams, 1);
 }
 
 const PIN_A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

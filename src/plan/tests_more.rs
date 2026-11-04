@@ -144,14 +144,12 @@ fn dry_run_takes_and_releases_a_queue_entry_and_journals() {
     };
     let cfg = bed.leaf_cfg();
     let state = bed.leaf_dirs.state();
-    let scratch = bed.leaf_dirs.scratch();
     let ctx = LeafCtx {
         me: "leaf",
         home_dir: &bed.leaf_hd,
         cfg: &cfg,
         state_dir: &state,
-        scratch_dir: &scratch,
-        rsync: crate::plan::RSYNC,
+        plane: Default::default(),
         accept_rollback: &[],
     };
     let err = plan(&link, ctx, true, true).unwrap_err().to_string();
@@ -233,14 +231,13 @@ fn home_dropping_the_entry_mid_plan_fails_the_dry_run_loudly() {
         refused: Default::default(),
     };
     let cfg = bed.leaf_cfg();
-    let (state, scratch) = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let state = bed.leaf_dirs.state();
     let ctx = LeafCtx {
         me: "leaf",
         home_dir: &bed.leaf_hd,
         cfg: &cfg,
         state_dir: &state,
-        scratch_dir: &scratch,
-        rsync: crate::plan::RSYNC,
+        plane: Default::default(),
         accept_rollback: &[],
     };
     let err = plan(&link, ctx, true, false).unwrap_err().to_string();
@@ -276,14 +273,13 @@ fn a_failed_final_report_does_not_fail_finished_work() {
         home_dir: bed.leaf_hd.clone(),
     });
     let cfg = bed.leaf_cfg();
-    let (state, scratch) = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let state = bed.leaf_dirs.state();
     let ctx = LeafCtx {
         me: "leaf",
         home_dir: &bed.leaf_hd,
         cfg: &cfg,
         state_dir: &state,
-        scratch_dir: &scratch,
-        rsync: crate::plan::RSYNC,
+        plane: Default::default(),
         accept_rollback: &[],
     };
     let p = plan(&link, ctx, true, false).expect("the plan stands");

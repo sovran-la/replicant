@@ -29,6 +29,8 @@ pub struct Home {
     bootstrap: Option<String>,
     /// The certificate pins of the last fleet.toml that parsed.
     pins: trust::Pins,
+    /// Open data connections per (lease, unit), against `[daemon] streams`.
+    data_slots: data::Slots,
 }
 
 impl Home {
@@ -39,6 +41,7 @@ impl Home {
         Ok(Self {
             bootstrap: super::certs::bootstrap_fingerprint(&dirs.credentials())?,
             pins: Default::default(),
+            data_slots: Default::default(),
             journal: Journal::at(dirs.journal()),
             contacts: fleet::contacts(&dirs.state()),
             fleet: cache::FleetCache::open(dirs.fleet())?,
@@ -236,6 +239,7 @@ impl Home {
                 Ok(HomeReply::Done)
             }
             HomeRequest::FleetState => Ok(HomeReply::Fleet(self.fleet_state()?)),
+            r @ HomeRequest::Manifest { .. } => self.manifest_request(&host, r),
             r @ (HomeRequest::BeginPush { .. }
             | HomeRequest::Rehash { .. }
             | HomeRequest::Agree { .. }
@@ -273,6 +277,9 @@ mod serve;
 #[path = "home_apply.rs"]
 mod apply;
 pub use apply::leaf_baselines;
+
+#[path = "home_data.rs"]
+mod data;
 
 #[path = "home_backup.rs"]
 mod backup;

@@ -1,10 +1,11 @@
 //! The leaf's `status`, `sync --dry-run` and `sync`: discover, exchange state
 //! with home, decide every unit, and (for a dry run or a sync) take a queue
-//! entry, run the rsync dry runs and the guardrails.
+//! entry, run the dry runs (the diff of both sides' manifests) and the
+//! guardrails.
 //!
-//! Planning is read-only end to end: git runs without optional locks, rsync
-//! runs with `--dry-run`, and nothing here writes a baseline, a marker, or a
-//! synced path. A real `sync` then applies under the same queue entry
+//! Planning is read-only end to end: git runs without optional locks, a dry
+//! run only walks and asks home for its manifest, and nothing here writes a
+//! baseline, a marker, or a synced path. A real `sync` then applies under the same queue entry
 //! ([`apply`]); that is the only code that writes.
 
 pub mod apply;
@@ -17,10 +18,12 @@ pub mod progress;
 mod report;
 mod types;
 mod unserved;
+pub mod xfer;
 
 pub use open::{OpenMarker, open_markers};
 pub(crate) use report::report;
 pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings, Tone};
+pub use xfer::Plane;
 
 use crate::baseline::{self, Baseline};
 use crate::config::LeafConfig;
@@ -35,6 +38,22 @@ use std::time::Instant;
 /// may call a [`crate::daemon::home::Home`] in-process.
 pub trait HomeLink: Sync {
     fn call(&self, request: HomeRequest) -> Result<HomeReply>;
+
+    /// A data connection to home for unit `rel`, not yet said hello on.
+    /// In-process links also hand back home's side of it, to be run on a
+    /// thread of the caller's while the connection is used.
+    fn open_data(&self, rel: &str) -> Result<DataLink<'_>> {
+        Err(Error::Remote(format!(
+            "this link to home carries no data connections (unit {rel})"
+        )))
+    }
+}
+
+/// [`HomeLink::open_data`]'s connection, and home's side of it when home is
+/// in this process.
+pub struct DataLink<'a> {
+    pub conn: crate::native::conn::Conn,
+    pub serve: Option<Box<dyn FnOnce() + Send + 'a>>,
 }
 
 /// Who and where this leaf is.
@@ -44,17 +63,12 @@ pub struct LeafCtx<'a> {
     pub home_dir: &'a Path,
     pub cfg: &'a LeafConfig,
     pub state_dir: &'a Path,
-    /// [`crate::config::Dirs::scratch`].
-    pub scratch_dir: &'a Path,
-    /// The rsync program: [`RSYNC`] in production; tests stand a script in.
-    pub rsync: &'a str,
+    /// Which data plane moves the bytes.
+    pub plane: Plane,
     /// `--accept-rollback`: units (by unit path or this leaf's path) whose
     /// rolled-back push this host takes home's copy for (review A2).
     pub accept_rollback: &'a [String],
 }
-
-/// The rsync a leaf runs: whatever `rsync` is on `PATH`.
-pub const RSYNC: &str = "rsync";
 
 fn ms(since: Instant) -> u64 {
     since.elapsed().as_millis() as u64
@@ -69,7 +83,7 @@ pub fn subscriptions(link: &dyn HomeLink) -> Result<SubscriptionsView> {
     }
 }
 
-/// What a plan is for: `status` (no queue entry, no rsync), `sync
+/// What a plan is for: `status` (no queue entry, no dry runs), `sync
 /// --dry-run`, or a real `sync` (the same as a dry run, and then apply under
 /// the same queue entry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,16 +105,18 @@ impl Mode {
 }
 
 /// What a plan computed beyond the [`Plan`] itself, for apply: the
-/// transfer each moving unit's dry run used (index-aligned with
-/// `plan.units`), and the repos of both sides.
+/// transfer each moving unit's dry run used and the target it saw
+/// (index-aligned with `plan.units`), and the repos of both sides.
 pub(crate) struct Planned<'a> {
     pub plan: &'a Plan,
-    pub transfers: &'a [Option<crate::rsync::Transfer>],
+    pub transfers: &'a [Option<xfer::PlannedXfer>],
     pub union: &'a [String],
     pub snap: &'a HomeSnapshot,
+    /// Data connections per unit: the lower of both sides' `streams`.
+    pub streams: u32,
 }
 
-/// Plan every unit. `dry_run` adds the queue entry, rsync diffs and guards.
+/// Plan every unit. `dry_run` adds the queue entry, the dry runs and guards.
 pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool) -> Result<Plan> {
     let mode = if dry_run { Mode::DryRun } else { Mode::Status };
     let (plan, ()) = run(link, ctx, mode, no_wait, Default::default(), |_, _| Ok(()))?;
@@ -117,14 +133,14 @@ pub fn plan(link: &dyn HomeLink, ctx: LeafCtx<'_>, dry_run: bool, no_wait: bool)
 
 /// Plan, and then run `then` under the same queue entry, its lease still
 /// heartbeated. A lost lease fails the result whatever `then` returned.
-/// `abort` stops every rsync the plan runs once raised, by a lost lease or
+/// `abort` stops the plan's dry runs once raised, by a lost lease or
 /// by whoever else holds it.
 pub(crate) fn run<T>(
     link: &dyn HomeLink,
     ctx: LeafCtx<'_>,
     mode: Mode,
     no_wait: bool,
-    abort: crate::rsync::Abort,
+    abort: crate::abort::Abort,
     then: impl FnOnce(&lease::Watch, Planned<'_>) -> Result<T>,
 ) -> Result<(Plan, T)> {
     let total = Instant::now();
@@ -136,6 +152,7 @@ pub(crate) fn run<T>(
             ctx.me, view.home, view.enrollment
         )));
     }
+    let streams = ctx.cfg.streams(view.streams);
     let mut t = Timings::default();
     let local = |rel: &str| ctx.cfg.local_path(rel, ctx.home_dir);
     let started = Instant::now();
@@ -219,23 +236,23 @@ pub(crate) fn run<T>(
         t.leaf_state_ms = ms(started);
         let mut transfers = vec![None; planned.len()];
         if dry_run {
-            // Do not start an rsync on a lease that is already gone.
+            // Do not start a dry run on a lease that is already gone.
             watch.check()?;
             let started = Instant::now();
             union.extend(gone.repos);
             union.sort();
             union.dedup();
+            let ops = xfer::Ops::new(link, ctx, watch.id(), watch.abort(), streams);
             transfers = diff::run(
-                ctx,
+                &ops,
                 &snap,
                 &found,
                 &union,
                 &leaf_units,
                 &mut planned,
                 &leaf_markers,
-                watch.abort(),
             )?;
-            t.rsync_ms = ms(started);
+            t.dry_run_ms = ms(started);
         }
         let plan = Plan {
             me: ctx.me.into(),
@@ -253,6 +270,7 @@ pub(crate) fn run<T>(
                 transfers: &transfers,
                 union: &union,
                 snap: &snap,
+                streams,
             },
         )?;
         Ok((plan, out))
@@ -278,4 +296,4 @@ pub fn leaf_case_insensitive() -> bool {
 
 #[cfg(test)]
 #[path = "tests.rs"]
-mod tests;
+pub(crate) mod tests;

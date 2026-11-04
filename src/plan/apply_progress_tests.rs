@@ -5,14 +5,23 @@
 
 use super::*;
 use crate::marker::Direction;
-use std::cell::RefCell;
 
-/// `sync` as `leaf` with the system rsync, collecting every event; `on`
+/// `sync` as `leaf`, collecting every event; `on`
 /// sees each as it is announced, with the sync's abort.
 pub(super) fn sync_watched(
     bed: &Bed,
     home: &Home,
-    on: &dyn Fn(&ProgressEvent, &crate::rsync::Abort),
+    on: &(dyn Fn(&ProgressEvent, &crate::abort::Abort) + Sync),
+) -> (SyncReport, Vec<ProgressEvent>) {
+    sync_watched_with(bed, home, &SyncOpts::default(), on)
+}
+
+/// [`sync_watched`], with `opts`.
+pub(super) fn sync_watched_with(
+    bed: &Bed,
+    home: &Home,
+    opts: &SyncOpts,
+    on: &(dyn Fn(&ProgressEvent, &crate::abort::Abort) + Sync),
 ) -> (SyncReport, Vec<ProgressEvent>) {
     let link = InProcess {
         home,
@@ -20,17 +29,21 @@ pub(super) fn sync_watched(
         home_dir: bed.leaf_hd.clone(),
     };
     let cfg = bed.leaf_cfg();
-    let dirs = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
-    let seen = RefCell::new(Vec::new());
-    let abort = crate::rsync::Abort::default();
+    let dirs = bed.leaf_dirs.state();
+    let seen = std::sync::Mutex::new(Vec::new());
+    let abort = crate::abort::Abort::default();
+    // A unit's live counters come between its start and its end; these
+    // tests are about the starts and ends (`counters_tests` the counters).
     let emit = |e: ProgressEvent| {
         on(&e, &abort);
-        seen.borrow_mut().push(e);
+        if !matches!(e, ProgressEvent::UnitProgress { .. }) {
+            seen.lock().unwrap().push(e);
+        }
     };
     let progress = Progress::new(&emit, abort.clone());
-    let ctx = ctx(bed, &cfg, &dirs, crate::plan::RSYNC);
-    let r = sync_with_progress(&link, ctx, &SyncOpts::default(), &progress).unwrap();
-    (r, seen.into_inner())
+    let ctx = ctx(bed, &cfg, &dirs);
+    let r = sync_with_progress(&link, ctx, opts, &progress).unwrap();
+    (r, seen.into_inner().unwrap())
 }
 
 use crate::plan::apply::sync_with as sync_with_progress;
@@ -106,6 +119,8 @@ fn each_unit_is_announced_as_it_starts_and_ends_in_plan_order() {
     assert!(events.iter().all(|e| match e {
         ProgressEvent::UnitStarted { direction, .. }
         | ProgressEvent::UnitDone { direction, .. } => *direction == Some(Direction::Pull),
+        // Counters carry no direction of their own: their unit's start did.
+        ProgressEvent::UnitProgress { .. } => true,
     }));
     assert!(r.applied.iter().any(|a| a.files_changed > 0));
 
@@ -209,4 +224,46 @@ fn an_abort_between_units_begins_no_other_and_writes_nothing_of_it() {
     let r = yes(&bed, &home);
     assert_eq!(r.outcome, Outcome::Done);
     assert!(bed.leaf_hd.join("work/nested/gamma/README").exists());
+}
+
+#[test]
+fn counters_run_between_a_units_start_and_end_and_end_at_its_totals() {
+    let bed = Bed::enrolled();
+    tree(&bed.home_hd.join("work"));
+    let home = bed.home();
+    let all = std::sync::Mutex::new(Vec::new());
+    let (r, _) = sync_watched(&bed, &home, &|e, _| all.lock().unwrap().push(e.clone()));
+    assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
+    let all = all.into_inner().unwrap();
+    let mut running = None;
+    let mut last: Option<(u64, u64, u64, u64)> = None;
+    let mut ended = 0;
+    for e in &all {
+        match e {
+            ProgressEvent::UnitStarted { rel, .. } => (running, last) = (Some(rel.clone()), None),
+            ProgressEvent::UnitProgress {
+                rel,
+                files_done,
+                files_total,
+                bytes_done,
+                bytes_total,
+                ..
+            } => {
+                assert_eq!(Some(rel), running.as_ref());
+                if let Some((f, _, b, _)) = last {
+                    assert!(*files_done >= f && *bytes_done >= b, "monotonic: {all:#?}");
+                }
+                last = Some((*files_done, *files_total, *bytes_done, *bytes_total));
+            }
+            ProgressEvent::UnitDone { files_changed, .. } => {
+                if let Some((f, ft, b, bt)) = last {
+                    assert_eq!((f, b), (ft, bt), "the last counters are the totals");
+                    assert_eq!(f as usize, *files_changed);
+                    ended += 1;
+                }
+                running = None;
+            }
+        }
+    }
+    assert!(ended >= 3, "every unit that sent files reported: {all:#?}");
 }

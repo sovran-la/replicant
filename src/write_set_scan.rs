@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-/// What counts as a spawn, an rsync run or a write.
+/// What counts as a spawn, a transfer or a write.
 pub(super) const PATTERNS: &[&str] = &[
     "Command::new(",
     "fs::write(",
@@ -28,18 +28,20 @@ pub(super) const PATTERNS: &[&str] = &[
     ".delete(",
     "append_raw(",
     "set_modified(",
-    // rsync's entry points (review A4): every run is a potential write.
-    // Each in both spellings (re-review R3): `transfer.apply(r)` and
-    // `Transfer::apply(&transfer, r)`; `runner.run(a)` and
-    // `Runner::run(&runner, a)`. `::run(` matches every other `X::run(`
-    // too, so those are listed, each with what it is. `copy_listed(` and
-    // `delete_listed(` already match every spelling, `rsync::copy_listed(`
-    // and `Self::delete_listed(` included.
-    "child::run(",
+    // Ways to create or empty a file, or give it away (review m9).
+    "File::create_new(",
+    "set_len(",
+    "chown(",
+    "lchown(",
+    // A file's times (the native receiver gives each its source's mtime).
+    "set_times(",
+    // A transfer's and the list operations' entry points (review A4): every
+    // call writes synced paths. Each in both spellings (re-review R3):
+    // `transfer.apply(e, d)` and `Transfer::apply(&transfer, e, d)`.
+    // `copy_listed(` and `delete_listed(` already match every spelling,
+    // `local::copy_listed(` and `Self::delete_listed(` included.
     ".apply(",
     "::apply(",
-    ".run(",
-    "::run(",
     "copy_listed(",
     "delete_listed(",
     // libc calls that write (review A4).
@@ -61,6 +63,9 @@ pub(super) const PATTERNS: &[&str] = &[
     "libc::truncate(",
     "libc::ftruncate(",
     "libc::write(",
+    "libc::utimensat(",
+    "libc::futimens(",
+    "libc::utimes(",
 ];
 
 pub(super) fn is_test_file(rel: &str) -> bool {
@@ -72,10 +77,10 @@ pub(super) fn is_test_file(rel: &str) -> bool {
             name,
             "testutil.rs"
                 | "test_certs.rs"
-                | "rsync_diff_fixture.rs"
                 | "write_set_tests.rs"
                 | "write_set_allowed.rs"
                 | "write_set_spawns.rs"
+                | "write_set_native.rs"
                 | "write_set_scan.rs"
         )
 }
@@ -146,8 +151,6 @@ pub(super) fn forbidden(text: &str) -> Vec<String> {
             )
         } else if u.contains("libc::") {
             Some("an import from libc (spell the call `libc::…`)")
-        } else if u.contains("child::run") || (u.contains("child::{") && u.contains("run")) {
-            Some("an import of rsync's child::run")
         } else if u.split(" as ").skip(1).any(|rest| !rest.starts_with('_')) {
             Some("a renamed import (`use … as …`)")
         } else {

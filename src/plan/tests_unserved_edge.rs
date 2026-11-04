@@ -85,14 +85,13 @@ fn a_baseline_an_older_home_says_nothing_about_is_not_served() {
         home_dir: bed.leaf_hd.clone(),
     });
     let cfg = bed.leaf_cfg();
-    let (state, scratch) = (bed.leaf_dirs.state(), bed.leaf_dirs.scratch());
+    let state = bed.leaf_dirs.state();
     let ctx = LeafCtx {
         me: "leaf",
         home_dir: &bed.leaf_hd,
         cfg: &cfg,
         state_dir: &state,
-        scratch_dir: &scratch,
-        rsync: crate::plan::RSYNC,
+        plane: Default::default(),
         accept_rollback: &[],
     };
     let p = plan(&link, ctx, false, false).unwrap();

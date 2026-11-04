@@ -16,8 +16,9 @@ pub enum Error {
     Io(std::io::Error),
     /// A git invocation failed or produced output this build cannot read.
     Git(String),
-    /// rsync failed or produced output this build cannot read.
-    Rsync(String),
+    /// A native transfer failed: a dead or stalled data connection, a
+    /// frame that makes no sense, a file the receiver could not write.
+    Transfer(String),
     /// Certificates, bundles or the TLS handshake.
     Tls(String),
     /// The other daemon could not be reached, or answered with an error.
@@ -40,7 +41,10 @@ impl fmt::Display for Error {
             Error::Path(m) => write!(f, "path: {m}"),
             Error::Io(e) => write!(f, "io: {e}"),
             Error::Git(m) => write!(f, "git: {m}"),
-            Error::Rsync(m) => write!(f, "rsync: {m}"),
+            // A peer's `Fail` carries its own error's text: said once.
+            Error::Transfer(m) => {
+                write!(f, "transfer: {}", m.trim_start_matches("transfer: "))
+            }
             Error::Tls(m) => write!(f, "tls: {m}"),
             Error::Remote(m) => write!(f, "remote: {m}"),
             Error::Daemon(m) => write!(f, "daemon: {m}"),
@@ -57,3 +61,7 @@ impl From<std::io::Error> for Error {
         Error::Io(e)
     }
 }
+
+#[cfg(test)]
+#[path = "error_tests.rs"]
+mod tests;

@@ -24,6 +24,8 @@ pub mod remote;
 pub mod tls;
 pub mod wire;
 
+mod listen;
+
 use crate::config::Dirs;
 use crate::{Error, Result};
 use std::fs::File;
@@ -99,7 +101,7 @@ impl Daemon {
                     &crate::config::with_port(&listen),
                     &identity,
                 )?);
-                threads.push(spawn_tcp(l.clone(), h.clone(), stop.clone()));
+                threads.push(listen::spawn_tcp(l.clone(), h.clone(), stop.clone()));
                 threads.push(spawn_reaper(h.clone(), stop.clone()));
                 Some(l)
             }
@@ -157,52 +159,6 @@ impl Daemon {
         }
         let _ = std::fs::remove_file(self.dirs.socket());
     }
-}
-
-fn spawn_tcp(
-    l: Arc<remote::MtlsListener>,
-    home: Arc<home::Home>,
-    stop: Arc<AtomicBool>,
-) -> JoinHandle<()> {
-    std::thread::spawn(move || {
-        loop {
-            let conn = l.accept();
-            if stop.load(Ordering::SeqCst) {
-                break;
-            }
-            let Ok(tcp) = conn else { continue };
-            let (l, home) = (l.clone(), home.clone());
-            std::thread::spawn(move || {
-                let mut s = match l.secure(tcp) {
-                    Ok(s) => s,
-                    Err(e) => return eprintln!("replicant: refused a connection: {e}"),
-                };
-                // Mandatory client auth: a finished handshake has a peer
-                // certificate, and home decides who it is by its fingerprint.
-                let peer = s
-                    .conn
-                    .peer_certificates()
-                    .and_then(|c| c.first())
-                    .map(|c| certs::fingerprint(c));
-                let answer = match (remote::recv::<_, wire::HomeCall>(&mut s), peer) {
-                    (Ok(call), Some(peer)) => {
-                        home.handle_from(call, &peer, &|| remote::connected(&s.sock))
-                    }
-                    (Ok(_), None) => wire::HomeAnswer {
-                        result: Err("no client certificate".into()),
-                        journal: vec![],
-                    },
-                    (Err(e), _) => wire::HomeAnswer {
-                        result: Err(e.to_string()),
-                        journal: vec![],
-                    },
-                };
-                let _ = remote::send(&mut s, &answer);
-                s.conn.send_close_notify();
-                let _ = s.conn.complete_io(&mut s.sock);
-            });
-        }
-    })
 }
 
 /// Expired leases every half second; old push backups at start and once a
@@ -287,6 +243,14 @@ mod identity_tests;
 #[cfg(test)]
 #[path = "daemon_apply_tests.rs"]
 mod apply_tests;
+
+#[cfg(test)]
+#[path = "daemon_data_tests.rs"]
+mod data_tests;
+
+#[cfg(test)]
+#[path = "daemon_bench_tests.rs"]
+mod bench_tests;
 
 #[cfg(test)]
 #[path = "daemon_progress_tests.rs"]

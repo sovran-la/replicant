@@ -1,12 +1,14 @@
-//! replicant: explicit, home-base-mediated rsync for keeping `~/work` (and a
+//! replicant: explicit, home-base-mediated sync for keeping `~/work` (and a
 //! few config dirs) identical across machines.
 //!
 //! The design is docs/PLAN.md. It subscribes, approves, reports status,
 //! computes `sync --dry-run`, and (v0.2) applies `sync`: synced paths are
-//! written only by rsync, and only after the whole plan may go
+//! written only by the native receiver (`native`), and only after the whole plan may go
 //! (`plan::apply`).
 
+pub mod abort;
 pub mod baseline;
+pub mod changes;
 pub mod cli;
 pub mod config;
 pub mod daemon;
@@ -16,11 +18,11 @@ pub mod exclude;
 pub mod git;
 pub mod guard;
 pub mod marker;
+pub mod native;
 pub mod paths;
 pub mod plan;
 pub mod record;
 pub mod repos;
-pub mod rsync;
 pub mod state;
 pub mod subscribe;
 pub mod timefmt;

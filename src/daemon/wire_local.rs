@@ -16,7 +16,8 @@ use std::path::PathBuf;
 
 /// 4: the shared [`super::WIRE_VERSION`], before the CLI had its own.
 /// 5: the answer is a stream of [`LocalFrame`]s (a sync's progress).
-pub const LOCAL_WIRE_VERSION: u32 = 5;
+/// 6: a unit's live counters (`ProgressEvent::UnitProgress`).
+pub const LOCAL_WIRE_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalCall {
@@ -31,7 +32,6 @@ pub enum LocalRequest {
     Subscribe {
         home: String,
         address: Option<String>,
-        rsync_host: Option<String>,
         credentials: Option<String>,
         paths: Vec<String>,
         as_local: Option<PathBuf>,
@@ -139,7 +139,7 @@ pub struct RolledBack {
     /// Files the push changed that were not backed up (it wrote more than
     /// its dry run said): left as pushed.
     pub unbacked: Vec<String>,
-    /// Runs rsync never reported on; what they created stays.
+    /// Runs never reported on; what they created stays.
     pub unreported: Vec<usize>,
     /// Where what the push had written was kept before it was undone.
     pub kept: PathBuf,

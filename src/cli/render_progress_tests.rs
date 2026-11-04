@@ -91,11 +91,11 @@ fn a_finished_unit_completes_the_line() {
 #[test]
 fn a_unit_that_did_not_finish_says_why_in_red() {
     let i = UnitOutcome::Interrupted {
-        why: "the CLI hung up; rsync stopped".into(),
+        why: "the CLI hung up; transfer stopped".into(),
     };
     assert_eq!(
         progress(&done("pull", 9, 0, None, i.clone()), plain()),
-        "interrupted after 1.4s: the CLI hung up; rsync stopped\n"
+        "interrupted after 1.4s: the CLI hung up; transfer stopped\n"
     );
     let f = UnitOutcome::Failed {
         why: "home unreachable".into(),
