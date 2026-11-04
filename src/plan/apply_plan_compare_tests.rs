@@ -7,6 +7,8 @@ use super::progress_tests::sync_watched;
 use super::*;
 use crate::testutil::fingerprint;
 
+#[path = "apply_plan_compare_ahead_tests.rs"]
+mod ahead;
 #[path = "apply_plan_compare_listed_tests.rs"]
 mod listed;
 

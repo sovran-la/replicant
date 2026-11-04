@@ -287,3 +287,26 @@ fn a_push_into_one_rolls_back_exactly() {
     assert_eq!(after, before, "sizes, mtimes, modes, ro/ included");
     assert_eq!(text.unwrap(), "old");
 }
+
+/// Known limits: the unit's own root is in no manifest, so nothing has a mode
+/// for it. It fails, naming the path, and loses nothing.
+#[test]
+fn a_read_only_unit_root_still_fails_and_says_where() {
+    let fx = Fx::new();
+    let (source, target) = (fx.home_work(), fx.leaf());
+    write(&source.join("f.txt"), "new contents");
+    write(&target.join("f.txt"), "old");
+    chmod(&target, RO);
+    let lease = fx.lease();
+    let t = fx.transfer(Direction::Pull);
+    let abort = Abort::default();
+    let (_, ran, _) = run(&fx.link(), &t, lease, 1, &abort, Duration::from_secs(20));
+    fx.release(lease);
+    chmod(&target, 0o755);
+    assert!(ran.why().contains("f.txt"), "{ran:?}");
+    assert!(!ran.ok());
+    assert_eq!(
+        std::fs::read_to_string(target.join("f.txt")).unwrap(),
+        "old"
+    );
+}

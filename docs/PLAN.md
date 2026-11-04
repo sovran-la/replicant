@@ -9,6 +9,7 @@ rev 10 2026-11-02 (sync shows each unit as it applies, with its time and the tot
 rev 11 2026-11-02 (a confirmed plan is what each unit will do and what it would delete, not the bytes it carries: an edit or a touch between the plan shown and the `y` no longer voids it).
 rev 12 2026-11-03 (rsync removed: the daemons move the bytes over their mTLS link, the native transport; a dry run is the diff of both sides' manifests; home backs up by rename; per-unit progress; `[daemon] streams`. Built on `bsneed/v0.4-native`, release 0.4.0; record: `docs/v0.4-native-notes.md`).
 rev 13 2026-11-03 (the v0.4-native review fixed: every unit diffs again and stops if that is not the plan, a pull too; sockets, FIFOs and devices are skipped on both sides; no frame too large and no panic can wedge a transfer; rollback is a round trip for directories and kind changes; a repo's index goes with its refs; home's `Done` is acked once its names are durable. Known limits restated. Record: "Review fixes" in the notes).
+rev 14 2026-11-03 (the re-review fixed: a unit also stops if a path its plan lists holds anything else now, which rev 13 said and did not do; a read-only directory both sides agree about can be written into; Known limits restated. Record: "Re-review fixes" in the notes).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -140,13 +141,16 @@ certificates and pins as the control plane; there is no ssh. Per unit:
   the leaf then waits for home's ack of its `Done`, sent once the names are
   fsynced. Then the leaf diffs both sides again: nothing may differ but
   directories still holding what the unit does not sync.
-- **Fresh diff, either way** (rev 13). Before anything of a unit is written, its
-  marker included, it diffs again and stops ("it changed since the plan was
-  made") if that is not the plan: minutes can pass between the plan and a unit's
-  turn, and on a pull a leaf has no backup. A pull's receiver also lstats each
-  path against that diff right before it overwrites or deletes it, and fails
-  the unit if the path moved. What remains is the moment between that lstat and
-  the write. A push's receiver is on home and backs up what it replaces.
+- **Fresh diff, either way** (rev 13, 14). Before anything of a unit is written,
+  its marker included, it diffs again and stops ("it changed since the plan was
+  made") unless the change list is the plan's and every path on it still holds
+  what the plan saw there (kind, size, mtime, link): minutes can pass between
+  the plan and a unit's turn, and on a pull a leaf has no backup. Rev 13 compared
+  the lists alone, and an edit of a listed path reads the same in a list. A
+  pull's receiver also lstats each path against that diff right before it
+  overwrites or deletes it, and fails the unit if the path moved. What remains is
+  in Known limits, "The window on a pull". A push's receiver is on home and backs
+  up what it replaces.
 
 ### One command
 
@@ -921,7 +925,7 @@ Home logs per-snapshot timing — discover and unit phases, worker count, and
 its five slowest units — so the next regression names itself (decided
 2026-11-01). Discovery is going parallel (in flight).
 
-## Known limits (rev 13)
+## Known limits (rev 14)
 
 - **Sockets, FIFOs and devices** are never listed, opened, sent or deleted, on
   either side: they count in the unit's notes (`--verbose`). A file whose name
@@ -977,9 +981,23 @@ its five slowest units — so the next regression names itself (decided
   verification then fails it (`Interrupted`) and the next sync sends it
   again. A live tree can do this every time, as rsync's exit 24 could (N4). A
   small file grown past 64 KiB since the diff is the same case.
-- **The window on a pull:** between a path's last lstat and its write, a change
-  is still overwritten. On a push, home's receiver is not held to a manifest at
-  all, since whatever it replaces is in the backup.
+- **The window on a pull:** from the plan to a unit's turn is closed, as far as
+  metadata can tell (rev 14), and from there to each write the receiver lstats
+  (rev 13). What is left: a change between a path's last lstat and its write is
+  still overwritten; an edit that keeps both size and mtime to the nanosecond
+  (`cp -p`, `tar x`, `touch -r` of the same length) looks like nothing, as it does
+  to the diff itself. On a push, home's receiver is not held to a manifest during
+  the transfer, since whatever it replaces is in the backup.
+- **What stops a unit without risking work:** the comparison cannot tell an edit
+  from a rewrite. Any `git` that rewrites a listed `.git/index` between the plan
+  and the unit's turn stops that unit, as an editor's save of a listed path does.
+  Nothing is written and the next `sync` goes, by a test. A real edit there comes
+  back as a conflict, also by a test. Chosen over guessing which it was.
+- **A read-only directory on the target** is opened for the transfer and has its
+  mode back at the end (rev 14), and a transfer cut in between leaves it open: the
+  next sync's diff shows that and repairs it. **The unit's own root** is in no
+  manifest, so nothing knows a mode for it: a change directly under a read-only
+  root fails its unit, naming the path, every run, by a test. Nothing is lost.
 - **A rollback of a run that never reported** restores what its directory and
   notes hold; files it created stay, and if it turned a file into a directory,
   the rollback fails loudly with the original safe in `backup/`.

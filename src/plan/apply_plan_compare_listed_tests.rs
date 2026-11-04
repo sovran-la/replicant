@@ -51,7 +51,7 @@ fn stopped_at(
 }
 
 /// A clean first sync of `tree`.
-fn synced() -> (Bed, Home) {
+pub(super) fn synced() -> (Bed, Home) {
     let bed = Bed::enrolled();
     tree(&bed.home_hd.join("work"));
     let home = bed.home();
@@ -60,7 +60,7 @@ fn synced() -> (Bed, Home) {
     (bed, home)
 }
 
-fn no_opts() -> SyncOpts {
+pub(super) fn no_opts() -> SyncOpts {
     SyncOpts::default()
 }
 
@@ -221,61 +221,43 @@ fn a_push_stops_at_a_home_edit_of_a_path_it_would_replace() {
     assert!(home.pushes().unwrap().is_empty(), "no push begun");
 }
 
-/// What `change` does as the unit is announced is no reason to stop.
-fn goes_ahead(bed: &Bed, home: &Home, change: &(dyn Fn() + Sync)) {
-    let on = |e: &ProgressEvent, _: &crate::abort::Abort| {
-        if matches!(e, ProgressEvent::UnitStarted { rel, .. } if rel == "work") {
-            testutil::next_second();
-            change();
-        }
-    };
-    let (r, _) = sync_watched_with(bed, home, &no_opts(), &on);
-    assert_eq!(r.outcome, Outcome::Done);
-}
-
-/// A chmod loses no work, and the guard does not count it either.
+/// "Run `replicant sync` again" must be safe: the edit is now a plain conflict,
+/// which nothing overwrites.
 #[test]
-fn a_pull_goes_ahead_past_a_chmod_of_a_listed_path() {
-    use std::os::unix::fs::PermissionsExt;
+fn the_sync_after_the_stop_blocks_on_the_edit_and_keeps_it() {
     let (bed, home) = synced();
     testutil::write(&bed.home_hd.join("work/notes.txt"), "home edit\n");
-    let file = bed.leaf_hd.join("work/notes.txt");
-    let chmod = || {
-        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
-    };
-    goes_ahead(&bed, &home, &chmod);
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "home edit\n");
-}
-
-/// Excluded paths are not the unit's, and nothing lists them.
-#[test]
-fn a_pull_goes_ahead_past_an_edit_of_a_path_the_unit_excludes() {
-    let (bed, home) = synced();
-    testutil::write(&bed.home_hd.join("work/notes.txt"), "home edit\n");
-    let junk = bed.leaf_hd.join("work/target/junk");
-    let edit = || testutil::write(&junk, "the leaf's own build output\n");
-    goes_ahead(&bed, &home, &edit);
-    assert_eq!(
-        std::fs::read_to_string(&junk).unwrap(),
-        "the leaf's own build output\n"
+    let leaf = bed.leaf_hd.join("work");
+    let edit = || testutil::write(&leaf.join("notes.txt"), "LEAF EDIT AFTER THE PLAN\n");
+    stopped_at(&bed, &home, &no_opts(), "work", &edit, &leaf, 0);
+    let again = yes(&bed, &home);
+    assert!(
+        matches!(again.outcome, Outcome::Blocked { .. }),
+        "{:?}",
+        again.outcome
     );
     assert_eq!(
-        std::fs::read_to_string(bed.leaf_hd.join("work/notes.txt")).unwrap(),
+        std::fs::read_to_string(leaf.join("notes.txt")).unwrap(),
+        "LEAF EDIT AFTER THE PLAN\n"
+    );
+}
+
+/// The cost of comparing what is there: any git rewriting a listed index in
+/// the window looks like an edit, and stops the unit though no work is at
+/// risk. The next sync goes.
+#[test]
+fn a_rewritten_index_stops_the_unit_and_the_next_sync_goes() {
+    let (bed, home) = synced();
+    let repo = bed.home_hd.join("work/alpha");
+    testutil::write(&repo.join("README"), "home edit\n");
+    testutil::git(&repo, &["commit", "-qam", "home"]);
+    let leaf = bed.leaf_hd.join("work/alpha");
+    let index = leaf.join(".git/index");
+    let rewrite = || std::fs::write(&index, std::fs::read(&index).unwrap()).unwrap();
+    stopped_at(&bed, &home, &no_opts(), "work/alpha", &rewrite, &leaf, 0);
+    assert_eq!(yes(&bed, &home).outcome, Outcome::Done);
+    assert_eq!(
+        std::fs::read_to_string(leaf.join("README")).unwrap(),
         "home edit\n"
-    );
-}
-
-/// The check is of what would be lost: home's newer copy of a path a pull
-/// lists loses nothing here, and is simply what the pull takes.
-#[test]
-fn a_pull_goes_ahead_past_a_newer_copy_on_home() {
-    let (bed, home) = synced();
-    let file = bed.home_hd.join("work/notes.txt");
-    testutil::write(&file, "home edit\n");
-    let edit = || testutil::write(&file, "home edit, again\n");
-    goes_ahead(&bed, &home, &edit);
-    assert_eq!(
-        std::fs::read_to_string(bed.leaf_hd.join("work/notes.txt")).unwrap(),
-        "home edit, again\n"
     );
 }
