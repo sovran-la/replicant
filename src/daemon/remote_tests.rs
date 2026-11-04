@@ -280,3 +280,65 @@ fn connected_sees_a_peer_leave_and_leaves_the_socket_blocking() {
     }
     assert!(!connected(&server), "and stays gone");
 }
+
+fn sa(s: &str) -> SocketAddr {
+    s.parse().unwrap()
+}
+
+#[test]
+fn dial_order_puts_ipv4_first_and_drops_unscoped_link_local() {
+    // The shape mDNS gives back for `host.local`: link-local v6 first, v4 after.
+    let got = dial_order(vec![
+        sa("[fe80::a2c7:5e8a:89be:46a]:7750"),
+        sa("192.168.10.199:7750"),
+    ]);
+    assert_eq!(got, vec![sa("192.168.10.199:7750")]);
+
+    // Global v6 is kept, but after every v4; relative order within a family
+    // is preserved.
+    let got = dial_order(vec![
+        sa("[2001:db8::1]:1"),
+        sa("10.0.0.1:1"),
+        sa("[fe80::1]:1"),
+        sa("10.0.0.2:1"),
+        sa("[2001:db8::2]:1"),
+    ]);
+    assert_eq!(
+        got,
+        vec![
+            sa("10.0.0.1:1"),
+            sa("10.0.0.2:1"),
+            sa("[2001:db8::1]:1"),
+            sa("[2001:db8::2]:1"),
+        ]
+    );
+
+    // A link-local address WITH a scope is routable and stays.
+    let scoped = SocketAddr::V6(std::net::SocketAddrV6::new(
+        "fe80::1".parse().unwrap(),
+        7750,
+        0,
+        4,
+    ));
+    assert_eq!(dial_order(vec![scoped]), vec![scoped]);
+
+    // Loopback v6 and the whole fe80::/10 block are classified by prefix.
+    assert_eq!(dial_order(vec![sa("[::1]:1")]), vec![sa("[::1]:1")]);
+    assert_eq!(dial_order(vec![sa("[febf::1]:1")]), vec![]);
+    assert_eq!(dial_order(vec![sa("[fec0::1]:1")]), vec![sa("[fec0::1]:1")]);
+    assert_eq!(dial_order(vec![]), vec![]);
+}
+
+#[test]
+fn only_unscoped_link_local_is_named_in_the_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, client_id) = ids(tmp.path());
+    let d = Dialer::new(&client_id, Duration::from_millis(500)).unwrap();
+    let err = ping(&d, "[fe80::a2c7:5e8a:89be:46a]:7750")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("link-local IPv6 addresses without a scope"),
+        "{err}"
+    );
+}

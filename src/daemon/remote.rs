@@ -198,7 +198,33 @@ impl Dialer {
         let sock = Sock::Tcp(stream.sock.try_clone()?);
         Ok(Conn::new(Box::new(stream), sock))
     }
+}
 
+/// The order to try a name's addresses in: IPv4 before IPv6, and never an
+/// IPv6 link-local address without a scope. The resolver hands those back
+/// for mDNS names (`host.local`), but without a scope the kernel cannot pick
+/// an interface, so the SYN goes nowhere and the dial sits out the whole
+/// connect timeout before the IPv4 address even gets a turn.
+fn dial_order(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let mut v4 = Vec::new();
+    let mut v6 = Vec::new();
+    for a in addrs {
+        match a {
+            SocketAddr::V4(_) => v4.push(a),
+            SocketAddr::V6(six) if is_link_local(six.ip()) && six.scope_id() == 0 => {}
+            SocketAddr::V6(_) => v6.push(a),
+        }
+    }
+    v4.extend(v6);
+    v4
+}
+
+/// fe80::/10.
+fn is_link_local(ip: &std::net::Ipv6Addr) -> bool {
+    (ip.segments()[0] & 0xffc0) == 0xfe80
+}
+
+impl Dialer {
     /// A connection to home, its handshake done, nothing sent.
     pub(super) fn connect(
         &self,
@@ -211,7 +237,13 @@ impl Dialer {
             .to_socket_addrs()
             .map_err(|e| unreachable(format!("does not resolve ({e})")))?
             .collect();
-        let mut last = "resolves to no address".to_string();
+        let resolved_any = !addrs.is_empty();
+        let addrs = dial_order(addrs);
+        let mut last = if resolved_any && addrs.is_empty() {
+            "resolves only to link-local IPv6 addresses without a scope".to_string()
+        } else {
+            "resolves to no address".to_string()
+        };
         let mut tcp = None;
         for a in addrs {
             match TcpStream::connect_timeout(&a, self.connect_timeout) {
