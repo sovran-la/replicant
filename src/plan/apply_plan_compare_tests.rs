@@ -7,6 +7,9 @@ use super::progress_tests::sync_watched;
 use super::*;
 use crate::testutil::fingerprint;
 
+#[path = "apply_plan_compare_listed_tests.rs"]
+mod listed;
+
 /// A clean first sync, then `edit` on one side; the next sync runs `hook` as
 /// `work` is announced, and must fail it: "changed", untouched `side`, no
 /// marker, no baseline moved.

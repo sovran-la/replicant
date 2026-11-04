@@ -105,11 +105,11 @@ impl Mode {
 }
 
 /// What a plan computed beyond the [`Plan`] itself, for apply: the
-/// transfer each moving unit's dry run used (index-aligned with
-/// `plan.units`), and the repos of both sides.
+/// transfer each moving unit's dry run used and the target it saw
+/// (index-aligned with `plan.units`), and the repos of both sides.
 pub(crate) struct Planned<'a> {
     pub plan: &'a Plan,
-    pub transfers: &'a [Option<xfer::Xfer>],
+    pub transfers: &'a [Option<xfer::PlannedXfer>],
     pub union: &'a [String],
     pub snap: &'a HomeSnapshot,
     /// Data connections per unit: the lower of both sides' `streams`.

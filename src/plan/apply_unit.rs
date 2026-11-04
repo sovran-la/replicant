@@ -14,7 +14,7 @@ use crate::baseline;
 use crate::daemon::wire::{HomeReply, HomeRequest};
 use crate::marker::{self, Direction, Marker};
 use crate::plan::lease::Watch;
-use crate::plan::xfer::{Ops, Xfer};
+use crate::plan::xfer::{Ops, PlannedXfer};
 use crate::plan::{Planned, PlannedUnit, diff};
 use crate::record::RECORD_VERSION;
 use crate::state::UnitState;
@@ -57,13 +57,14 @@ fn transfer(
     watch: &Watch,
     p: &Planned<'_>,
     u: &PlannedUnit,
-    t: &Xfer,
+    t: &PlannedXfer,
     deleting: bool,
     action: &'static str,
     resumed: bool,
     started: Instant,
 ) -> Result<Done> {
     let (link, ctx) = (ops.link, ops.ctx);
+    let (xfer, seen) = (&t.xfer, &t.target);
     let lease = watch.id();
     let markers = marker::store(ctx.state_dir);
     if let Some(note) = u.deletion_note(ctx.me, &p.plan.home) {
@@ -82,7 +83,7 @@ fn transfer(
         return Ok(Done::Stopped(stopped_before(u, watch)));
     }
     // The marker: before the transfer, on the target.
-    let direction = t.direction;
+    let direction = xfer.direction;
     let source_state = match (deleting, direction) {
         (true, _) => UnitState::Empty,
         (false, Direction::Pull) => u.home.clone(),
@@ -90,12 +91,15 @@ fn transfer(
     };
     // What is about to happen must still be what was planned: a dry run now,
     // ahead of every write of this unit, compared to the plan the person
-    // confirmed. Either way: a pull must not delete or overwrite leaf work
-    // made since (a leaf has no backup), and home backs up what a push
-    // replaces from this very list.
-    let fresh = ops.dry_run(t)?;
+    // confirmed, and every path it lists still what the plan saw there (the
+    // list alone reads the same after an edit of a listed path). Either way:
+    // a pull must not delete or overwrite leaf work made since (a leaf has no
+    // backup), and home backs up what a push replaces from this very list.
+    let fresh = ops.dry_run(xfer)?;
     let planned = u.diff.as_ref().map(|d| &d.changes);
-    if planned != Some(&diff::summarize(&fresh.itemized).changes) {
+    if planned != Some(&diff::summarize(&fresh.itemized).changes)
+        || diff::target_moved(seen, &fresh)
+    {
         return Ok(Done::Stopped(Outcome::Failed {
             rel: u.rel.clone(),
             why: "it changed since the plan was made; nothing of it was written. Run \
@@ -128,7 +132,7 @@ fn transfer(
                 lease,
                 rel: u.rel.clone(),
                 source_state,
-                is_file: t.is_file,
+                is_file: xfer.is_file,
             })?;
             let HomeReply::Begun { push: id } = reply else {
                 return Err(Error::Remote(format!(
@@ -139,7 +143,7 @@ fn transfer(
         }
     }
 
-    let ran = ops.apply(t, &fresh);
+    let ran = ops.apply(xfer, &fresh);
     let changes = diff::summarize(&ran.itemized).changes;
     if !ran.ok() {
         // Stopped by whoever raised the abort and said why (the CLI hung

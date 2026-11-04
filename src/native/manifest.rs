@@ -63,6 +63,15 @@ impl Entry {
         self.kind == EntryKind::Dir
     }
 
+    /// Whether `now` is still what this entry recorded. Mode is left out: a
+    /// chmod loses no work, and a mode-only change is resent whole anyway.
+    pub fn unmoved(&self, now: &Entry) -> bool {
+        self.kind == now.kind
+            && self.size == now.size
+            && self.mtime_ns == now.mtime_ns
+            && self.link == now.link
+    }
+
     /// The entry for `abs`, called `rel`, from its `lstat`. A socket, FIFO
     /// or device has none: a sync does not carry it.
     pub fn of(abs: &Path, rel: &str, meta: &fs::Metadata) -> Result<Self> {

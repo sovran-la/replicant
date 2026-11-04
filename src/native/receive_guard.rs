@@ -11,15 +11,6 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-/// Whether `now` is what `then` recorded. Mode is left out: a chmod loses no
-/// work, and a mode-only change is resent whole anyway.
-fn same(then: &Entry, now: &Entry) -> bool {
-    then.kind == now.kind
-        && then.size == now.size
-        && then.mtime_ns == now.mtime_ns
-        && then.link == now.link
-}
-
 /// `abs` (`rel`) is what `target` lists, or is gone. A path `target` does not
 /// list must not exist either, unless it is an entry `target` knows under
 /// another spelling (a case-insensitive filesystem: home's `foo.txt` lands
@@ -51,7 +42,7 @@ pub(super) fn still(target: &Manifest, abs: &Path, rel: &str) -> Result<()> {
         .get(rel)
         .or_else(|| spelled_otherwise(target, abs, rel, &meta))
     {
-        Some(then) if same(then, &now) => Ok(()),
+        Some(then) if then.unmoved(&now) => Ok(()),
         Some(_) => Err(moved("changed")),
         None => Err(moved("appeared")),
     }

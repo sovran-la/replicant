@@ -49,7 +49,7 @@ pub(in crate::plan) fn apply_all(
             Err(e) => return failed(u, e),
         };
         let (action, direction) = match &s {
-            Step::Transfer { t, action, .. } => (*action, Some(t.direction)),
+            Step::Transfer { t, action, .. } => (*action, Some(t.xfer.direction)),
             Step::Adopt => ("adopt", None),
             Step::Forget => ("forget", None),
             Step::Skip => unreachable!("skipped units are not in the work"),

@@ -6,6 +6,7 @@ use super::{HomeLink, LeafCtx};
 use crate::Result;
 use crate::abort::Abort;
 use crate::changes::Itemized;
+use crate::native::manifest::Manifest;
 use crate::native::transfer::{Counts, Diffed, Env};
 use std::time::Duration;
 
@@ -28,6 +29,14 @@ impl Default for Plane {
 
 /// One unit's transfer.
 pub type Xfer = crate::native::transfer::Transfer;
+
+/// What a plan keeps of a moving unit's dry run, for apply: the transfer it
+/// ran, and the target as it saw it. The change list is in the plan itself.
+#[derive(Debug, Clone)]
+pub(crate) struct PlannedXfer {
+    pub xfer: Xfer,
+    pub target: Manifest,
+}
 
 /// What a transfer did.
 #[derive(Debug, Clone, PartialEq, Eq)]

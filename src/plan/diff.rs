@@ -2,13 +2,15 @@
 //! diff of both sides' manifests), and guardrails 1, 3, 4 and 5 against what
 //! it reports.
 
-use super::xfer::{Ops, Xfer};
+use super::xfer::{Ops, PlannedXfer, Xfer};
 use super::{DiffSummary, PlannedUnit, leaf_case_insensitive};
 use crate::changes::{ChangeKind, Itemized};
 use crate::daemon::wire::HomeSnapshot;
 use crate::decide::Decision;
 use crate::guard::{self, Refusal};
 use crate::marker::{Direction, Marker};
+use crate::native::manifest::Manifest;
+use crate::native::transfer::Diffed;
 use crate::units::{self, Discovered, SideUnit, SubSpec};
 use crate::{Result, paths, state};
 
@@ -44,6 +46,24 @@ pub(super) fn summarize(it: &Itemized) -> DiffSummary {
     }
 }
 
+/// Whether a path `fresh` would overwrite or delete holds something else than
+/// `planned`, the target the plan's own dry run saw. A change list says what
+/// happens to a path, not what is there: edited since, `~ path` still reads
+/// `~ path`. `fresh`'s list is the plan's by now, and a path it does not list
+/// loses nothing.
+pub(super) fn target_moved(planned: &Manifest, fresh: &Diffed) -> bool {
+    let target = &fresh.target;
+    fresh
+        .itemized
+        .changes
+        .iter()
+        .any(|c| match (planned.get(&c.path), target.get(&c.path)) {
+            (Some(then), Some(now)) => !then.unmoved(now),
+            (None, None) => false,
+            _ => true,
+        })
+}
+
 /// Which way a unit's dry run goes, if it gets one. A "deleted on X" unit is
 /// diffed the way its deletion would travel, toward the side that still has
 /// it, so the human confirming it sees what would go; it still has no
@@ -58,8 +78,9 @@ pub(super) fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
 }
 
 /// Fill `diff` and `refusals` on every unit that would move, and return the
-/// transfer each one's dry run used (index-aligned; `None` for the rest):
-/// apply runs exactly those, without `--dry-run`.
+/// transfer each one's dry run used and the target it saw (index-aligned;
+/// `None` for the rest): apply runs exactly those, without `--dry-run`, and
+/// holds them to that target.
 pub(super) fn run(
     ops: &Ops<'_>,
     snap: &HomeSnapshot,
@@ -68,7 +89,7 @@ pub(super) fn run(
     leaf_units: &[SideUnit],
     planned: &mut [PlannedUnit],
     leaf_markers: &[Marker],
-) -> Result<Vec<Option<Xfer>>> {
+) -> Result<Vec<Option<PlannedXfer>>> {
     let ctx = ops.ctx;
     let mut worktrees = found.worktrees();
     worktrees.extend(snap.worktrees.iter().cloned());
@@ -86,7 +107,7 @@ pub(super) fn run(
     let results = state::parallel_map(
         &jobs,
         DRY_RUN_WORKERS,
-        |&i| -> Result<(DiffSummary, Vec<Refusal>, Xfer)> {
+        |&i| -> Result<(DiffSummary, Vec<Refusal>, PlannedXfer)> {
             let p = &planned[i];
             let remove = p.decision == Decision::Remove;
             let direction = diff_direction(ctx.me, &p.decision).expect("filtered above");
@@ -148,7 +169,11 @@ pub(super) fn run(
                 worktrees: within(&worktrees),
                 ignored,
             };
-            let it = ops.dry_run(&transfer)?.itemized;
+            let Diffed {
+                itemized: it,
+                target: seen,
+                ..
+            } = ops.dry_run(&transfer)?;
 
             let mut refusals = Vec::new();
             if !remove {
@@ -177,7 +202,11 @@ pub(super) fn run(
                 let late = changed_since(p, transfer.is_file, &it, m.started_at);
                 refusals.extend(guard::changed_since_interrupted(&p.rel, m.started_at, late));
             }
-            Ok((summarize(&it), refusals, transfer))
+            let planned = PlannedXfer {
+                xfer: transfer,
+                target: seen,
+            };
+            Ok((summarize(&it), refusals, planned))
         },
     );
 
@@ -243,3 +272,7 @@ fn remove_target(p: &PlannedUnit) -> Result<Option<SideUnit>> {
         ignored,
     }))
 }
+
+#[cfg(test)]
+#[path = "diff_moved_tests.rs"]
+mod moved_tests;
