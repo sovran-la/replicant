@@ -151,7 +151,7 @@ impl Bed {
             home_dir: Some(self.leaf_hd.clone()),
             home: crate::config::HomeEntry {
                 name: "home".into(),
-                address: "127.0.0.1:1".into(),
+                address: crate::config::Addresses::one("127.0.0.1:1"),
                 credentials: None,
                 rsync_host: None,
                 rsync_timeout_secs: None,

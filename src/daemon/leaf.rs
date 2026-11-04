@@ -153,7 +153,7 @@ impl Leaf {
     fn subscribe(
         &self,
         home: String,
-        address: Option<String>,
+        address: Vec<String>,
         credentials: Option<String>,
         raw: Vec<String>,
         as_local: Option<PathBuf>,
@@ -188,8 +188,16 @@ impl Leaf {
                 as_local: Default::default(),
             },
         };
-        if let Some(a) = address {
-            cfg.home.address = Addresses::one(with_port(&a));
+        if !address.is_empty() {
+            let new = Addresses::new(address)
+                .map_err(|why| Error::Config(format!("--address: {why}")))?;
+            if new.len() < cfg.home.address.len() {
+                eprintln!(
+                    "replicant: --address replaces every address of {}: was {}, now {new}",
+                    cfg.home.name, cfg.home.address
+                );
+            }
+            cfg.home.address = new;
         }
         cfg.home.credentials = credentials.or(cfg.home.credentials);
         cfg.save(&self.dirs.leaf())?;

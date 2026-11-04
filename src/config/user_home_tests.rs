@@ -17,7 +17,7 @@ fn a_leaf_config_without_home_dir_panics_in_a_test() {
         home_dir: None,
         home: HomeEntry {
             name: "home".into(),
-            address: "127.0.0.1:1".into(),
+            address: crate::config::Addresses::one("127.0.0.1:1"),
             credentials: None,
             rsync_host: None,
             rsync_timeout_secs: None,

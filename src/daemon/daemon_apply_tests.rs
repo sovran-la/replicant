@@ -37,6 +37,35 @@ fn status(bed: &Bed) -> Box<crate::plan::LeafStatus> {
     s
 }
 
+/// The whole sync, control calls and data connections alike, over a leaf
+/// whose first listed address is dead: everything falls through to the one
+/// that answers, and the file lands.
+#[test]
+fn sync_falls_through_a_dead_listed_address_end_to_end() {
+    let bed = Bed::enrolled();
+    testutil::repo(&bed.home_hd.join("work/r"));
+    let home = Daemon::start(bed.home_dirs.clone()).unwrap();
+    let live = home.tcp_addr().unwrap().to_string();
+    let dead = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string();
+    super::test_certs::equip_leaf(&bed);
+    super::test_certs::leaf_toml(&bed, &dead);
+    let mut cfg = crate::config::LeafConfig::load(&bed.leaf_dirs.leaf())
+        .unwrap()
+        .unwrap();
+    cfg.home.address = crate::config::Addresses::new(vec![dead, live]).unwrap();
+    cfg.save(&bed.leaf_dirs.leaf()).unwrap();
+    let leaf = Daemon::start(bed.leaf_dirs.clone()).unwrap();
+
+    let r = sync(&bed);
+    assert_eq!(r.outcome, Outcome::Done, "{r:#?}");
+    assert!(bed.leaf_hd.join("work/r/README").exists());
+    leaf.stop();
+    home.stop();
+}
 #[test]
 fn sync_applies_over_mtls_and_both_journals_keep_the_lines() {
     let bed = Bed::enrolled();

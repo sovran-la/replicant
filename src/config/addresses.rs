@@ -48,32 +48,15 @@ impl Addresses {
         self.0.len()
     }
 
+    /// Never, by construction; clippy wants it beside `len`.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-
-    /// The first one: what a single-address caller would have used.
-    pub fn first(&self) -> &str {
-        &self.0[0]
     }
 }
 
 impl std::fmt::Display for Addresses {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0.join(", "))
-    }
-}
-
-/// One address, as written: no port applied, no trimming.
-impl From<&str> for Addresses {
-    fn from(s: &str) -> Self {
-        Self::one(s)
-    }
-}
-
-impl From<String> for Addresses {
-    fn from(s: String) -> Self {
-        Self::one(s)
     }
 }
 
@@ -96,7 +79,10 @@ impl Serialize for Addresses {
 
 impl<'de> Deserialize<'de> for Addresses {
     fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
-        let list = match OneOrMany::deserialize(d)? {
+        // The untagged enum's own message names it; say what was wanted.
+        let list = match OneOrMany::deserialize(d).map_err(|_| {
+            serde::de::Error::custom("expected an address (\"host:port\") or a list of them")
+        })? {
             OneOrMany::One(s) => vec![s],
             OneOrMany::Many(v) => v,
         };
@@ -139,7 +125,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(a.as_slice(), ["b:1".to_string(), "a:7750".to_string()]);
-        assert_eq!(a.first(), "b:1");
+        assert_eq!(a.iter().next(), Some("b:1"));
         assert_eq!(a.to_string(), "b:1, a:7750");
         assert_eq!(a.len(), 2);
         assert!(!a.is_empty());
@@ -154,12 +140,35 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("at least one"), "{err}");
-        let err = toml::from_str::<Doc>("address = 7\n")
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("untagged") || err.contains("data did not match"),
-            "{err}"
+        for bad in [
+            "address = 7\n",
+            "address = [\"a\", 7]\n",
+            "address = { a = 1 }\n",
+        ] {
+            let err = toml::from_str::<Doc>(bad).unwrap_err().to_string();
+            assert!(
+                err.contains("expected an address (\"host:port\") or a list of them"),
+                "{bad}: {err}"
+            );
+            assert!(!err.contains("OneOrMany"), "{err}");
+            assert!(err.contains("line 1"), "keeps the position: {err}");
+        }
+
+        // A bare IPv6 literal gets brackets and the port; a bracketed or
+        // scoped one is left as written.
+        let v6 = Addresses::new(vec![
+            "2001:db8::1".into(),
+            "[2001:db8::2]:7".into(),
+            "fe80::1%en0".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            v6.as_slice(),
+            [
+                "[2001:db8::1]:7750".to_string(),
+                "[2001:db8::2]:7".to_string(),
+                "[fe80::1%en0]:7750".to_string()
+            ]
         );
     }
 }

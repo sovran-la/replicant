@@ -31,7 +31,7 @@ pub enum LocalRequest {
     Ping,
     Subscribe {
         home: String,
-        address: Option<String>,
+        address: Vec<String>,
         credentials: Option<String>,
         paths: Vec<String>,
         as_local: Option<PathBuf>,

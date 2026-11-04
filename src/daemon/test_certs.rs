@@ -49,7 +49,7 @@ pub fn leaf_toml(bed: &Bed, address: &str) {
         home_dir: Some(bed.leaf_hd.clone()),
         home: HomeEntry {
             name: "home".into(),
-            address: address.into(),
+            address: crate::config::Addresses::one(address),
             credentials: None,
             rsync_host: None,
             rsync_timeout_secs: None,

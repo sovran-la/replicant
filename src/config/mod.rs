@@ -162,16 +162,22 @@ pub fn short_hostname(raw: &str) -> Option<String> {
     valid.then_some(first)
 }
 
-/// `host` or `host:port`, with the default port applied.
+/// `host` or `host:port`, with the default port applied. A bare IPv6
+/// literal (two or more colons, no brackets) gets its brackets too.
 pub fn with_port(address: &str) -> String {
-    let has_port = match address.strip_prefix('[') {
-        Some(bracketed) => bracketed.contains("]:"),
-        None => matches!(address.rsplit_once(':'), Some((_, p)) if p.parse::<u16>().is_ok()),
-    };
-    if has_port {
-        address.to_string()
-    } else {
-        format!("{address}:{DEFAULT_PORT}")
+    if address.starts_with('[') {
+        return if address.contains("]:") {
+            address.to_string()
+        } else {
+            format!("{address}:{DEFAULT_PORT}")
+        };
+    }
+    if address.matches(':').count() >= 2 {
+        return format!("[{address}]:{DEFAULT_PORT}");
+    }
+    match address.rsplit_once(':') {
+        Some((_, p)) if p.parse::<u16>().is_ok() => address.to_string(),
+        _ => format!("{address}:{DEFAULT_PORT}"),
     }
 }
 
@@ -226,6 +232,14 @@ mod tests {
         assert_eq!(with_port("127.0.0.1:1"), "127.0.0.1:1");
         assert_eq!(with_port("[::1]:7"), "[::1]:7");
         assert_eq!(with_port("[::1]"), format!("[::1]:{DEFAULT_PORT}"));
+        assert_eq!(
+            with_port("2001:db8::1"),
+            format!("[2001:db8::1]:{DEFAULT_PORT}")
+        );
+        assert_eq!(
+            with_port("fe80::1%en0"),
+            format!("[fe80::1%en0]:{DEFAULT_PORT}")
+        );
     }
 
     #[test]

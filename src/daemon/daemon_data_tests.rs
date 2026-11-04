@@ -167,6 +167,43 @@ fn a_connection_that_is_neither_request_nor_data_is_dropped_and_home_serves_on()
     d.stop();
 }
 
+/// A data connection falls through a dead listed address like a request
+/// does: the walk is in the dialer, under both.
+#[test]
+fn a_data_connection_falls_through_to_the_address_that_answers() {
+    let bed = Bed::enrolled();
+    let d = home(&bed);
+    let id = leaf_identity(&bed, "leaf");
+    let ident = super::tls::Identity::load(&id).unwrap();
+    let dialer = super::remote::Dialer::new(&ident, std::time::Duration::from_millis(500)).unwrap();
+    let dead = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string();
+    let live = d.tcp_addr().unwrap().to_string();
+    let t = std::time::Duration::from_secs(5);
+
+    let mut c = dialer
+        .open_data_any(&[dead.clone(), live.clone()], t)
+        .unwrap();
+    assert_eq!(dialer.preferred().unwrap().entry, live);
+    // It is a real data connection: home answers garbage with a refusal frame.
+    c.io().write_all(b"GET / HTTP/1.0\r\n\r\n").unwrap();
+    assert_eq!(c.recv().unwrap().kind, Kind::Refused);
+
+    // Only the dead one listed: the data path reports it like a request would.
+    let err = match dialer.open_data_any(std::slice::from_ref(&dead), t) {
+        Ok(_) => panic!("a dead address answered"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        err.contains(&format!("home at {dead} is unreachable")),
+        "{err}"
+    );
+    d.stop();
+}
+
 #[test]
 fn homes_manifest_of_a_unit_needs_the_head_and_honours_every_exclude() {
     let bed = Bed::enrolled();

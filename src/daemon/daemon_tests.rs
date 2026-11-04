@@ -30,7 +30,7 @@ fn enroll_approve_status_dry_run_fleet_and_log_over_mtls() {
 
     let sub = LocalRequest::Subscribe {
         home: "home".into(),
-        address: None,
+        address: vec![],
         credentials: None,
         paths: vec![format!("{}/work", bed.leaf_hd.display())],
         as_local: None,
@@ -176,7 +176,7 @@ fn subscribe_as_records_the_local_mapping_and_unsubscribe_drops_it() {
     let work2 = bed.tmp.path().join("work2/x");
     let sub = LocalRequest::Subscribe {
         home: "home".into(),
-        address: None,
+        address: vec![],
         credentials: None,
         paths: vec!["~/work/x".into()],
         as_local: Some(work2.clone()),
@@ -208,7 +208,7 @@ fn subscribe_as_records_the_local_mapping_and_unsubscribe_drops_it() {
 
     let other_home = LocalRequest::Subscribe {
         home: "elsewhere".into(),
-        address: None,
+        address: vec![],
         credentials: None,
         paths: vec!["~/work".into()],
         as_local: None,
@@ -282,8 +282,26 @@ fn home_without_listen_refuses_to_start() {
     assert!(err.contains("[daemon] listen"), "{err}");
 }
 
+/// `stop` with a bound: a listener that is not woken shows up as a failure
+/// here, not as a test that never ends.
+fn stop_within(d: Daemon, limit: std::time::Duration) {
+    let t = std::thread::spawn(move || d.stop());
+    let deadline = std::time::Instant::now() + limit;
+    while !t.is_finished() {
+        assert!(std::time::Instant::now() < deadline, "stop did not finish");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    t.join().unwrap();
+}
+
 #[test]
 fn home_listens_on_every_listed_address_and_a_leaf_falls_back_to_one_that_answers() {
+    // Two distinct loopback listeners need v6 loopback; without it there is
+    // nothing to test here (a repeated address is one listener).
+    if std::net::TcpListener::bind("[::1]:0").is_err() {
+        eprintln!("skipped: no IPv6 loopback");
+        return;
+    }
     let bed = Bed::enrolled();
     testutil::hand_edit(
         &bed.home_dirs.fleet(),
@@ -316,8 +334,8 @@ fn home_listens_on_every_listed_address_and_a_leaf_falls_back_to_one_that_answer
         panic!()
     };
     assert_eq!(st.enrollment, Enrollment::Enrolled);
-    leaf.stop();
-    home.stop();
+    stop_within(leaf, std::time::Duration::from_secs(10));
+    stop_within(home, std::time::Duration::from_secs(10));
 
     // One listener that cannot bind fails the start outright.
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

@@ -10,7 +10,7 @@ rev 11 2026-11-02 (a confirmed plan is what each unit will do and what it would 
 rev 12 2026-11-03 (rsync removed: the daemons move the bytes over their mTLS link, the native transport; a dry run is the diff of both sides' manifests; home backs up by rename; per-unit progress; `[daemon] streams`. Built on `bsneed/v0.4-native`, release 0.4.0; record: `docs/v0.4-native-notes.md`).
 rev 13 2026-11-03 (the v0.4-native review fixed: every unit diffs again and stops if that is not the plan, a pull too; sockets, FIFOs and devices are skipped on both sides; no frame too large and no panic can wedge a transfer; rollback is a round trip for directories and kind changes; a repo's index goes with its refs; home's `Done` is acked once its names are durable. Known limits restated. Record: "Review fixes" in the notes).
 rev 14 2026-11-03 (the re-review fixed: a unit also stops if a path its plan lists holds anything else now, which rev 13 said and did not do; a read-only directory both sides agree about can be written into; Known limits restated. Record: "Re-review fixes" in the notes).
-rev 15 2026-11-04 (addresses: a leaf's `[home] address` and home's `[daemon] listen` take a list; the dialer tries IPv4 first, skips unscoped link-local IPv6, and sticks with the address that answered. The first real push ran at 52 MB/s over Tailscale's userspace WireGuard and ~190 MB/s once the data path went over the LAN; `host.local` resolved to a link-local address first and cost each connection a 5 s connect timeout. Releases 0.4.1, 0.4.2).
+rev 15 2026-11-04 (addresses: a leaf's `[home] address` and home's `[daemon] listen` take a list; the dialer tries IPv4 first, skips unscoped link-local IPv6, and sticks with the address that answered. The first real push ran at 52 MB/s over Tailscale's userspace WireGuard and ~190 MB/s once the data path went over the LAN; `host.local` resolved to a link-local address first and cost each connection a 5 s connect timeout. Releases 0.4.1, 0.4.2; 0.4.3 after review: handshake bound, resolved-IP stickiness, skipped-address log, repeatable --address, one attempt per error line. Record: `docs/v0.4.2-addresses-review.md`).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -398,8 +398,10 @@ only lower home's `[daemon] streams`). The v0.3 keys `rsync_host` and
 
 ### Addresses are routing, not trust (rev 15)
 
-Every connection pins the peer's certificate, so where a daemon is reached
-is only a matter of routing. Both sides take a list:
+Every connection verifies the peer (home pins each leaf's certificate by
+fingerprint; a leaf checks home's certificate against the CA it holds, the
+fixed server name and server-only use), so where a daemon is reached is
+only a matter of routing. Both sides take a list:
 
 ```toml
 # birchbook: leaf.toml — the LAN name first, the tailnet address when away
@@ -412,23 +414,32 @@ address = ["thistledown.local:7750", "100.64.10.99:7750"]
 listen = ["192.168.10.199:7750", "100.64.10.99:7750"]
 ```
 
-A bare string still works for either. Home binds every listener or refuses
-to start (a home answering on half its interfaces is a config mistake, not
-a degraded start), and the unspecified address is still refused. A leaf
-tries its list in order and then sticks with whichever answered for the
-rest of its session; if that one fails it walks the list again, and when
-none answers the error names every attempt. Within one name, IPv4 is tried
-before IPv6 and a link-local IPv6 address without a scope is never tried:
-mDNS hands those back first for `host.local`, and without a scope the SYN
-goes nowhere and the dial sat out the whole connect timeout per connection
-(that was 0.4.0's 9.5 s per repo and 40 s dry runs).
+A bare string still works for either, and `subscribe --address` can be
+repeated to write a list (one `--address` replaces the whole list, and the
+daemon logs when that shrinks it). Home binds every listener or refuses to
+start (a home answering on half its interfaces is a config mistake, not a
+degraded start), and the unspecified address is still refused. A leaf tries
+its list in order and then sticks with whichever answered, down to the IP it
+answered at, for the rest of that CLI request; if that one fails it walks
+the list again, and when none answers the error lists every attempt, one per
+line. A listed address that was skipped on the way to one that answered is
+logged by the daemon, so a sync quietly running over the slow path, or
+something at the LAN address that is not home, leaves a trace. The TLS
+handshake is bounded on its own (10 s, as on home) rather than by the
+request deadline, so a peer that accepts TCP and says nothing costs seconds,
+not the 900 s a request may take. Within one name, IPv4 is tried before
+IPv6 and a link-local IPv6 address without a scope is never tried: mDNS
+hands those back first for `host.local`, and without a scope the SYN goes
+nowhere and the dial sat out the whole connect timeout per connection (that
+was 0.4.0's 9.5 s per repo and 40 s dry runs).
 
 Why it matters: Tailscale on macOS is userspace WireGuard, and its network
 extension pegged a core at 52 MB/s. The same transfer over the LAN ran at
 ~190 MB/s on the big unit. Thistledown's LAN address is DHCP, so a leaf
-names it by mDNS; home's own `listen` entry is the literal address and a
-lease change means a restart. If that bites, `listen` can learn an
-interface name.
+names it by mDNS. Home's own `listen` entry is the literal address, and
+since every listener must bind, a lease change means home refuses to start
+on any interface until fleet.toml is edited; thistledown wants a DHCP
+reservation, and if that is not enough `listen` can learn an interface name.
 
 The macOS binary is codesigned at install (`Apple Development` identity,
 identifier `la.sovran.replicant`): macOS Local Network privacy and Little

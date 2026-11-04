@@ -30,9 +30,10 @@ pub enum Cmd {
         /// Map the (single) path to a different local path.
         #[arg(long = "as")]
         as_local: Option<PathBuf>,
-        /// Home's daemon address, host:port.
-        #[arg(long)]
-        address: Option<String>,
+        /// Home's daemon address, host:port. Repeat it to list several, in
+        /// the order to try: the LAN name first, the tailnet address after.
+        #[arg(long, action = clap::ArgAction::Append)]
+        address: Vec<String>,
         /// Home's bundle, if not ~/.sovran/replicant/home.pem.
         #[arg(long)]
         credentials: Option<String>,
