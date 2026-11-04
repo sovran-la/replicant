@@ -3,8 +3,10 @@
 //! A leaf's `[home] address` and home's `[daemon] listen` both take either a
 //! string or a list. A leaf lists where home is from wherever this machine
 //! might be (the LAN name first, the tailnet address after); home lists each
-//! interface it answers on. Trust never depends on the address: every
-//! connection pins the peer's certificate, so an address is only routing.
+//! interface it answers on. Trust never depends on the address: home pins
+//! each leaf's certificate by fingerprint, and a leaf checks home's against
+//! the CA it holds, the fixed server name and server-only use, on every
+//! connection. So an address is only routing.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 

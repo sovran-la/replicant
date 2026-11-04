@@ -37,6 +37,31 @@ pub fn recv<R: Read, T: DeserializeOwned>(r: R) -> Result<T> {
 /// [`recv`] from a reader kept across messages: whatever it buffered past
 /// this line is the next message's, not lost with a throwaway buffer.
 pub fn recv_buffered<R: BufRead, T: DeserializeOwned>(r: &mut R) -> Result<T> {
+    parse(&read_line(r)?)
+}
+
+/// [`recv`], but the message's `version` field is compared with `expected`
+/// before the rest is read: a message from another version, whose shape may
+/// differ, then gets `mismatch`'s error, which says which versions disagree,
+/// instead of "unreadable message" about some field.
+pub fn recv_versioned<R: Read, T: DeserializeOwned>(
+    r: R,
+    expected: u32,
+    mismatch: impl FnOnce(u32) -> Error,
+) -> Result<T> {
+    #[derive(serde::Deserialize)]
+    struct Peek {
+        version: u32,
+    }
+    let line = read_line(&mut BufReader::new(r))?;
+    let peek: Peek = parse(&line)?;
+    if peek.version != expected {
+        return Err(mismatch(peek.version));
+    }
+    parse(&line)
+}
+
+fn read_line<R: BufRead>(r: &mut R) -> Result<Vec<u8>> {
     let mut line = Vec::new();
     r.take(MAX_MESSAGE).read_until(b'\n', &mut line)?;
     if line.is_empty() {
@@ -49,7 +74,11 @@ pub fn recv_buffered<R: BufRead, T: DeserializeOwned>(r: &mut R) -> Result<T> {
             "message truncated or larger than the limit".into(),
         ));
     }
-    serde_json::from_slice(&line).map_err(|e| Error::Remote(format!("unreadable message: {e}")))
+    Ok(line)
+}
+
+fn parse<T: DeserializeOwned>(line: &[u8]) -> Result<T> {
+    serde_json::from_slice(line).map_err(|e| Error::Remote(format!("unreadable message: {e}")))
 }
 
 pub type ServerStream = StreamOwned<ServerConnection, TcpStream>;

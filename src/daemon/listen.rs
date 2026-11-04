@@ -42,7 +42,18 @@ pub(super) fn spawn_tcp(
                     return serve_data(&home, s, first[0], peer);
                 }
                 let line = std::io::Read::chain(&first[..], &mut s);
-                let answer = match (remote::recv::<_, wire::HomeCall>(line), peer) {
+                // The version first: a leaf of another version may shape
+                // the request differently, and should hear which versions
+                // disagree, not which field was unreadable.
+                let call =
+                    remote::recv_versioned::<_, wire::HomeCall>(line, wire::WIRE_VERSION, |v| {
+                        crate::Error::Remote(format!(
+                            "request is wire version {v}, this home speaks {}; run the same \
+                             replicant on both",
+                            wire::WIRE_VERSION
+                        ))
+                    });
+                let answer = match (call, peer) {
                     (Ok(call), Some(peer)) => {
                         home.handle_from(call, &peer, &|| remote::connected(&s.sock))
                     }

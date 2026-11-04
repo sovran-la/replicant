@@ -67,6 +67,17 @@ pub fn subscribed(o: &SubscribeOutcome) -> String {
             o.home
         );
     }
+    if !o.addresses.is_empty() {
+        let _ = writeln!(s, "{} is reached at: {}", o.home, o.addresses.join(", "));
+    }
+    if !o.replaced.is_empty() {
+        let _ = writeln!(
+            s,
+            "note: --address replaced the saved list ({}); add every address you want tried, \
+             LAN first, with one --address each",
+            o.replaced.join(", ")
+        );
+    }
     s
 }
 

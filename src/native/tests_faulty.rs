@@ -10,7 +10,6 @@ use crate::daemon::wire::{HomeReply, HomeRequest};
 use crate::plan::{DataLink, HomeLink};
 use crate::testutil::InProcess;
 use std::io::{Read, Write};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -110,20 +109,33 @@ impl HomeLink for Faulty<'_> {
                 let (leaf, from_leaf) = UnixStream::pair()?;
                 let (to_home, home_end) = UnixStream::pair()?;
                 let home = self.inner.home;
-                // A cut kills both ends, as a dead network does: home's own
-                // socket too, or a write of home's would wait out its timeout.
-                let home_ctl = Mutex::new(Some(home_end.try_clone()?));
                 Ok(DataLink {
                     conn: Conn::unix(leaf)?,
                     serve: Some(Box::new(move || {
-                        // Home's end first: on macOS a unix socket whose peer
-                        // has shut down cannot be shut itself (ENOTCONN).
+                        // A cut kills both directions at once, as a dead
+                        // network does, touching only the two sockets this
+                        // fixture owns: each is the peer of a product socket.
+                        // Shutting their write sides gives the leaf and home
+                        // EOF on their next read; draining their read sides
+                        // until EOF keeps a product write from ever blocking
+                        // on a full buffer (the fixture no longer forwards,
+                        // so nothing else would empty it; and a peer's
+                        // shutdown does not wake a writer already blocked).
+                        //
+                        // Never the product's own socket: on macOS a read
+                        // under SO_RCVTIMEO can hang for good when its socket
+                        // is shut down from another thread, past its timeout
+                        // (the race `daemon::local` works around with poll).
+                        // Shutting home's end here did that, and hung the
+                        // suite in one run of three or four.
                         let cut = |a: &UnixStream, b: &UnixStream| {
-                            if let Some(h) = home_ctl.lock().unwrap().as_ref() {
-                                let _ = h.shutdown(std::net::Shutdown::Both);
-                            }
-                            let _ = a.shutdown(std::net::Shutdown::Both);
-                            let _ = b.shutdown(std::net::Shutdown::Both);
+                            let _ = a.shutdown(std::net::Shutdown::Write);
+                            let _ = b.shutdown(std::net::Shutdown::Write);
+                        };
+                        let drain = |r: &UnixStream| {
+                            let mut sink = [0u8; 8192];
+                            let mut r = r;
+                            while matches!(r.read(&mut sink), Ok(n) if n > 0) {}
                         };
                         let moved = AtomicUsize::new(0);
                         // How much of `n` bytes may still pass.
@@ -135,8 +147,6 @@ impl HomeLink for Faulty<'_> {
                             s.spawn(|| {
                                 let c = Conn::unix(home_end).unwrap();
                                 home.serve_data(&crate::daemon::home::Caller::Trusted, c);
-                                // Home is done: its socket closes for real.
-                                home_ctl.lock().unwrap().take();
                             });
                             s.spawn(|| {
                                 let (mut r, mut w) = (&from_leaf, &to_home);
@@ -147,7 +157,8 @@ impl HomeLink for Faulty<'_> {
                                     if k < n {
                                         // The cut: both ways, at once.
                                         let _ = w.write_all(&buf[..k]);
-                                        return cut(&from_leaf, &to_home);
+                                        cut(&from_leaf, &to_home);
+                                        return drain(&from_leaf);
                                     }
                                     if n == 0 || w.write_all(&buf[..n]).is_err() {
                                         break;
@@ -156,6 +167,7 @@ impl HomeLink for Faulty<'_> {
                                 // The leaf is done, or home is gone: pass the
                                 // end on, and let home's last words through.
                                 let _ = to_home.shutdown(std::net::Shutdown::Write);
+                                drain(&from_leaf);
                             });
                             let (mut r, mut w) = (&to_home, &from_leaf);
                             let mut buf = [0u8; 8192];
@@ -171,6 +183,7 @@ impl HomeLink for Faulty<'_> {
                                 }
                             }
                             cut(&from_leaf, &to_home);
+                            drain(&to_home);
                         });
                     })),
                 })

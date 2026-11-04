@@ -208,6 +208,8 @@ fn subscribe_outcomes_explain_what_happens_next() {
         requested: vec!["work/tundra".into()],
         paths: vec!["work/tundra".into()],
         absorbed: vec![],
+        addresses: vec![],
+        replaced: vec![],
     };
     let s = subscribed(&pending);
     assert!(s.contains("On thistledown run `replicant approve`"), "{s}");

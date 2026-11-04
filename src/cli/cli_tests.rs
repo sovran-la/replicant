@@ -20,6 +20,25 @@ fn parses_the_plan_examples() {
     ])
     .unwrap();
     assert!(matches!(c.cmd, Cmd::Subscribe { ref as_local, .. } if as_local.is_some()));
+    // `--address` repeats, in order; absent is an empty list, not an error.
+    let c = Cli::try_parse_from([
+        "replicant",
+        "subscribe",
+        "thistledown",
+        "/w",
+        "--address",
+        "thistledown.local",
+        "--address",
+        "100.64.10.99:7750",
+    ])
+    .unwrap();
+    assert!(matches!(
+        c.cmd,
+        Cmd::Subscribe { ref address, .. }
+            if address == &["thistledown.local".to_string(), "100.64.10.99:7750".to_string()]
+    ));
+    let c = Cli::try_parse_from(["replicant", "subscribe", "thistledown", "/w"]).unwrap();
+    assert!(matches!(c.cmd, Cmd::Subscribe { ref address, .. } if address.is_empty()));
     assert!(
         Cli::try_parse_from(["replicant", "subscribe", "thistledown"]).is_err(),
         "paths required"

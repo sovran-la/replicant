@@ -11,7 +11,7 @@
 //! transfer (the unit left interrupted, its marker kept) and starts no other
 //! unit (review N1).
 
-use super::remote::{recv, recv_buffered, send};
+use super::remote::{recv_buffered, recv_versioned, send};
 use super::wire::{
     LOCAL_WIRE_VERSION, LocalAnswer, LocalCall, LocalFrame, LocalReply, LocalRequest,
 };
@@ -74,14 +74,18 @@ pub fn read_answer(r: &mut impl BufRead, on: &mut dyn FnMut(ProgressEvent)) -> R
 /// What serves a request: its answer, given where to send progress.
 pub type Handler<'h> = &'h dyn Fn(LocalRequest, &Progress<'_>) -> LocalAnswer;
 
-/// Serve one connection with `handle`.
+/// Serve one connection with `handle`. The version is checked before the
+/// request is read, so a CLI of another version hears that, not a field it
+/// shaped differently.
 pub fn serve(mut s: UnixStream, handle: Handler<'_>) {
-    let answer: LocalAnswer = match recv::<_, LocalCall>(&mut s) {
-        Ok(c) if c.version == LOCAL_WIRE_VERSION => watched(&s, |p| handle(c.request, p)),
-        Ok(c) => Err(format!(
-            "the CLI speaks wire version {} and this daemon {LOCAL_WIRE_VERSION}; restart the daemon after upgrading",
-            c.version
-        )),
+    let call = recv_versioned::<_, LocalCall>(&mut s, LOCAL_WIRE_VERSION, |v| {
+        Error::Daemon(format!(
+            "the CLI speaks wire version {v} and this daemon {LOCAL_WIRE_VERSION}; restart the \
+             daemon after upgrading"
+        ))
+    });
+    let answer: LocalAnswer = match call {
+        Ok(c) => watched(&s, |p| handle(c.request, p)),
         Err(e) => Err(e.to_string()),
     };
     if let Err(e) = send(&mut s, &LocalFrame::from(answer)) {

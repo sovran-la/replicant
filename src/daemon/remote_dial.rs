@@ -32,7 +32,7 @@ pub struct Preferred {
 
 /// Why one listed address did not yield a connection.
 #[derive(Debug)]
-enum Miss {
+pub(super) enum Miss {
     /// No TCP connection, or the name did not resolve.
     Unreachable(String),
     /// Something answered and the TLS handshake failed: not home, or not
@@ -169,15 +169,8 @@ impl Dialer {
                         entry: (*entry).clone(),
                         addr,
                     });
-                    if !misses.is_empty() {
-                        eprintln!(
-                            "replicant: home answered at {entry}; skipped {}",
-                            misses
-                                .iter()
-                                .map(|(a, m)| format!("{a} ({})", m.detail()))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        );
+                    if let Some(line) = skipped_line(entry, &misses) {
+                        eprintln!("replicant: {line}");
                     }
                     return Ok(stream);
                 }
@@ -260,18 +253,20 @@ impl Dialer {
         let conn = ClientConnection::new(self.config.clone(), name)
             .map_err(|e| Miss::Refused(e.to_string()))?;
         let mut stream = StreamOwned::new(conn, tcp);
-        // A peer that accepts TCP and then says nothing, or goes away mid
-        // handshake, is unreachable, not a refusal: no certificate was judged.
+        // Only a TLS verdict is a refusal: rustls reports its own errors (a
+        // certificate it or the peer rejected, an alert, a corrupt message)
+        // as InvalidData. Every other kind is the network: a peer that
+        // accepts TCP and says nothing, goes away mid-handshake, or a link
+        // that drops (ENETDOWN, EHOSTUNREACH). None of those judged a
+        // certificate, so none should blame the bundle.
         stream.conn.complete_io(&mut stream.sock).map_err(|e| {
             use std::io::ErrorKind::*;
             match e.kind() {
+                InvalidData => Miss::Refused(e.to_string()),
                 WouldBlock | TimedOut => {
                     Miss::Unreachable(format!("no answer to the handshake within {:?}", hs))
                 }
-                UnexpectedEof | ConnectionReset | ConnectionAborted | BrokenPipe => {
-                    Miss::Unreachable(format!("closed during the handshake ({e})"))
-                }
-                _ => Miss::Refused(e.to_string()),
+                _ => Miss::Unreachable(format!("lost during the handshake ({e})")),
             }
         })?;
         stream.sock.set_read_timeout(Some(deadline)).map_err(io)?;
@@ -334,3 +329,24 @@ pub(super) fn candidates(resolved: Vec<SocketAddr>, first: Option<SocketAddr>) -
     }
     addrs
 }
+
+/// The log line for a dial that answered at `entry` after `misses`, if there
+/// were any: what was skipped and why, so a sync quietly on the slow path,
+/// or something at the LAN address that is not home, leaves a trace.
+pub(super) fn skipped_line(entry: &str, misses: &[(&String, Miss)]) -> Option<String> {
+    if misses.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "home answered at {entry}; skipped {}",
+        misses
+            .iter()
+            .map(|(a, m)| format!("{a} ({})", m.detail()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+#[cfg(test)]
+#[path = "remote_dial_tests.rs"]
+mod tests;

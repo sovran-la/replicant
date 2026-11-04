@@ -101,6 +101,8 @@ pub fn subscribe(
             requested,
             paths,
             absorbed,
+            addresses: vec![],
+            replaced: vec![],
         });
     };
 
@@ -140,6 +142,8 @@ pub fn subscribe(
         requested,
         paths,
         absorbed,
+        addresses: vec![],
+        replaced: vec![],
     })
 }
 

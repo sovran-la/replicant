@@ -194,5 +194,37 @@ fn another_version_is_refused_by_name() {
     );
 }
 
+/// A CLI of another version whose request has a shape this daemon cannot
+/// read (0.4.2's `subscribe` had `address` as a string): the version is
+/// judged first, so the answer names the versions, not the field.
+#[test]
+fn a_request_of_another_shape_is_refused_by_version_not_by_field() {
+    use std::io::Write;
+    let old_shape = |version: u32| {
+        format!(
+            "{{\"version\":{version},\"request\":{{\"Subscribe\":{{\"home\":\"h\",\"address\":\"h:1\",\"credentials\":null,\"paths\":[\"/x\"],\"as_local\":null}}}}}}\n"
+        )
+    };
+    let answer_to = |raw: &str| {
+        let (mut cli, daemon) = UnixStream::pair().unwrap();
+        cli.write_all(raw.as_bytes()).unwrap();
+        serve(daemon, &|_, _| panic!("not handled"));
+        read_answer(&mut BufReader::new(&cli), &mut |_| {})
+            .unwrap_err()
+            .to_string()
+    };
+
+    let err = answer_to(&old_shape(LOCAL_WIRE_VERSION - 1));
+    assert!(err.contains("restart the daemon"), "{err}");
+    assert!(!err.contains("unreadable"), "{err}");
+
+    // The same shape claiming the current version is a field problem, and
+    // says so; a message with no version at all is unreadable too.
+    let err = answer_to(&old_shape(LOCAL_WIRE_VERSION));
+    assert!(err.contains("unreadable message"), "{err}");
+    let err = answer_to("{\"request\":\"Ping\"}\n");
+    assert!(err.contains("unreadable message"), "{err}");
+}
+
 #[path = "local_watch_tests.rs"]
 mod watch;

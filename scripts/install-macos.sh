@@ -28,6 +28,8 @@ DEST="${DEST:-$HOME/.cargo/bin/replicant}"
 # Stage beside the destination, prove the staged binary runs, then rename:
 # the running daemon keeps its old inode, and a binary that cannot start is
 # never installed.
+# A staged binary that fails its check is removed, not left beside $DEST.
+trap 'rm -f "$DEST.new"' EXIT
 cp target/release/replicant "$DEST.new"
 "$DEST.new" --version
 mv -f "$DEST.new" "$DEST"
@@ -44,8 +46,15 @@ if [ ! -f "$PLIST" ]; then
     echo "no $PLIST; no daemon to restart"
     exit 0
 fi
-if ! launchctl kickstart -k "gui/$(id -u)/la.sovran.replicant" 2>/dev/null; then
+# `launchctl load` can print "Load failed" and still exit 0, so the job is
+# looked up afterwards rather than trusting either command's status.
+LABEL="gui/$(id -u)/la.sovran.replicant"
+if ! launchctl kickstart -k "$LABEL"; then
     launchctl unload "$PLIST" 2>/dev/null || true
     launchctl load "$PLIST"
+fi
+if ! launchctl print "$LABEL" >/dev/null 2>&1; then
+    echo "the daemon is not loaded after the restart; check $PLIST" >&2
+    exit 1
 fi
 echo "daemon restarted"

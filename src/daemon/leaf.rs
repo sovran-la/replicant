@@ -188,14 +188,26 @@ impl Leaf {
                 as_local: Default::default(),
             },
         };
+        // `--address` replaces the whole list. Dropping any is reported to
+        // the terminal (`replaced`): an old command line with one address
+        // would otherwise silently cost the tailnet fallback.
+        let mut replaced = Vec::new();
         if !address.is_empty() {
             let new = Addresses::new(address)
                 .map_err(|why| Error::Config(format!("--address: {why}")))?;
-            if new.len() < cfg.home.address.len() {
+            let dropped: Vec<String> = cfg
+                .home
+                .address
+                .iter()
+                .filter(|a| !new.as_slice().contains(&a.to_string()))
+                .map(str::to_string)
+                .collect();
+            if !dropped.is_empty() {
                 eprintln!(
                     "replicant: --address replaces every address of {}: was {}, now {new}",
                     cfg.home.name, cfg.home.address
                 );
+                replaced = cfg.home.address.iter().map(str::to_string).collect();
             }
             cfg.home.address = new;
         }
@@ -207,13 +219,15 @@ impl Leaf {
                 r.call(HomeRequest::Subscribe { paths: raw })?
             }
         };
-        let HomeReply::Subscribed(out) = reply else {
+        let HomeReply::Subscribed(mut out) = reply else {
             return Err(Error::Remote(format!("unexpected reply: {reply:?}")));
         };
         if let (Some(local), Some(rel)) = (as_local, out.requested.first()) {
             cfg.as_local.insert(rel.clone(), local);
             cfg.save(&self.dirs.leaf())?;
         }
+        out.addresses = cfg.home.address.iter().map(str::to_string).collect();
+        out.replaced = replaced;
         Ok(LocalReply::Subscribed(out))
     }
 }

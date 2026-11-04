@@ -234,6 +234,15 @@ pub struct SubscribeOutcome {
     pub paths: Vec<String>,
     /// Paths dropped because a broader one covers them.
     pub absorbed: Vec<String>,
+    /// Where this leaf now reaches home, as saved in leaf.toml. Filled by
+    /// the leaf daemon for its CLI; home leaves it empty, and empty is not
+    /// sent, so home's wire shape is unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
+    /// What `addresses` replaced, when `--address` dropped any: a list cut
+    /// down to one by an old command line is worth seeing at the terminal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaced: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
