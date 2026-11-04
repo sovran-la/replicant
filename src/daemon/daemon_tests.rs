@@ -283,6 +283,60 @@ fn home_without_listen_refuses_to_start() {
 }
 
 #[test]
+fn home_listens_on_every_listed_address_and_a_leaf_falls_back_to_one_that_answers() {
+    let bed = Bed::enrolled();
+    testutil::hand_edit(
+        &bed.home_dirs.fleet(),
+        "listen = \"127.0.0.1:0\"",
+        "listen = [\"127.0.0.1:0\", \"[::1]:0\"]",
+    );
+    let home = Daemon::start(bed.home_dirs.clone()).unwrap();
+    let addrs = home.tcp_addrs();
+    assert_eq!(addrs.len(), 2, "{addrs:?}");
+    assert!(addrs[0].is_ipv4() && addrs[1].is_ipv6(), "{addrs:?}");
+    assert_eq!(home.tcp_addr(), Some(addrs[0]));
+
+    // The leaf lists a dead address first, then home's second listener.
+    let dead = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string();
+    super::test_certs::equip_leaf(&bed);
+    super::test_certs::leaf_toml(&bed, &dead);
+    let mut cfg = LeafConfig::load(&bed.leaf_dirs.leaf()).unwrap().unwrap();
+    cfg.home.address =
+        crate::config::Addresses::new(vec![dead.clone(), addrs[1].to_string()]).unwrap();
+    cfg.save(&bed.leaf_dirs.leaf()).unwrap();
+    let saved = std::fs::read_to_string(bed.leaf_dirs.leaf()).unwrap();
+    assert!(saved.contains("address = ["), "{saved}");
+
+    let leaf = Daemon::start(bed.leaf_dirs.clone()).unwrap();
+    let LocalReply::LeafStatus(st) = local(&bed.leaf_dirs, LocalRequest::Status) else {
+        panic!()
+    };
+    assert_eq!(st.enrollment, Enrollment::Enrolled);
+    leaf.stop();
+    home.stop();
+
+    // One listener that cannot bind fails the start outright.
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    testutil::hand_edit(
+        &bed.home_dirs.fleet(),
+        "listen = [\"127.0.0.1:0\", \"[::1]:0\"]",
+        &format!(
+            "listen = [\"127.0.0.1:0\", \"{}\"]",
+            taken.local_addr().unwrap()
+        ),
+    );
+    let err = Daemon::start(bed.home_dirs.clone())
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(err.contains("could not bind"), "{err}");
+}
+
+#[test]
 fn leaf_without_a_home_explains_how_to_get_one() {
     let bed = Bed::new("");
     let leaf = Daemon::start(bed.leaf_dirs.clone()).unwrap();

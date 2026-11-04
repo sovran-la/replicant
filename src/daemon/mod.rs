@@ -46,7 +46,8 @@ pub struct Daemon {
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
     dirs: Dirs,
-    tcp: Option<Arc<remote::MtlsListener>>,
+    /// Home's mTLS listeners, one per `[daemon] listen` address.
+    tcp: Vec<Arc<remote::MtlsListener>>,
     /// Held for the daemon's life: the one-daemon-per-directory lock.
     _lock: File,
 }
@@ -97,15 +98,19 @@ impl Daemon {
                     )
                 })?;
                 let identity = tls::Identity::load(&dirs.server_identity())?;
-                let l = Arc::new(remote::MtlsListener::bind(
-                    &crate::config::with_port(&listen),
-                    &identity,
-                )?);
-                threads.push(listen::spawn_tcp(l.clone(), h.clone(), stop.clone()));
+                // Every address binds or none does: a home answering on half
+                // its interfaces is a config mistake, not a degraded start.
+                let mut listeners = Vec::with_capacity(listen.len());
+                for address in listen.iter() {
+                    listeners.push(Arc::new(remote::MtlsListener::bind(address, &identity)?));
+                }
+                for l in &listeners {
+                    threads.push(listen::spawn_tcp(l.clone(), h.clone(), stop.clone()));
+                }
                 threads.push(spawn_reaper(h.clone(), stop.clone()));
-                Some(l)
+                listeners
             }
-            Role::Leaf(_) => None,
+            Role::Leaf(_) => Vec::new(),
         };
 
         // The lock is held, so any socket file here is a dead daemon's.
@@ -135,9 +140,14 @@ impl Daemon {
         })
     }
 
-    /// Where home's mTLS listener is bound (home only).
+    /// Where home's first mTLS listener is bound (home only).
     pub fn tcp_addr(&self) -> Option<std::net::SocketAddr> {
-        self.tcp.as_ref().map(|l| l.local_addr())
+        self.tcp.first().map(|l| l.local_addr())
+    }
+
+    /// Where every mTLS listener is bound, in `[daemon] listen` order.
+    pub fn tcp_addrs(&self) -> Vec<std::net::SocketAddr> {
+        self.tcp.iter().map(|l| l.local_addr()).collect()
     }
 
     /// Block until the daemon stops (it does not, short of a signal).
@@ -151,7 +161,7 @@ impl Daemon {
     pub fn stop(self) {
         self.stop.store(true, Ordering::SeqCst);
         let _ = UnixStream::connect(self.dirs.socket());
-        if let Some(l) = &self.tcp {
+        for l in &self.tcp {
             l.wake();
         }
         for t in self.threads {

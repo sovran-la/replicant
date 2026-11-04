@@ -17,10 +17,12 @@
 //! | `state/` | both | the daemon: contacts, markers, baselines, push manifests |
 //! | `backup/` | home | the daemon: what each push replaced or deleted |
 
+pub mod addresses;
 pub mod edit;
 pub mod fleet;
 pub mod leaf;
 
+pub use addresses::Addresses;
 pub use fleet::{Fleet, HostEntry, Pending, Root, Subscription};
 pub use leaf::{HomeEntry, LeafConfig};
 

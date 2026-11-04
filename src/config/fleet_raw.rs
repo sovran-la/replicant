@@ -22,7 +22,7 @@ pub(super) struct RawFleet {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RawDaemon {
-    pub(super) listen: Option<String>,
+    pub(super) listen: Option<crate::config::Addresses>,
     pub(super) name: Option<String>,
     pub(super) home_dir: Option<String>,
     pub(super) stale_after_hours: Option<u64>,

@@ -278,6 +278,17 @@ fn what_poll_says_is_read_correctly() {
     // Those were taken, and the socket stays blocking for what goes out.
     let flags = unsafe { libc::fcntl(daemon.as_raw_fd(), libc::F_GETFL) };
     assert_eq!(flags & libc::O_NONBLOCK, 0);
+    // The peer gone: what poll really reports (POLLHUP, maybe with POLLIN)
+    // is a hangup. A synthetic POLLIN here would race the close on macOS,
+    // where recv can still say WouldBlock for an instant after it.
     drop(cli);
-    assert!(hung_up(&daemon, libc::POLLIN));
+    let mut pfd = libc::pollfd {
+        fd: daemon.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one live pollfd, for one descriptor this test owns.
+    let ready = unsafe { libc::poll(&mut pfd, 1, 5_000) };
+    assert_eq!(ready, 1, "poll sees the hangup");
+    assert!(hung_up(&daemon, pfd.revents), "revents {:#x}", pfd.revents);
 }

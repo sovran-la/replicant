@@ -212,6 +212,89 @@ fn unreachable_home_is_a_remote_error() {
     assert!(matches!(err, Err(Error::Remote(_))), "{err:?}");
 }
 
+/// A loopback port nobody listens on.
+fn dead_port() -> String {
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    format!("127.0.0.1:{port}")
+}
+
+#[test]
+fn several_addresses_fall_through_to_the_one_that_answers_and_stick() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (server_id, client_id) = ids(tmp.path());
+    let l = Arc::new(MtlsListener::bind("127.0.0.1:0", &server_id).unwrap());
+    let live = l.local_addr().to_string();
+    let dead = dead_port();
+    let d = Dialer::new(&client_id, Duration::from_millis(500)).unwrap();
+    assert_eq!(d.preferred(), None);
+
+    let server = echo_once(l.clone());
+    let addresses = vec![dead.clone(), live.clone()];
+    let got: Ping = d
+        .call_any(
+            &addresses,
+            &Ping {
+                n: 1,
+                text: String::new(),
+            },
+            Duration::from_secs(5),
+        )
+        .unwrap();
+    assert_eq!(got.n, 2);
+    server.join().unwrap().unwrap();
+    assert_eq!(d.preferred().as_deref(), Some(live.as_str()));
+
+    // Preferred first from now on, in a clone too; the dead one last.
+    let order: Vec<&String> = d.clone().order(&addresses);
+    assert_eq!(order, vec![&live, &dead]);
+    // A preferred address that is no longer listed is ignored.
+    let other = vec![dead.clone()];
+    assert_eq!(d.order(&other), vec![&dead]);
+
+    // Every address dead: every attempt is named, and the preference is
+    // dropped so the next dial starts from the top of the list.
+    drop(l);
+    let err = d
+        .call_any::<_, Ping>(
+            &addresses,
+            &Ping {
+                n: 0,
+                text: String::new(),
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("every address"), "{err}");
+    assert!(err.contains(&dead) && err.contains(&live), "{err}");
+    assert_eq!(d.preferred(), None);
+
+    // One address keeps the single-address error shape.
+    let err = d
+        .call_any::<_, Ping>(
+            &other,
+            &Ping {
+                n: 0,
+                text: String::new(),
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("is unreachable") && !err.contains("every address"),
+        "{err}"
+    );
+    assert!(matches!(
+        d.connect_any(&[], Duration::from_secs(1)).map(|_| ()),
+        Err(Error::Remote(m)) if m.contains("no address")
+    ));
+}
+
 #[test]
 fn recv_rejects_empty_truncated_and_garbage() {
     assert!(

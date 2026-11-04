@@ -4,6 +4,7 @@
 //! record of truth); the only per-path thing a leaf keeps is `--as`, because a
 //! local path override is meaningless anywhere but here.
 
+use super::Addresses;
 use crate::paths;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -15,8 +16,10 @@ use std::path::{Path, PathBuf};
 pub struct HomeEntry {
     /// Home's fleet name.
     pub name: String,
-    /// Where home's daemon listens, `host:port`.
-    pub address: String,
+    /// Where home's daemon listens: `host:port`, or a list of them in the
+    /// order to try (the LAN name first, the tailnet address as the
+    /// fallback). The dialer sticks with whichever answered.
+    pub address: Addresses,
     /// Home's bundle; relative paths are beside leaf.toml.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<String>,
@@ -153,7 +156,7 @@ mod tests {
             home_dir: None,
             home: HomeEntry {
                 name: "thistledown".into(),
-                address: "thistledown:7750".into(),
+                address: Addresses::one("thistledown:7750"),
                 credentials: None,
                 rsync_host: None,
                 rsync_timeout_secs: None,
@@ -207,7 +210,7 @@ mod tests {
         )
         .unwrap();
         let c = LeafConfig::load(&p).unwrap().unwrap();
-        assert_eq!(c.home.address, "h:1");
+        assert_eq!(c.home.address, Addresses::one("h:1"));
         c.save(&p).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(!text.contains("rsync"), "{text}");

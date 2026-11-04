@@ -75,7 +75,9 @@ pub struct Pending {
 pub struct Fleet {
     /// What leaves call home. `[daemon] name`, else this machine's hostname.
     pub name: String,
-    pub listen: Option<String>,
+    /// Each address the mTLS listener binds (`[daemon] listen`): one per
+    /// interface leaves reach this machine on. Never the unspecified address.
+    pub listen: Option<super::Addresses>,
     /// Home's own home dir. `[daemon] home_dir`, else `$HOME`.
     pub home_dir: PathBuf,
     pub stale_after: Duration,

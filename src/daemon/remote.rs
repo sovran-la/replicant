@@ -14,7 +14,7 @@ use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection, Str
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// A message larger than this is refused rather than buffered.
@@ -162,11 +162,17 @@ impl MtlsListener {
 }
 
 /// Dialing out to home.
+///
+/// Home may be listed at several addresses (the LAN name, then the tailnet
+/// address); the dialer tries them in order and then sticks with the one that
+/// answered, so a sync's many connections pay for the dead candidates once.
+/// Clones share that choice.
 #[derive(Clone)]
 pub struct Dialer {
     config: Arc<ClientConfig>,
     connect_timeout: Duration,
     source: String,
+    preferred: Arc<Mutex<Option<String>>>,
 }
 
 impl Dialer {
@@ -175,6 +181,7 @@ impl Dialer {
             config: identity.client_config()?,
             connect_timeout,
             source: identity.source.display().to_string(),
+            preferred: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -185,7 +192,17 @@ impl Dialer {
         req: &Q,
         deadline: Duration,
     ) -> Result<A> {
-        let mut stream = self.connect(address, deadline)?;
+        self.call_any(std::slice::from_ref(&address.to_string()), req, deadline)
+    }
+
+    /// [`Dialer::call`] over the first of `addresses` that answers.
+    pub fn call_any<Q: Serialize, A: DeserializeOwned>(
+        &self,
+        addresses: &[String],
+        req: &Q,
+        deadline: Duration,
+    ) -> Result<A> {
+        let mut stream = self.connect_any(addresses, deadline)?;
         send(&mut stream, req)?;
         recv(&mut stream)
     }
@@ -193,10 +210,73 @@ impl Dialer {
     /// A data connection to home: the same handshake as a request, the
     /// magic line, then frames (`native::session::open` says hello on it).
     pub fn open_data(&self, address: &str, timeout: Duration) -> Result<Conn> {
-        let mut stream = self.connect(address, timeout)?;
+        self.open_data_any(std::slice::from_ref(&address.to_string()), timeout)
+    }
+
+    /// [`Dialer::open_data`] over the first of `addresses` that answers.
+    pub fn open_data_any(&self, addresses: &[String], timeout: Duration) -> Result<Conn> {
+        let mut stream = self.connect_any(addresses, timeout)?;
         stream.write_all(crate::native::frame::MAGIC)?;
         let sock = Sock::Tcp(stream.sock.try_clone()?);
         Ok(Conn::new(Box::new(stream), sock))
+    }
+
+    /// The address that answered last, if any.
+    pub fn preferred(&self) -> Option<String> {
+        self.preferred
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// `addresses` with the preferred one (if it is still listed) moved to
+    /// the front; otherwise as given.
+    fn order<'a>(&self, addresses: &'a [String]) -> Vec<&'a String> {
+        let preferred = self.preferred();
+        let mut out: Vec<&String> = Vec::with_capacity(addresses.len());
+        if let Some(p) = preferred
+            .as_ref()
+            .and_then(|p| addresses.iter().find(|a| *a == p))
+        {
+            out.push(p);
+        }
+        let chosen = out.first().copied();
+        out.extend(addresses.iter().filter(|a| Some(*a) != chosen));
+        out
+    }
+
+    /// A connection to home over the first of `addresses` that completes
+    /// the handshake, tried preferred-first. A single address keeps its own
+    /// error; several report every attempt.
+    pub(super) fn connect_any(
+        &self,
+        addresses: &[String],
+        deadline: Duration,
+    ) -> Result<StreamOwned<ClientConnection, TcpStream>> {
+        let order = self.order(addresses);
+        let mut failures: Vec<String> = Vec::new();
+        for address in &order {
+            match self.connect(address, deadline) {
+                Ok(s) => {
+                    if let Ok(mut p) = self.preferred.lock() {
+                        *p = Some((*address).clone());
+                    }
+                    return Ok(s);
+                }
+                Err(e) if order.len() == 1 => return Err(e),
+                Err(e) => failures.push(format!("{address}: {e}")),
+            }
+        }
+        if let Ok(mut p) = self.preferred.lock() {
+            *p = None;
+        }
+        if failures.is_empty() {
+            return Err(Error::Remote("home has no address to dial".into()));
+        }
+        Err(Error::Remote(format!(
+            "home is unreachable at every address; {}",
+            failures.join("; ")
+        )))
     }
 }
 

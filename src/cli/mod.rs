@@ -66,7 +66,7 @@ pub fn run(cli: Cli, dirs: &Dirs) -> Result<i32> {
                 env!("CARGO_PKG_VERSION"),
                 dirs.socket().display()
             );
-            if let Some(a) = d.tcp_addr() {
+            for a in d.tcp_addrs() {
                 eprintln!("listening for leaves on mtls://{a}");
             }
             d.wait();

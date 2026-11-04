@@ -7,7 +7,7 @@
 //! identity for everything and `home.pem` stays only as the CA it trusts.
 
 use super::Leaf;
-use crate::config::LeafConfig;
+use crate::config::{Addresses, LeafConfig};
 use crate::daemon::certs;
 use crate::daemon::journal::Journal;
 use crate::daemon::remote::Dialer;
@@ -28,7 +28,7 @@ const LEASE_CALL_DEADLINE: Duration = Duration::from_secs(10);
 /// The mTLS link to home, as this leaf.
 pub(super) struct Remote<'a> {
     journal: &'a Journal,
-    address: String,
+    address: Addresses,
     me: String,
     home: String,
     home_dir: PathBuf,
@@ -47,7 +47,9 @@ impl HomeLink for Remote<'_> {
             home_dir: self.home_dir.clone(),
             request,
         };
-        let answer: HomeAnswer = self.dialer.call(&self.address, &call, deadline)?;
+        let answer: HomeAnswer = self
+            .dialer
+            .call_any(self.address.as_slice(), &call, deadline)?;
         for line in &answer.journal {
             if let Err(e) = self.journal.append_raw(line) {
                 eprintln!("replicant: could not keep a local copy of a journal line: {e}");
@@ -57,9 +59,10 @@ impl HomeLink for Remote<'_> {
     }
 
     fn open_data(&self, _rel: &str) -> Result<crate::plan::DataLink<'_>> {
-        let conn = self
-            .dialer
-            .open_data(&self.address, crate::native::session::HELLO_TIMEOUT)?;
+        let conn = self.dialer.open_data_any(
+            self.address.as_slice(),
+            crate::native::session::HELLO_TIMEOUT,
+        )?;
         Ok(crate::plan::DataLink { conn, serve: None })
     }
 }

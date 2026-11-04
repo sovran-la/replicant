@@ -40,7 +40,10 @@ fn parse(text: &str) -> Result<Fleet> {
 fn parses_the_plan_example() {
     let f = parse(SAMPLE).unwrap();
     assert_eq!(f.name, "thistledown");
-    assert_eq!(f.listen.as_deref(), Some("127.0.0.1:7750"));
+    assert_eq!(
+        f.listen,
+        Some(crate::config::Addresses::one("127.0.0.1:7750"))
+    );
     assert_eq!(f.home_dir, PathBuf::from("/home/morgan"));
     assert_eq!(f.stale_after, Duration::from_secs(24 * 3600));
     assert_eq!(f.lease, Duration::from_secs(DEFAULT_LEASE_SECS));

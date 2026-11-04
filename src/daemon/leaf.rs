@@ -3,7 +3,9 @@
 
 use super::journal::{Journal, Line};
 use super::wire::*;
-use crate::config::{Dirs, HomeEntry, LeafConfig, leaf::check_local, short_hostname, with_port};
+use crate::config::{
+    Addresses, Dirs, HomeEntry, LeafConfig, leaf::check_local, short_hostname, with_port,
+};
 use crate::plan::apply::{Outcome, Progress};
 use crate::plan::{self, HomeLink, LeafCtx};
 use crate::{Error, Result, paths};
@@ -177,7 +179,7 @@ impl Leaf {
                 home_dir: None,
                 home: HomeEntry {
                     name: home_name.clone(),
-                    address: with_port(&home),
+                    address: Addresses::one(with_port(&home)),
                     credentials: None,
                     rsync_host: None,
                     rsync_timeout_secs: None,
@@ -187,7 +189,7 @@ impl Leaf {
             },
         };
         if let Some(a) = address {
-            cfg.home.address = with_port(&a);
+            cfg.home.address = Addresses::one(with_port(&a));
         }
         cfg.home.credentials = credentials.or(cfg.home.credentials);
         cfg.save(&self.dirs.leaf())?;
