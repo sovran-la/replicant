@@ -7,7 +7,8 @@
 //! file is never torn. Links are made under a temporary name and renamed
 //! the same way, and never followed. Directories are created owner-writable
 //! and get their final mode last ([`Receiver::dir_modes`]), so a read-only
-//! source directory can still be filled.
+//! source directory can still be filled; so can a read-only target directory,
+//! opened the same way when the change list writes into it.
 //!
 //! Every path is checked before it is touched: inside the unit, through
 //! real directories only (a symlinked directory inside the unit is never

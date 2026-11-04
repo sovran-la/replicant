@@ -1,7 +1,8 @@
-//! Carrying a change list out, in the order the receiver needs: what a
-//! dead transfer left, kind changes and directories first (on one
-//! connection), then the files over every connection, then, only once
-//! every file arrived, the deletions and the directories' final modes.
+//! Carrying a change list out, in the order the receiver needs: read-only
+//! directories it writes into opened, what a dead transfer left, kind changes
+//! and directories (on one connection), then the files over every connection,
+//! then, only once every file arrived, the deletions and the directories'
+//! final modes.
 //!
 //! Everything but the leaf's own writes goes through [`frame::lists`], so no
 //! list is ever one frame too large, however long.
@@ -82,6 +83,9 @@ impl Transfer {
         let r = Self::supervised(env, &sh, c.totals(), |watch, s| {
             let mut conns = self.connect(env, n, watch, s)?;
             let mut w = Window::new(&mut conns[0]);
+            for f in frame::lists(Kind::Mkdirs, &c.open)? {
+                w.call(&f)?;
+            }
             for f in frame::lists(Kind::Clean, &d.temps)? {
                 w.call(&f)?;
             }
@@ -116,14 +120,13 @@ impl Transfer {
                 return Err(Error::Transfer("stopped".into()));
             }
             let mut w = Window::new(&mut conns[0]);
+            let mut kept = Vec::new();
             for f in frame::lists(Kind::Deletes, &c.delete)? {
-                w.call(&f)?;
+                kept.extend(w.call(&f)?.parse::<Vec<String>>()?);
             }
             done.deleted = true;
-            // Deepest first across frames too: a parent's final mode may
-            // be one its children cannot be reached through.
-            let deepest: Vec<_> = c.mkdir.iter().rev().collect();
-            for f in frame::lists(Kind::DirModes, &deepest)? {
+            // Deepest first across frames too.
+            for f in frame::lists(Kind::DirModes, &c.final_modes(&kept))? {
                 w.call(&f)?;
             }
             for conn in &mut conns {
@@ -144,6 +147,9 @@ impl Transfer {
     pub(super) fn pull(&self, env: &Env<'_>, d: &Diffed, done: &mut Done) -> Result<()> {
         let c = &d.changes;
         let rx = Receiver::open(&self.leaf_path, self.is_file, None, None)?.expecting(&d.target);
+        for e in &c.open {
+            rx.mkdir(e)?;
+        }
         rx.clean(&d.temps)?;
         for (rel, kind) in &c.replace {
             rx.replace(rel, *kind, &under(rel, &c.delete))?;
@@ -173,9 +179,9 @@ impl Transfer {
         if env.abort.raised() {
             return Err(Error::Transfer("stopped".into()));
         }
-        rx.delete(&c.delete)?;
+        let kept = rx.delete(&c.delete)?;
         done.deleted = true;
-        rx.dir_modes(&c.mkdir)?;
+        rx.dir_modes(&c.final_modes(&kept))?;
         rx.sync_dirs()
     }
 }

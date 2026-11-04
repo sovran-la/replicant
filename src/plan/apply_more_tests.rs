@@ -118,3 +118,51 @@ fn a_unit_gone_on_both_sides_drops_its_baseline() {
     );
     assert!(yes(&bed, &home).applied.is_empty(), "and stays forgotten");
 }
+
+/// The re-review's m10, end to end: this used to fail every run, and stop the
+/// units after it.
+#[test]
+fn a_changed_file_in_a_read_only_directory_does_not_stop_a_sync() {
+    use std::os::unix::fs::PermissionsExt;
+    let chmod = |p: &Path, mode: u32| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let bed = Bed::enrolled();
+    let (h, l) = (bed.home_hd.join("work"), bed.leaf_hd.join("work"));
+    testutil::write(&h.join("ro/f.txt"), "old\n");
+    testutil::repo(&h.join("zeta"));
+    chmod(&h.join("ro"), 0o555);
+    let home = bed.home();
+    assert_eq!(yes(&bed, &home).outcome, Outcome::Done);
+    testutil::next_second();
+    chmod(&h.join("ro"), 0o755);
+    testutil::write(&h.join("ro/f.txt"), "newer contents\n");
+    chmod(&h.join("ro"), 0o555);
+    testutil::write(&h.join("zeta/README"), "home edit\n");
+    testutil::git(&h.join("zeta"), &["commit", "-qam", "home"]);
+    let r = yes(&bed, &home);
+    let mode = std::fs::metadata(l.join("ro"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777;
+    let (text, later) = (
+        std::fs::read_to_string(l.join("ro/f.txt")),
+        std::fs::read_to_string(l.join("zeta/README")),
+    );
+    let again = plan_of(&bed, &home, true);
+    chmod(&h.join("ro"), 0o755);
+    chmod(&l.join("ro"), 0o755);
+    assert_eq!(r.outcome, Outcome::Done);
+    assert_eq!(text.unwrap(), "newer contents\n");
+    assert_eq!(later.unwrap(), "home edit\n", "the unit after it went too");
+    assert_eq!(mode, 0o555);
+    assert!(
+        again
+            .units
+            .iter()
+            .all(|u| matches!(u.decision, Decision::Nothing { .. })),
+        "nothing left: {:#?}",
+        again.units
+    );
+}

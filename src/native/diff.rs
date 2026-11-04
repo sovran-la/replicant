@@ -11,10 +11,18 @@
 //! must go before a directory can take its name), then directories,
 //! parents before children, then files and links, then deletions,
 //! children before parents.
+//!
+//! A directory read-only on the target that the source agrees about is no
+//! change, and no line in a plan, but nothing can be written into it as it
+//! is: [`ChangeList::open`] names those this list writes into. The receiver
+//! opens them before anything else and gives them their mode back in the
+//! round that ends the transfer, from here and not from memory: a transfer
+//! is several connections to as many receivers, none knowing when the
+//! others are done.
 
 use super::manifest::{Entry, EntryKind, Manifest};
 use crate::changes::{Change, ChangeKind, Itemized};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChangeList {
@@ -29,6 +37,10 @@ pub struct ChangeList {
     /// Target paths the source does not have, `(path, is_dir)`, children
     /// first.
     pub delete: Vec<(String, bool)>,
+    /// Directories on the target, not owner-writable and not in `mkdir`,
+    /// that something here creates or removes a name in (the target's
+    /// entries), in path order.
+    pub open: Vec<Entry>,
 }
 
 impl ChangeList {
@@ -48,6 +60,22 @@ impl ChangeList {
             && self.mkdir.is_empty()
             && self.send.is_empty()
             && self.delete.iter().all(|(_, d)| *d)
+    }
+
+    /// Every directory that has a final mode to get, deepest first: a
+    /// parent's may be one its children cannot be reached through. One opened
+    /// that a kind change took is not a directory by then. One opened to be
+    /// emptied is gone, unless it is in `kept` (the deletions found it holds
+    /// what they do not delete), and then it goes back to what it was.
+    pub fn final_modes(&self, kept: &[String]) -> Vec<Entry> {
+        let going: HashSet<&str> = (self.replace.iter().map(|(p, _)| p.as_str()))
+            .chain(self.delete.iter().map(|(p, _)| p.as_str()))
+            .filter(|p| !kept.iter().any(|k| k == p))
+            .collect();
+        let open = self.open.iter().filter(|e| !going.contains(e.rel.as_str()));
+        let mut all: Vec<Entry> = self.mkdir.iter().chain(open).cloned().collect();
+        all.sort_by(|a, b| b.rel.cmp(&a.rel));
+        all
     }
 
     /// Files and links to send, and their bytes.
@@ -98,7 +126,37 @@ pub fn diff(source: &Manifest, target: &Manifest) -> ChangeList {
     out.mkdir.sort();
     out.send.sort();
     out.delete.sort_by(|a, b| b.0.cmp(&a.0));
+    out.open = to_open(&out, target);
     out
+}
+
+/// The read-only target directories `c` creates or removes a name in. Its
+/// `mkdir` opens its own; one only changing mode writes nothing in its parent.
+fn to_open(c: &ChangeList, target: &Manifest) -> Vec<Entry> {
+    let made = c.mkdir.iter().filter(|e| target.get(&e.rel).is_none());
+    let written = c
+        .replace
+        .iter()
+        .map(|(p, _)| p)
+        .chain(made.map(|e| &e.rel))
+        .chain(c.send.iter().map(|e| &e.rel))
+        .chain(c.delete.iter().map(|(p, _)| p));
+    let mut open = BTreeMap::new();
+    for rel in written {
+        let Some((parent, _)) = rel.rsplit_once('/') else {
+            continue;
+        };
+        if let Some(t) = target.get(parent)
+            && t.is_dir()
+            && t.mode & 0o200 == 0
+            && c.mkdir
+                .binary_search_by(|e| e.rel.as_str().cmp(parent))
+                .is_err()
+        {
+            open.insert(parent, t.clone());
+        }
+    }
+    open.into_values().collect()
 }
 
 /// The change list as a dry run reports it, in path order: a kind change is
@@ -155,3 +213,7 @@ pub fn itemize(changes: &ChangeList, target: &Manifest) -> Itemized {
 #[cfg(test)]
 #[path = "diff_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "diff_open_tests.rs"]
+mod open_tests;

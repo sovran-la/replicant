@@ -287,3 +287,7 @@ mod special_tests;
 #[cfg(test)]
 #[path = "transfer_backup_tests.rs"]
 mod backup_tests;
+
+#[cfg(test)]
+#[path = "transfer_readonly_tests.rs"]
+mod readonly_tests;
