@@ -61,6 +61,10 @@ pub(crate) fn sync_with(bed: &Bed, home: &Home, opts: &SyncOpts) -> Result<SyncR
     sync(&link, ctx(bed, &cfg, &dirs), opts)
 }
 
+/// How long an injected-failure sync may take before the binary is aborted
+/// (review A36, A43): every such test ends in seconds.
+pub(crate) const SYNC_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// `sync` as `leaf`, with `inj`'s failure injected into its unit.
 pub(crate) fn sync_inject(
     bed: &Bed,
@@ -82,30 +86,13 @@ pub(crate) fn sync_inject(
     if local {
         mode(0o555);
     }
-    // A transfer that neither finishes nor fails would hang the suite with
-    // no name on it (the A21 hang looked like that). `bounded` cannot wrap
-    // this, since the sync borrows the bed, and a scoped thread cannot be
-    // left behind: so a watchdog names the test and aborts the binary.
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let watchdog = {
-        let (done, unit, how) = (done.clone(), inj.unit.clone(), inj.how);
-        std::thread::spawn(move || {
-            for _ in 0..1200 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                if done.load(std::sync::atomic::Ordering::SeqCst) {
-                    return;
-                }
-            }
-            eprintln!(
-                "sync_inject({unit:?}, {how:?}) is still running after 120 s: a stuck transfer; \
-                 aborting the test binary so it fails by name instead of hanging"
-            );
-            std::process::abort();
-        })
+    let r = {
+        let _dog = crate::testutil::watchdog(
+            SYNC_LIMIT,
+            format!("sync_inject({:?}, {:?})", inj.unit, inj.how),
+        );
+        sync(&link, ctx, opts)
     };
-    let r = sync(&link, ctx, opts);
-    done.store(true, std::sync::atomic::Ordering::SeqCst);
-    let _ = watchdog.join();
     if local {
         mode(0o755);
     }

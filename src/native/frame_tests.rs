@@ -119,7 +119,7 @@ fn a_silent_peer_times_out_as_a_dead_connection() {
 #[test]
 fn shutting_down_from_another_thread_unblocks_a_reader() {
     let (mut a, _b) = Conn::pair().unwrap();
-    let stop = a.stopper().unwrap();
+    let stop = a.stopper();
     let t = std::time::Instant::now();
     std::thread::scope(|s| {
         s.spawn(|| {

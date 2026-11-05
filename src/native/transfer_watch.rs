@@ -12,8 +12,8 @@ use crate::native::polled::Stop;
 use crate::native::workers::Shared;
 use crate::{Error, Result};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::Scope;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,7 @@ const POLL: Duration = Duration::from_millis(20);
 /// What the monitor watches and stops.
 #[derive(Default)]
 pub(super) struct Watch {
-    closers: Mutex<Vec<Stop>>,
+    closers: Mutex<Vec<Arc<Stop>>>,
     /// A worker failed: stop the rest.
     halt: AtomicBool,
     /// The sends are over: the monitor reports once more and ends.
@@ -41,7 +41,7 @@ impl Watch {
     }
 
     /// `c` is one more connection to shut when everything stops.
-    pub(super) fn closing(&self, c: Stop) {
+    pub(super) fn closing(&self, c: Arc<Stop>) {
         self.closers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -54,7 +54,7 @@ impl Watch {
 
     fn shut(&self) {
         let closers = self.closers.lock().unwrap_or_else(|e| e.into_inner());
-        closers.iter().for_each(Stop::stop);
+        closers.iter().for_each(|c| c.stop());
     }
 }
 

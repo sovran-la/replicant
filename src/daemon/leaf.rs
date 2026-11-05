@@ -189,25 +189,7 @@ impl Leaf {
                 as_local: Default::default(),
             },
         };
-        // `--address` replaces the whole list. Dropping any that was saved is
-        // reported to the terminal (`replaced`): an old command line with one
-        // address would otherwise silently cost the tailnet fallback. A list
-        // made up just now from the home's name was never saved, so replacing
-        // it is not worth a word (review A28).
-        let mut replaced = Vec::new();
-        if !address.is_empty() {
-            let new = Addresses::new(address)
-                .map_err(|why| Error::Config(format!("--address: {why}")))?;
-            let was = had_file.then_some(&cfg.home.address);
-            replaced = replaced_addresses(was, &new);
-            if !replaced.is_empty() {
-                eprintln!(
-                    "replicant: --address replaces every address of {}: was {}, now {new}",
-                    cfg.home.name, cfg.home.address
-                );
-            }
-            cfg.home.address = new;
-        }
+        let replaced = replace_address(&mut cfg, had_file, address)?;
         cfg.home.credentials = credentials.or(cfg.home.credentials);
         cfg.save(&self.dirs.leaf())?;
 
@@ -218,12 +200,15 @@ impl Leaf {
             if replaced.is_empty() {
                 e
             } else {
-                Error::Remote(format!(
-                    "{e}\nnote: --address replaced the saved list ({}); {} is now reached at: {}",
-                    replaced.join(", "),
-                    cfg.home.name,
-                    cfg.home.address
-                ))
+                Error::Noted(
+                    Box::new(e),
+                    format!(
+                        "--address replaced the saved list ({}); {} is now reached at: {}",
+                        replaced.join(", "),
+                        cfg.home.name,
+                        cfg.home.address
+                    ),
+                )
             }
         };
         let reply = match self.link(&cfg).map_err(with_note)? {
@@ -268,6 +253,33 @@ mod tests;
 /// the whole saved list, so the terminal can show it. Nothing when nothing
 /// was saved (a list made up from the home's name is not a list anyone
 /// chose), or when every saved address is still listed.
+/// `--address` replaces the whole list. What it replaced is returned, for
+/// the terminal: an old command line with one address would otherwise
+/// silently cost the tailnet fallback. A list made up just now from the
+/// home's name (`had_file` false: no leaf.toml yet) was never saved, so
+/// replacing it is not worth a word (review A28). No `--address` keeps the
+/// list and replaces nothing.
+fn replace_address(
+    cfg: &mut LeafConfig,
+    had_file: bool,
+    address: Vec<String>,
+) -> Result<Vec<String>> {
+    if address.is_empty() {
+        return Ok(Vec::new());
+    }
+    let new = Addresses::new(address).map_err(|why| Error::Config(format!("--address: {why}")))?;
+    let was = had_file.then_some(&cfg.home.address);
+    let replaced = replaced_addresses(was, &new);
+    if !replaced.is_empty() {
+        eprintln!(
+            "replicant: --address replaces every address of {}: was {}, now {new}",
+            cfg.home.name, cfg.home.address
+        );
+    }
+    cfg.home.address = new;
+    Ok(replaced)
+}
+
 fn replaced_addresses(saved: Option<&Addresses>, new: &Addresses) -> Vec<String> {
     match saved {
         Some(was) if was.iter().any(|a| !new.as_slice().contains(&a.to_string())) => {

@@ -12,6 +12,7 @@ rev 13 2026-11-03 (the v0.4-native review fixed: every unit diffs again and stop
 rev 14 2026-11-03 (the re-review fixed: a unit also stops if a path its plan lists holds anything else now, which rev 13 said and did not do; a read-only directory both sides agree about can be written into; Known limits restated. Record: "Re-review fixes" in the notes).
 rev 15 2026-11-04 (addresses: a leaf's `[home] address` and home's `[daemon] listen` take a list; the dialer tries IPv4 first, skips unscoped link-local IPv6, and sticks with the address that answered. The first real push ran at 52 MB/s over Tailscale's userspace WireGuard and ~190 MB/s once the data path went over the LAN; `host.local` resolved to a link-local address first and cost each connection a 5 s connect timeout. Releases 0.4.1, 0.4.2; 0.4.3 after review: handshake bound, resolved-IP stickiness, skipped-address log, repeatable --address, one attempt per error line; 0.4.4 and 0.4.5 after the re-review: wire 7 and version-before-parse on both wires, scoped IPv6 kept, saved addresses in the subscribe reply, only a TLS verdict blames the bundle, and the test suite no longer hangs: the cut fixture shut down home's own socket from another thread, the macOS SO_RCVTIMEO wedge. Record: `docs/v0.4.2-addresses-review.md`).
 rev 16 2026-11-05 (the review's second pass: every data-connection read goes through `native::polled`, a socket polled beside a pipe of its own, so a transfer stopped from another thread (an abort, a failed worker) ends its reads through the pipe rather than through `shutdown()`, which on macOS can leave a read wedged past its timeout (A21, A37); the cut fixture closes instead of shutting down (A30); `subscribe --address` reports what it replaced even when the request fails and not on a first subscribe (A28, A29); test flakes pinned (A23, A31, A39). Release 0.4.6).
+rev 17 2026-11-05 (the review's third pass: 0.4.6 as tagged killed a leaf daemon with SIGPIPE on any failed transfer, because a stop raised after its connection was dropped wrote a pipe with no reader (A41): the pipe's read end is now shared with every stop handle, and the daemon never restores SIGPIPE's default disposition; the process raises its open-file limit at start, a connection costs fewer descriptors, and the suite passes at macOS's default 256 (A42); the sync watchdog is a guard that names the test and ends with it (A43); A39, A44-A50 and the file-size rule (A33). Release 0.4.7. Do not install 0.4.6.)
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -976,7 +977,7 @@ Home logs per-snapshot timing — discover and unit phases, worker count, and
 its five slowest units — so the next regression names itself (decided
 2026-11-01). Discovery is going parallel (in flight).
 
-## Known limits (rev 16)
+## Known limits (rev 17)
 
 - **Ending a blocked read from another thread** is done through a pipe the
   reader polls beside its socket (`native::polled`), never through
@@ -986,7 +987,11 @@ its five slowest units — so the next regression names itself (decided
   does not clear it). A write blocked on a full buffer still ends on its
   write timeout. The rule for this codebase: a socket read that another
   thread must be able to end goes through `Polled`, or through `poll(2)`
-  with a wake pipe as `daemon::local` does.
+  with a wake pipe as `daemon::local` does. And a wake pipe that is written
+  to (rather than closed, as `daemon::local`'s is) keeps its read end alive
+  for as long as anything can write it: a write to a pipe with no reader is
+  SIGPIPE, which 0.4.6 died of (A41). The daemon leaves SIGPIPE ignored, as
+  the Rust runtime sets it; only the CLI restores the default, for `| head`.
 - **Sockets, FIFOs and devices** are never listed, opened, sent or deleted, on
   either side: they count in the unit's notes (`--verbose`). A file whose name
   one holds on the target fails its unit, saying so; nothing replaces one.

@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 pub fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -101,9 +102,77 @@ pub struct Bed {
     pub leaf_hd: PathBuf,
 }
 
+/// Aborts the test binary, naming the test, if this guard is still alive
+/// after `limit`: for a call `bounded` cannot wrap because it borrows the
+/// bed (a sync). A transfer that neither finishes nor fails would otherwise
+/// hang the suite with no name on it (the A21 hang looked like that). The
+/// guard ends with its scope, a panic included, so a test that has already
+/// failed by name is not then blamed for a hang (review A43).
+pub struct Watchdog {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+pub fn watchdog(limit: Duration, what: String) -> Watchdog {
+    let name = std::thread::current()
+        .name()
+        .unwrap_or("<unnamed test>")
+        .to_string();
+    let (stop, rx) = std::sync::mpsc::channel::<()>();
+    let thread = std::thread::spawn(move || {
+        if rx.recv_timeout(limit) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            eprintln!(
+                "{name}: {what} is still running after {limit:?}: a stuck transfer; \
+                 aborting the test binary so it fails by name instead of hanging"
+            );
+            std::process::abort();
+        }
+    });
+    Watchdog {
+        stop: Some(stop),
+        thread: Some(thread),
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Owner-writable again, all of it: a tempdir cleans up only what it can.
+/// A test that leaves a read-only directory anywhere under the bed (a
+/// rollback that restores one, a backup of one) would otherwise leave the
+/// bed behind (review A39).
+pub fn open_all(p: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()) {
+        let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755));
+        if let Ok(entries) = std::fs::read_dir(p) {
+            for e in entries.flatten() {
+                open_all(&e.path());
+            }
+        }
+    }
+}
+
+impl Drop for Bed {
+    fn drop(&mut self) {
+        open_all(self.tmp.path());
+    }
+}
+
 impl Bed {
     /// `hosts` is extra fleet.toml text (hosts, subscriptions).
     pub fn new(hosts: &str) -> Self {
+        // Both sides of every connection live in this process (review A42).
+        static FDS: std::sync::Once = std::sync::Once::new();
+        FDS.call_once(|| {
+            crate::daemon::raise_open_files();
+        });
         let tmp = tempfile::tempdir().unwrap();
         let home_hd = tmp.path().join("home-hd");
         let leaf_hd = tmp.path().join("leaf-hd");

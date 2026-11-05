@@ -30,6 +30,11 @@ pub enum Error {
     /// A root or subscription base that should exist does not (review F4):
     /// never read as "empty", which would plan a whole-unit delete.
     Missing(String),
+    /// Another error, with a note for the terminal under it: what else
+    /// happened that the person should know about, which the error itself
+    /// does not say (`subscribe --address` replaced a saved list, and then
+    /// the request failed). The error keeps its own prefix (review A48).
+    Noted(Box<Error>, String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -50,6 +55,7 @@ impl fmt::Display for Error {
             Error::Daemon(m) => write!(f, "daemon: {m}"),
             Error::Refused(m) => write!(f, "refused: {m}"),
             Error::Missing(m) => write!(f, "missing: {m}"),
+            Error::Noted(e, note) => write!(f, "{e}\nnote: {note}"),
         }
     }
 }

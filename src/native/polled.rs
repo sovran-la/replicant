@@ -6,7 +6,9 @@
 //! `AF_UNIX` rounds beside load; TCP never showed it in 48,000, which is too
 //! few to clear it). A read that `poll(2)`s first, on the socket and on a
 //! pipe of its own, has a wakeup nothing can lose: the thread that wants it
-//! to stop writes the pipe. `daemon::local` ends the CLI watcher the same way.
+//! to stop writes the pipe. (`daemon::local` ends the CLI watcher through a
+//! pipe too, but by closing its write end, which never raises SIGPIPE; this
+//! one writes, so its read end must outlive every writer: see [`Stop`].)
 //!
 //! [`Polled`] is the transport under a connection (a TLS stream reads and
 //! writes through it; an in-process socket pair is wrapped directly). Its
@@ -28,7 +30,12 @@ const FOREVER: u64 = 0;
 
 pub struct Polled<S> {
     inner: S,
-    woken: PipeReader,
+    /// Shared with every [`Stop`], so the read end outlives the reader: a
+    /// stop raised after the connection is gone must find a pipe with a
+    /// reader, or its write is EPIPE, and that is SIGPIPE to a process with
+    /// the default disposition. 0.4.6 as tagged killed a leaf daemon that
+    /// way on any failed transfer (review A41).
+    woken: Arc<PipeReader>,
     wake: PipeWriter,
     /// The read timeout in milliseconds, [`FOREVER`] for none; shared with
     /// every [`Stop`] so [`Stop::set_timeout`] reaches the poll.
@@ -45,6 +52,8 @@ pub enum Raw {
 pub struct Stop {
     sock: Raw,
     wake: PipeWriter,
+    /// Keeps the pipe's read end open for as long as this handle lives.
+    _woken: Arc<PipeReader>,
     timeout_ms: Arc<AtomicU64>,
 }
 
@@ -61,7 +70,7 @@ impl<S: AsRawFd> Polled<S> {
         }
         Ok(Self {
             inner,
-            woken,
+            woken: Arc::new(woken),
             wake,
             timeout_ms: Arc::new(AtomicU64::new(FOREVER)),
         })
@@ -75,6 +84,7 @@ impl<S: AsRawFd> Polled<S> {
         Ok(Stop {
             sock,
             wake: self.wake.try_clone()?,
+            _woken: self.woken.clone(),
             timeout_ms: self.timeout_ms.clone(),
         })
     }
@@ -197,6 +207,7 @@ impl Stop {
                 Raw::Unix(s) => Raw::Unix(s.try_clone()?),
             },
             wake: self.wake.try_clone()?,
+            _woken: self._woken.clone(),
             timeout_ms: self.timeout_ms.clone(),
         })
     }

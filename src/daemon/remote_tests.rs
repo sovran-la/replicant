@@ -297,4 +297,14 @@ fn a_message_at_the_limit_is_read_and_one_past_it_is_refused() {
     assert_eq!(line.len() as u64, MAX_MESSAGE);
     let got: String = recv(line.as_bytes()).unwrap();
     assert_eq!(got.len(), MAX_MESSAGE as usize - 3);
+
+    // A whole line one past the limit, newline and all: refused, not read
+    // (review A44: without the bound this is a valid message).
+    let mut over = String::with_capacity(MAX_MESSAGE as usize + 1);
+    over.push('"');
+    over.extend(std::iter::repeat_n('x', MAX_MESSAGE as usize - 2));
+    over.push_str("\"\n");
+    assert_eq!(over.len() as u64, MAX_MESSAGE + 1);
+    let err = recv::<_, String>(over.as_bytes()).unwrap_err().to_string();
+    assert!(err.contains("truncated or larger than the limit"), "{err}");
 }

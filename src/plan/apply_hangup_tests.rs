@@ -32,6 +32,7 @@ fn the_cli_hanging_up_stops_the_units_transfer_and_the_sync() {
     let report = Mutex::new(None);
     let (mut cli, daemon) = UnixStream::pair().unwrap();
     let started = Instant::now();
+    let _dog = crate::testutil::watchdog(SYNC_LIMIT, "a sync whose CLI hung up".into());
     let mut seen = Vec::new();
     std::thread::scope(|s| {
         let server = s.spawn(|| {

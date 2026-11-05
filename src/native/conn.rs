@@ -14,6 +14,7 @@ use super::polled::{Polled, Stop};
 use crate::Result;
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// A stream frames can be read from and written to.
@@ -22,12 +23,17 @@ impl<T: Read + Write + Send> Duplex for T {}
 
 pub struct Conn {
     io: Box<dyn Duplex>,
-    stop: Stop,
+    /// Shared with whoever holds a [`Self::stopper`]: one handle, not a
+    /// clone of its descriptors per holder (review A42).
+    stop: Arc<Stop>,
 }
 
 impl Conn {
     pub fn new(io: Box<dyn Duplex>, stop: Stop) -> Self {
-        Self { io, stop }
+        Self {
+            io,
+            stop: Arc::new(stop),
+        }
     }
 
     /// A plain socket as a connection (in-process, and the tests).
@@ -78,8 +84,8 @@ impl Conn {
     }
 
     /// A handle another thread can [`Stop::stop`] this connection with.
-    pub fn stopper(&self) -> Result<Stop> {
-        Ok(self.stop.try_clone()?)
+    pub fn stopper(&self) -> Arc<Stop> {
+        self.stop.clone()
     }
 
     /// The raw stream: the bytes before the first frame ([`frame::MAGIC`]).

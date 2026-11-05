@@ -60,7 +60,7 @@ impl Transfer {
                 s.spawn(serve);
             }
             let mut c = d.conn;
-            watch.closing(c.stopper()?);
+            watch.closing(c.stopper());
             if env.abort.raised() {
                 return Err(Error::Transfer("stopped".into()));
             }

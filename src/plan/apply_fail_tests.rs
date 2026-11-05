@@ -137,6 +137,7 @@ fn a_lost_lease_stops_the_units_transfer_and_the_sync() {
     let dirs = bed.leaf_dirs.state();
     let ctx = ctx(&bed, &cfg, &dirs);
     let started = std::time::Instant::now();
+    let _dog = crate::testutil::watchdog(SYNC_LIMIT, "a sync whose lease is taken".into());
     let r = std::thread::scope(|s| {
         s.spawn(|| {
             inj.wait_running(&link);

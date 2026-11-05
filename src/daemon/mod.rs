@@ -76,10 +76,42 @@ fn lock(dirs: &Dirs) -> Result<File> {
     Ok(f)
 }
 
+/// Raise this process's open-file limit to what it may have: a data
+/// connection costs several descriptors (the socket, the stop pipe), and a
+/// shell's default of 256 on macOS is few for a home serving a fleet, or a
+/// test binary carrying both sides of every connection (review A42).
+/// Failing to raise it is not an error; the limit is what it was.
+pub fn raise_open_files() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: a plain getrlimit/setrlimit on a value this function owns.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {
+            return;
+        }
+        // macOS refuses a soft limit above OPEN_MAX (10240 in
+        // <sys/syslimits.h>; libc does not export it), whatever the hard
+        // limit says.
+        let cap: libc::rlim_t = if cfg!(target_os = "macos") {
+            10_240
+        } else {
+            libc::RLIM_INFINITY
+        };
+        let want = lim.rlim_max.min(cap);
+        if want > lim.rlim_cur {
+            lim.rlim_cur = want;
+            let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+        }
+    }
+}
+
 impl Daemon {
     /// Claim the directory, bind everything, and start serving.
     pub fn start(dirs: Dirs) -> Result<Self> {
         let lock = lock(&dirs)?;
+        raise_open_files();
         let role = if dirs.is_home() {
             Role::Home(Arc::new(home::Home::open(dirs.clone())?))
         } else {
@@ -237,6 +269,10 @@ fn home_local(h: &home::Home, req: LocalRequest) -> Result<LocalReply> {
 #[cfg(test)]
 #[path = "daemon_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "daemon_listen_tests.rs"]
+mod listen_tests;
 
 #[cfg(test)]
 #[path = "daemon_queue_tests.rs"]

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::native::tests_fixture::{Fx, manifest, run};
+use crate::testutil::open_all;
 use crate::testutil::write;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
@@ -18,16 +19,6 @@ fn chmod(p: &Path, mode: u32) {
 
 fn mode(p: &Path) -> u32 {
     std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
-}
-
-/// Owner-writable again, all of it: a tempdir cleans up only what it can.
-fn open_all(p: &Path) {
-    if std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir()) {
-        chmod(p, 0o755);
-        for e in std::fs::read_dir(p).unwrap() {
-            open_all(&e.unwrap().path());
-        }
-    }
 }
 
 /// `make` builds (source, target); the transfer runs, either way, and must

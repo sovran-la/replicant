@@ -29,3 +29,16 @@ fn only_that_prefix_goes() {
         assert_eq!(Error::Transfer(text.into()).to_string(), shown);
     }
 }
+
+/// A note under an error keeps the error's own prefix, once (review A48).
+#[test]
+fn a_note_goes_under_the_error_and_doubles_no_prefix() {
+    let e = Error::Noted(
+        Box::new(Error::Remote("home at x:1 is unreachable".into())),
+        "the saved list was replaced".into(),
+    );
+    assert_eq!(
+        e.to_string(),
+        "remote: home at x:1 is unreachable\nnote: the saved list was replaced"
+    );
+}

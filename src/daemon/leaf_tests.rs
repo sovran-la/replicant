@@ -58,3 +58,42 @@ fn replaced_addresses_names_the_saved_list_only_when_it_loses_one() {
         vec!["x:1".to_string()]
     );
 }
+
+/// The call site of `replaced_addresses`: a first subscribe, whose list was
+/// made up from the home's name a moment ago, replaces nothing even when
+/// `--address` names something else; a saved list that loses an address is
+/// named; no `--address` keeps the list (review A47, pinning A28).
+#[test]
+fn replace_address_reports_a_saved_list_only() {
+    let fresh = |address: &[&str]| LeafConfig {
+        name: None,
+        home_dir: None,
+        home: HomeEntry {
+            name: "home".into(),
+            address: Addresses::new(address.iter().map(|s| s.to_string()).collect()).unwrap(),
+            credentials: None,
+            rsync_host: None,
+            rsync_timeout_secs: None,
+            streams: None,
+        },
+        as_local: Default::default(),
+    };
+    // No leaf.toml yet: the default `home:7750` was never saved.
+    let mut cfg = fresh(&["home:7750"]);
+    let r = replace_address(&mut cfg, false, vec!["lan:7750".into()]).unwrap();
+    assert!(r.is_empty(), "{r:?}");
+    assert_eq!(cfg.home.address.as_slice(), ["lan:7750"]);
+    // Saved, and losing one: named.
+    let mut cfg = fresh(&["lan:7750", "tail:7750"]);
+    let r = replace_address(&mut cfg, true, vec!["lan:7750".into()]).unwrap();
+    assert_eq!(r, vec!["lan:7750".to_string(), "tail:7750".to_string()]);
+    assert_eq!(cfg.home.address.as_slice(), ["lan:7750"]);
+    // No --address: kept, nothing replaced.
+    let r = replace_address(&mut cfg, true, vec![]).unwrap();
+    assert!(r.is_empty());
+    assert_eq!(cfg.home.address.as_slice(), ["lan:7750"]);
+    // A bad address is refused before anything changes.
+    let e = replace_address(&mut cfg, true, vec!["   ".into()]).unwrap_err();
+    assert!(e.to_string().starts_with("config: --address:"), "{e}");
+    assert_eq!(cfg.home.address.as_slice(), ["lan:7750"]);
+}
