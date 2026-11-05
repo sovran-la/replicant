@@ -73,7 +73,11 @@ pub struct RepoFacts {
     pub state: UnitState,
     /// `.git/HEAD`, for display.
     pub head: String,
-    /// Dirty paths, relative to the repo (guardrail 1, on the target).
+    /// Uncommitted work, relative to the repo (guardrail 1, on the target):
+    /// tracked paths whose working tree differs from HEAD, and untracked
+    /// paths. Not a staged change whose file on disk matches HEAD: that is
+    /// index state, which the hash counts and a sync replaces, and which an
+    /// index from another machine reports falsely.
     pub dirty: Vec<String>,
     /// Git lock files, relative to the repo (guardrail 3, on the source).
     pub locks: Vec<String>,
@@ -113,11 +117,21 @@ pub fn repo(abs: &Path, ex: &Excludes) -> Result<RepoFacts> {
         if e.worktree_changed {
             content(&mut h, &abs.join(&e.path), e.worktree_deleted)?;
         }
-        dirty.push(e.path.clone());
-        if let Some(o) = &e.orig {
-            dirty.push(o.clone());
+        if e.raw.starts_with('?') {
+            dirty.push(e.path.clone());
         }
     }
+    // Tracked work is what differs from HEAD on disk, not what the index
+    // says: git names the paths, and only those count for guardrail 1.
+    if st.entries.iter().any(|e| !e.raw.starts_with('?')) {
+        dirty.extend(
+            git::worktree_vs_head(abs)?
+                .into_iter()
+                .filter(|p| !ex.path_excluded(p, false)),
+        );
+    }
+    dirty.sort();
+    dirty.dedup();
     Ok(RepoFacts {
         state: UnitState::Present(hex(h)),
         head: st.head,

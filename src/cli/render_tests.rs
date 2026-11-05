@@ -92,6 +92,10 @@ fn plan_prints_the_decision_line_first() {
     );
     assert!(s.contains(".git/index.lock"));
     assert!(
+        s.contains("git is writing on thistledown right now; retry once it is done"),
+        "{s}"
+    );
+    assert!(
         s.contains("… 8 more (--verbose)"),
         "diff preview is capped: {s}"
     );
@@ -313,4 +317,29 @@ fn a_units_notes_are_shown_when_verbose() {
     p.units[0].diff.as_mut().unwrap().notes = vec![note.into()];
     assert!(!plan(&p, false, PLAIN).contains(note));
     assert!(plan(&p, true, PLAIN).contains(note));
+}
+
+/// Guardrail 1 names the machine whose work is at risk, by direction.
+#[test]
+fn a_dirty_target_refusal_names_the_machine_and_the_remedy() {
+    let mut p = a_plan();
+    let dirty = Refusal {
+        guard: Guard::DirtyTarget,
+        unit: "work/e".into(),
+        detail: vec!["plugin/README.md".into()],
+    };
+    let mut push = unit("work/e", Decision::Push);
+    push.refusals = vec![dirty.clone()];
+    let mut pull = unit("work/f", Decision::Pull);
+    pull.refusals = vec![dirty];
+    p.units = vec![push, pull];
+    let s = plan(&p, false, PLAIN);
+    assert!(
+        s.contains("thistledown's copy has uncommitted work on these paths that this push would overwrite: commit or stash it on thistledown"),
+        "{s}"
+    );
+    assert!(
+        s.contains("birchbook's copy has uncommitted work on these paths that this pull would overwrite: commit or stash it on birchbook"),
+        "{s}"
+    );
 }

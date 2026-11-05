@@ -13,6 +13,7 @@ rev 14 2026-11-03 (the re-review fixed: a unit also stops if a path its plan lis
 rev 15 2026-11-04 (addresses: a leaf's `[home] address` and home's `[daemon] listen` take a list; the dialer tries IPv4 first, skips unscoped link-local IPv6, and sticks with the address that answered. The first real push ran at 52 MB/s over Tailscale's userspace WireGuard and ~190 MB/s once the data path went over the LAN; `host.local` resolved to a link-local address first and cost each connection a 5 s connect timeout. Releases 0.4.1, 0.4.2; 0.4.3 after review: handshake bound, resolved-IP stickiness, skipped-address log, repeatable --address, one attempt per error line; 0.4.4 and 0.4.5 after the re-review: wire 7 and version-before-parse on both wires, scoped IPv6 kept, saved addresses in the subscribe reply, only a TLS verdict blames the bundle, and the test suite no longer hangs: the cut fixture shut down home's own socket from another thread, the macOS SO_RCVTIMEO wedge. Record: `docs/v0.4.2-addresses-review.md`).
 rev 16 2026-11-05 (the review's second pass: every data-connection read goes through `native::polled`, a socket polled beside a pipe of its own, so a transfer stopped from another thread (an abort, a failed worker) ends its reads through the pipe rather than through `shutdown()`, which on macOS can leave a read wedged past its timeout (A21, A37); the cut fixture closes instead of shutting down (A30); `subscribe --address` reports what it replaced even when the request fails and not on a first subscribe (A28, A29); test flakes pinned (A23, A31, A39). Release 0.4.6).
 rev 17 2026-11-05 (the review's third pass: 0.4.6 as tagged killed a leaf daemon with SIGPIPE on any failed transfer, because a stop raised after its connection was dropped wrote a pipe with no reader (A41): the pipe's read end is now shared with every stop handle, and the daemon never restores SIGPIPE's default disposition; the process raises its open-file limit at start, a connection costs fewer descriptors, and the suite passes at macOS's default 256 (A42); the sync watchdog is a guard that names the test and ends with it (A43); A39, A44-A50 and the file-size rule (A33). Release 0.4.7. Do not install 0.4.6.)
+rev 18 2026-11-05 (guardrail 1 measures the working tree against HEAD plus untracked paths, not `git status`'s index column: an index synced from another machine reports staged changes whose files on disk are HEAD's, and refused a real push over them. The refusal names the machine whose work is at risk and what to do there. Release 0.4.8).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -584,11 +585,15 @@ quietly become "ignore forever."
 
 Before any destructive apply, in order:
 
-1. **Dirty target.** `git status --porcelain` on every repo on the target
-   side (ignored files never move, so they cannot be lost; rev 7).
-   Anything that would be overwritten and isn't on the source →
-   refuse (`--force` after printing exactly what dies). Stays active on
-   resume.
+1. **Dirty target.** Uncommitted work on every repo on the target side:
+   tracked paths whose working tree differs from HEAD, and untracked paths
+   (ignored files never move, so they cannot be lost; rev 7). Not the
+   index: a staged change whose file on disk matches HEAD is bookkeeping,
+   and an index carried over from another machine calls files modified
+   that are not (rev 18; thistledown's `tundra-tools` refused a push over
+   six such phantoms). Anything that would be overwritten and isn't on the
+   source → refuse, naming the machine and the remedy (`--force` after
+   printing exactly what dies: not built yet). Stays active on resume.
 2. **Stale baseline.** Push refuses if home moved since this leaf last
    pulled (someone else pushed). That is the "both changed" row, caught
    before any transfer.

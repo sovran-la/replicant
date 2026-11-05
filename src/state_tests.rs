@@ -116,6 +116,90 @@ fn excluded_paths_do_not_count() {
     assert_ne!(h(&r), before.state, "without the exclude it is dirty");
 }
 
+/// Guardrail 1 guards work, which lives in the working tree: a staged
+/// change whose file on disk matches HEAD is not work, and an index carried
+/// over from another machine (the Syncthing years; thistledown's
+/// `tundra-tools` on 2026-11-05) calls files modified that are not. The
+/// hash still moves, since the index is state the sync carries.
+#[test]
+fn dirty_is_the_working_tree_against_head_not_the_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("r"));
+    let clean = repo(&r, &Excludes::default()).unwrap();
+    assert!(clean.dirty.is_empty());
+
+    // Staged, then put back on disk: `git status` says MM, the file is HEAD's.
+    testutil::write(&r.join("README"), "staged\n");
+    testutil::git(&r, &["add", "README"]);
+    testutil::write(&r.join("README"), "hello\n");
+    let phantom = repo(&r, &Excludes::default()).unwrap();
+    assert!(phantom.dirty.is_empty(), "{:?}", phantom.dirty);
+    assert_ne!(phantom.state, clean.state, "the index is still state");
+
+    // Staged only: the working tree is the staged content, which is not HEAD.
+    testutil::write(&r.join("README"), "staged\n");
+    assert_eq!(
+        repo(&r, &Excludes::default()).unwrap().dirty,
+        vec!["README"]
+    );
+
+    // Modified on disk, nothing staged.
+    testutil::git(&r, &["reset", "-q"]);
+    assert_eq!(
+        repo(&r, &Excludes::default()).unwrap().dirty,
+        vec!["README"]
+    );
+
+    // A rename: both names count.
+    testutil::write(&r.join("README"), "hello\n");
+    testutil::git(&r, &["mv", "README", "MOVED"]);
+    assert_eq!(
+        repo(&r, &Excludes::default()).unwrap().dirty,
+        vec!["MOVED", "README"]
+    );
+
+    // Untracked is work. A repo with no commit yet: every tracked path.
+    testutil::write(&r.join("new.txt"), "x");
+    assert!(
+        repo(&r, &Excludes::default())
+            .unwrap()
+            .dirty
+            .contains(&"new.txt".to_string())
+    );
+    let unborn = tmp.path().join("unborn");
+    std::fs::create_dir_all(&unborn).unwrap();
+    testutil::git(&unborn, &["init", "-q"]);
+    testutil::write(&unborn.join("a"), "a");
+    testutil::git(&unborn, &["add", "a"]);
+    assert_eq!(
+        repo(&unborn, &Excludes::default()).unwrap().dirty,
+        vec!["a"]
+    );
+}
+
+/// Looking never writes: `git diff` would refresh and rewrite the index
+/// (`--no-optional-locks` does not stop it), so it runs on a scratch copy.
+#[test]
+fn hashing_a_dirty_repo_leaves_its_index_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("r"));
+    testutil::write(&r.join("README"), "staged\n");
+    testutil::git(&r, &["add", "README"]);
+    testutil::write(&r.join("README"), "hello\n");
+    bump_mtime(&r.join("README"));
+    let index = r.join(".git/index");
+    let before = (
+        std::fs::read(&index).unwrap(),
+        std::fs::metadata(&index).unwrap().modified().unwrap(),
+    );
+    assert!(repo(&r, &Excludes::default()).unwrap().dirty.is_empty());
+    let after = (
+        std::fs::read(&index).unwrap(),
+        std::fs::metadata(&index).unwrap().modified().unwrap(),
+    );
+    assert_eq!(before, after);
+}
+
 #[test]
 fn facts_carry_dirty_paths_and_locks() {
     let tmp = tempfile::tempdir().unwrap();

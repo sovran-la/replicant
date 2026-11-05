@@ -61,6 +61,35 @@ pub struct Refusal {
 }
 
 impl Refusal {
+    /// What the refusal means and what to do about it, for the terminal:
+    /// which machine holds the problem, named. `me` and `home` are the two
+    /// hosts; `direction` the unit's. Guardrails whose headline and paths
+    /// already say it all have none.
+    pub fn advice(&self, me: &str, home: &str, direction: Option<Direction>) -> Option<String> {
+        match (self.guard, direction) {
+            (Guard::DirtyTarget, Some(d)) => {
+                let (target, verb) = match d {
+                    Direction::Push => (home, "push"),
+                    Direction::Pull => (me, "pull"),
+                };
+                Some(format!(
+                    "{target}'s copy has uncommitted work on these paths that this {verb} \
+                     would overwrite: commit or stash it on {target}, or discard it there"
+                ))
+            }
+            (Guard::SourceMidWrite, Some(d)) => {
+                let source = match d {
+                    Direction::Push => me,
+                    Direction::Pull => home,
+                };
+                Some(format!(
+                    "git is writing on {source} right now; retry once it is done"
+                ))
+            }
+            _ => None,
+        }
+    }
+
     pub fn headline(&self) -> String {
         format!(
             "guardrail {} ({}): {}",

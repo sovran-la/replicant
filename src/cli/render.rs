@@ -181,6 +181,9 @@ pub fn plan(p: &Plan, verbose: bool, st: Style) -> String {
         }
         for r in &u.refusals {
             let _ = writeln!(s, "    {}", st.red(&format!("REFUSED {}", r.headline())));
+            if let Some(a) = r.advice(&p.me, &p.home, u.decision.direction()) {
+                let _ = writeln!(s, "      {}", st.red(&a));
+            }
             for d in &r.detail {
                 let _ = writeln!(s, "      {}", st.red(d));
             }

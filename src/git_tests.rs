@@ -208,3 +208,22 @@ fn tracked_lists_the_index_including_force_added_paths() {
     testutil::git(&empty, &["init", "-q"]);
     assert!(tracked(&empty).unwrap().is_empty());
 }
+
+/// The scratch index is a copy in the temp dir, ours alone, gone with its
+/// handle: nothing is left behind, and nothing in the repo is touched.
+#[test]
+fn a_scratch_index_is_a_private_copy_that_goes_with_its_handle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("index");
+    std::fs::write(&src, b"DIRC-ish bytes").unwrap();
+    let s = Scratch::copy_of(&src).unwrap();
+    let path = s.0.clone();
+    assert!(path.starts_with(std::env::temp_dir()));
+    assert_eq!(std::fs::read(&path).unwrap(), b"DIRC-ish bytes");
+    let other = Scratch::copy_of(&src).unwrap();
+    assert_ne!(other.0, path, "two at once never share a name");
+    drop(s);
+    assert!(!path.exists());
+    drop(other);
+    assert_eq!(std::fs::read(&src).unwrap(), b"DIRC-ish bytes");
+}

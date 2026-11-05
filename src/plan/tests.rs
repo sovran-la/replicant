@@ -214,6 +214,40 @@ fn both_populated_without_baseline_conflicts_and_is_not_diffed() {
     assert!(p.blocked());
 }
 
+/// A phantom: the target's index says a file is modified, but the file on
+/// disk is HEAD's (an index carried over from another machine; thistledown's
+/// `tundra-tools`, 2026-11-05). No work is at risk, so guardrail 1 passes
+/// and the push, which carries the source's index, goes through.
+#[test]
+fn a_stale_index_on_the_target_is_not_uncommitted_work() {
+    let bed = Bed::enrolled();
+    let (h, l) = diverged(&bed);
+    // The leaf commits its work; home is at its own newer commit, with
+    // README staged as something else and then restored on disk.
+    testutil::git(&l, &["commit", "-qam", "leaf moved"]);
+    testutil::write(&h.join("README"), "staged, never committed\n");
+    testutil::git(&h, &["add", "README"]);
+    testutil::write(&h.join("README"), "home's newer README\n");
+    let status = go(&bed, &bed.home(), &bed.leaf_cfg(), false).unwrap();
+    let home_now = unit(&status, "work/r").home.clone();
+    put_baseline(&bed, "work/r", UnitState::Present("old".into()), home_now);
+    let p = dry(&bed);
+    let r = unit(&p, "work/r");
+    assert_eq!(r.decision, Decision::Push);
+    assert!(r.refusals.is_empty(), "{:?}", r.refusals);
+
+    // The same, with the staged content left on disk: that is work.
+    testutil::write(&h.join("README"), "staged, never committed\n");
+    let status = go(&bed, &bed.home(), &bed.leaf_cfg(), false).unwrap();
+    let home_now = unit(&status, "work/r").home.clone();
+    put_baseline(&bed, "work/r", UnitState::Present("old".into()), home_now);
+    let p = dry(&bed);
+    let r = unit(&p, "work/r");
+    assert_eq!(r.decision, Decision::Push);
+    assert_eq!(r.refusals[0].guard, Guard::DirtyTarget);
+    assert_eq!(r.refusals[0].detail, vec!["README"]);
+}
+
 /// A home repo, the leaf's copy of it, the leaf's uncommitted edit, and a
 /// newer commit on home touching the same file.
 fn diverged(bed: &Bed) -> (PathBuf, PathBuf) {

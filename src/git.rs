@@ -48,7 +48,18 @@ pub struct RepoStatus {
 }
 
 fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
+    run_with(repo, args, None)
+}
+
+/// [`run`], with the index file git should use when it is not the repo's
+/// own: a copy git may refresh and rewrite without touching the repo.
+fn run_with(repo: &Path, args: &[&str], index: Option<&Path>) -> Result<Vec<u8>> {
+    let mut cmd = Command::new("git");
+    cmd.env_remove("GIT_INDEX_FILE");
+    if let Some(i) = index {
+        cmd.env("GIT_INDEX_FILE", i);
+    }
+    let out = cmd
         .arg("--no-optional-locks")
         .args(["-c", "core.fsmonitor=false"])
         .args(["-c", "core.excludesFile=/dev/null"])
@@ -57,7 +68,6 @@ fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
         .output()
         .map_err(|e| Error::Git(format!("could not run git in {}: {e}", repo.display())))?;
     if !out.status.success() {
@@ -179,6 +189,70 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Result<Vec<StatusEntry>> {
         }
     }
     Ok(entries)
+}
+
+/// The tracked paths whose working-tree content differs from HEAD, both
+/// names of a rename: what a sync that replaced the working tree would lose
+/// (guardrail 1). The index is not consulted: a staged change whose file
+/// on disk still matches HEAD is index bookkeeping, not work, and an index
+/// carried over from another machine says "modified" about files that are
+/// not (PLAN.md, "The problem", 1). An unborn HEAD has nothing to differ
+/// from: every tracked path counts.
+///
+/// `git diff` refreshes the index's stat cache and writes it back, which
+/// `--no-optional-locks` does not stop; a status must write nothing in the
+/// repo, so the diff runs against a throwaway copy of the index.
+pub fn worktree_vs_head(repo: &Path) -> Result<Vec<String>> {
+    // `--git-path` answers for a linked worktree too, whose `.git` is a file.
+    let own = run(repo, &["rev-parse", "--git-path", "index"])?;
+    let own = repo.join(String::from_utf8_lossy(&own).trim());
+    if !own.exists() {
+        return tracked(repo);
+    }
+    let scratch = Scratch::copy_of(&own)?;
+    let args = ["diff", "--no-renames", "--name-only", "-z", "HEAD", "--"];
+    let out = match run_with(repo, &args, Some(&scratch.0)) {
+        Ok(out) => out,
+        Err(_) if run(repo, &["rev-parse", "--verify", "-q", "HEAD"]).is_err() => {
+            return tracked(repo);
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(out
+        .split(|b| *b == 0)
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| std::str::from_utf8(t).ok().map(str::to_string))
+        .collect())
+}
+
+/// A copy of a file in the temp directory, gone when dropped.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn copy_of(src: &Path) -> Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let name = format!(
+            "replicant-index-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = std::env::temp_dir().join(name);
+        // Ours alone: created new, never reused.
+        std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let s = Self(path);
+        std::fs::copy(src, &s.0)?;
+        Ok(s)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Every path the repo's index tracks, sorted as git sorts them. A tracked
