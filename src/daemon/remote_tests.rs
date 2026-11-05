@@ -280,3 +280,21 @@ fn connected_sees_a_peer_leave_and_leaves_the_socket_blocking() {
     }
     assert!(!connected(&server), "and stays gone");
 }
+
+/// The message bound holds for a line that never ends, and a line of
+/// exactly the limit is still read (review X10).
+#[test]
+fn a_message_at_the_limit_is_read_and_one_past_it_is_refused() {
+    use std::io::Read;
+    let endless = std::io::repeat(b'x').take(MAX_MESSAGE + 1);
+    let err = recv::<_, String>(endless).unwrap_err().to_string();
+    assert!(err.contains("truncated or larger than the limit"), "{err}");
+
+    let mut line = String::with_capacity(MAX_MESSAGE as usize);
+    line.push('"');
+    line.extend(std::iter::repeat_n('x', MAX_MESSAGE as usize - 3));
+    line.push_str("\"\n");
+    assert_eq!(line.len() as u64, MAX_MESSAGE);
+    let got: String = recv(line.as_bytes()).unwrap();
+    assert_eq!(got.len(), MAX_MESSAGE as usize - 3);
+}

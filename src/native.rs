@@ -19,6 +19,7 @@ pub mod diff;
 pub mod frame;
 pub mod local;
 pub mod manifest;
+pub mod polled;
 pub mod receive;
 pub mod send;
 pub mod serve;

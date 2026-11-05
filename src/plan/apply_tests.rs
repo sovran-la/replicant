@@ -82,7 +82,30 @@ pub(crate) fn sync_inject(
     if local {
         mode(0o555);
     }
+    // A transfer that neither finishes nor fails would hang the suite with
+    // no name on it (the A21 hang looked like that). `bounded` cannot wrap
+    // this, since the sync borrows the bed, and a scoped thread cannot be
+    // left behind: so a watchdog names the test and aborts the binary.
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watchdog = {
+        let (done, unit, how) = (done.clone(), inj.unit.clone(), inj.how);
+        std::thread::spawn(move || {
+            for _ in 0..1200 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if done.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+            }
+            eprintln!(
+                "sync_inject({unit:?}, {how:?}) is still running after 120 s: a stuck transfer; \
+                 aborting the test binary so it fails by name instead of hanging"
+            );
+            std::process::abort();
+        })
+    };
     let r = sync(&link, ctx, opts);
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = watchdog.join();
     if local {
         mode(0o755);
     }

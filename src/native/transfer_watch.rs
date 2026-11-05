@@ -7,7 +7,8 @@
 //! here is an error, and the unit is interrupted like any other.
 
 use super::{Counts, Env, PROGRESS_EVERY, Transfer};
-use crate::native::conn::{Conn, Sock};
+use crate::native::conn::Conn;
+use crate::native::polled::Stop;
 use crate::native::workers::Shared;
 use crate::{Error, Result};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -22,7 +23,7 @@ const POLL: Duration = Duration::from_millis(20);
 /// What the monitor watches and stops.
 #[derive(Default)]
 pub(super) struct Watch {
-    closers: Mutex<Vec<Sock>>,
+    closers: Mutex<Vec<Stop>>,
     /// A worker failed: stop the rest.
     halt: AtomicBool,
     /// The sends are over: the monitor reports once more and ends.
@@ -40,7 +41,7 @@ impl Watch {
     }
 
     /// `c` is one more connection to shut when everything stops.
-    pub(super) fn closing(&self, c: Sock) {
+    pub(super) fn closing(&self, c: Stop) {
         self.closers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -53,7 +54,7 @@ impl Watch {
 
     fn shut(&self) {
         let closers = self.closers.lock().unwrap_or_else(|e| e.into_inner());
-        closers.iter().for_each(Sock::shutdown);
+        closers.iter().for_each(Stop::stop);
     }
 }
 

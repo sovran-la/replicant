@@ -263,3 +263,69 @@ fn an_in_process_link_serves_its_data_connection_on_the_callers_thread() {
         conn.send(&Frame::new(Kind::Done, vec![])).unwrap();
     });
 }
+
+/// Over the mTLS listener too, the version is judged before the request is
+/// read: a leaf of another version, whose `HomeCall` may be shaped
+/// differently, hears which versions disagree (review A32). And home's
+/// bytes for a subscribe outcome carry no empty `addresses`/`replaced`,
+/// so a 0.4.4 leaf reads them unchanged (review X4).
+#[test]
+fn a_mis_shaped_request_over_mtls_is_refused_by_version() {
+    use std::io::Write;
+    let bed = Bed::enrolled();
+    let d = home(&bed);
+    let id = leaf_identity(&bed, "leaf");
+    let ident = super::tls::Identity::load(&id).unwrap();
+    let dialer = super::remote::Dialer::new(&ident, std::time::Duration::from_secs(5)).unwrap();
+    let addr = d.tcp_addr().unwrap().to_string();
+    let t = std::time::Duration::from_secs(5);
+
+    let answer_to = |line: &str| -> super::wire::HomeAnswer {
+        let mut s = dialer.connect(&addr, t).unwrap();
+        s.write_all(line.as_bytes()).unwrap();
+        super::remote::recv(&mut s).unwrap()
+    };
+    // 0.4.2 shape, another version: version first.
+    let old = format!(
+        "{{\"version\":{},\"host\":\"leaf\",\"home_dir\":\"{}\",\"request\":{{\"Nonsense\":1}}}}\n",
+        super::wire::WIRE_VERSION - 1,
+        bed.leaf_hd.display()
+    );
+    let err = answer_to(&old).result.unwrap_err();
+    assert!(
+        err.contains(&format!("wire version {}", super::wire::WIRE_VERSION - 1))
+            && err.contains("run the same replicant on both"),
+        "{err}"
+    );
+    assert!(!err.contains("unreadable"), "{err}");
+    // The same shape claiming this version is a field problem.
+    let same = old.replace(
+        &format!("\"version\":{}", super::wire::WIRE_VERSION - 1),
+        &format!("\"version\":{}", super::wire::WIRE_VERSION),
+    );
+    let err = answer_to(&same).result.unwrap_err();
+    assert!(err.contains("unreadable message"), "{err}");
+
+    let empty = super::wire::HomeAnswer {
+        result: Ok(HomeReply::Subscribed(super::wire::SubscribeOutcome {
+            enrolled: true,
+            home: "h".into(),
+            requested: vec!["a".into()],
+            paths: vec!["a".into()],
+            absorbed: vec![],
+            addresses: vec![],
+            replaced: vec![],
+        })),
+        journal: vec![],
+    };
+    let bytes = serde_json::to_string(&empty).unwrap();
+    assert!(
+        !bytes.contains("addresses") && !bytes.contains("replaced"),
+        "{bytes}"
+    );
+    let back: super::wire::HomeAnswer = serde_json::from_str(&bytes).unwrap();
+    assert!(
+        matches!(back.result, Ok(HomeReply::Subscribed(o)) if o.addresses.is_empty() && o.replaced.is_empty() && o.paths == vec!["a".to_string()])
+    );
+    d.stop();
+}

@@ -166,6 +166,7 @@ impl Leaf {
                 return Err(Error::Path("--as maps exactly one path".into()));
             }
         }
+        let had_file = self.dirs.leaf().exists();
         let mut cfg = match LeafConfig::load(&self.dirs.leaf())? {
             Some(c) if c.home.name != home_name => {
                 return Err(Error::Refused(format!(
@@ -188,36 +189,47 @@ impl Leaf {
                 as_local: Default::default(),
             },
         };
-        // `--address` replaces the whole list. Dropping any is reported to
-        // the terminal (`replaced`): an old command line with one address
-        // would otherwise silently cost the tailnet fallback.
+        // `--address` replaces the whole list. Dropping any that was saved is
+        // reported to the terminal (`replaced`): an old command line with one
+        // address would otherwise silently cost the tailnet fallback. A list
+        // made up just now from the home's name was never saved, so replacing
+        // it is not worth a word (review A28).
         let mut replaced = Vec::new();
         if !address.is_empty() {
             let new = Addresses::new(address)
                 .map_err(|why| Error::Config(format!("--address: {why}")))?;
-            let dropped: Vec<String> = cfg
-                .home
-                .address
-                .iter()
-                .filter(|a| !new.as_slice().contains(&a.to_string()))
-                .map(str::to_string)
-                .collect();
-            if !dropped.is_empty() {
+            let was = had_file.then_some(&cfg.home.address);
+            replaced = replaced_addresses(was, &new);
+            if !replaced.is_empty() {
                 eprintln!(
                     "replicant: --address replaces every address of {}: was {}, now {new}",
                     cfg.home.name, cfg.home.address
                 );
-                replaced = cfg.home.address.iter().map(str::to_string).collect();
             }
             cfg.home.address = new;
         }
         cfg.home.credentials = credentials.or(cfg.home.credentials);
         cfg.save(&self.dirs.leaf())?;
 
-        let reply = match self.link(&cfg)? {
-            Link::Host(r) | Link::Bootstrap(r, _) => {
-                r.call(HomeRequest::Subscribe { paths: raw })?
+        // The list is saved before the request, so a home that is down can
+        // still be named now and reached later. If the request then fails,
+        // what the list replaced must still reach the terminal (review A29).
+        let with_note = |e: Error| {
+            if replaced.is_empty() {
+                e
+            } else {
+                Error::Remote(format!(
+                    "{e}\nnote: --address replaced the saved list ({}); {} is now reached at: {}",
+                    replaced.join(", "),
+                    cfg.home.name,
+                    cfg.home.address
+                ))
             }
+        };
+        let reply = match self.link(&cfg).map_err(with_note)? {
+            Link::Host(r) | Link::Bootstrap(r, _) => r
+                .call(HomeRequest::Subscribe { paths: raw })
+                .map_err(with_note)?,
         };
         let HomeReply::Subscribed(mut out) = reply else {
             return Err(Error::Remote(format!("unexpected reply: {reply:?}")));
@@ -251,3 +263,16 @@ fn journal_unheard(journal: &Journal, me: &str, outcome: &Outcome) {
 #[cfg(test)]
 #[path = "leaf_tests.rs"]
 mod tests;
+
+/// What `--address` is replacing, when it drops any address that was saved:
+/// the whole saved list, so the terminal can show it. Nothing when nothing
+/// was saved (a list made up from the home's name is not a list anyone
+/// chose), or when every saved address is still listed.
+fn replaced_addresses(saved: Option<&Addresses>, new: &Addresses) -> Vec<String> {
+    match saved {
+        Some(was) if was.iter().any(|a| !new.as_slice().contains(&a.to_string())) => {
+            was.iter().map(str::to_string).collect()
+        }
+        _ => Vec::new(),
+    }
+}

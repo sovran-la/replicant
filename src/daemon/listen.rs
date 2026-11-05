@@ -55,7 +55,7 @@ pub(super) fn spawn_tcp(
                     });
                 let answer = match (call, peer) {
                     (Ok(call), Some(peer)) => {
-                        home.handle_from(call, &peer, &|| remote::connected(&s.sock))
+                        home.handle_from(call, &peer, &|| remote::connected(s.sock.inner()))
                     }
                     (Ok(_), None) => wire::HomeAnswer {
                         result: Err("no client certificate".into()),
@@ -82,9 +82,9 @@ fn serve_data(home: &home::Home, mut s: remote::ServerStream, first: u8, peer: O
     let (Some(peer), true) = (peer, ok && rest == magic[1..]) else {
         return eprintln!("replicant: refused a connection that is neither a request nor data");
     };
-    let Ok(sock) = s.sock.try_clone() else {
+    let Ok(stop) = s.sock.stop() else {
         return;
     };
-    let conn = crate::native::conn::Conn::new(Box::new(s), crate::native::conn::Sock::Tcp(sock));
+    let conn = crate::native::conn::Conn::new(Box::new(s), stop);
     home.serve_data(&home::Caller::Cert(peer), conn);
 }

@@ -4,8 +4,9 @@
 //! exists for (deletions moved ahead of the sends, the rounds swapped).
 
 use super::*;
-use crate::native::conn::{Conn, Sock};
+use crate::native::conn::Conn;
 use crate::native::frame::{Frame, Kind};
+use crate::native::polled::Polled;
 use crate::native::tests_fixture::{Fault, Faulty, Fx, bounded, run, tree};
 use crate::testutil::write;
 
@@ -88,8 +89,8 @@ fn a_write_to_a_silent_peer_fails_at_the_timeout() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let s = std::net::TcpStream::connect(l.local_addr().unwrap()).unwrap();
         let (_silent, _) = l.accept().unwrap();
-        let sock = Sock::Tcp(s.try_clone().unwrap());
-        let mut c = Conn::new(Box::new(s), sock);
+        let (s, stop) = Polled::tcp(s).unwrap();
+        let mut c = Conn::new(Box::new(s), stop);
         c.set_timeout(Duration::from_millis(300)).unwrap();
         let frame = Frame::new(Kind::Chunk, vec![0; 1 << 20]);
         let began = std::time::Instant::now();

@@ -11,6 +11,7 @@ rev 12 2026-11-03 (rsync removed: the daemons move the bytes over their mTLS lin
 rev 13 2026-11-03 (the v0.4-native review fixed: every unit diffs again and stops if that is not the plan, a pull too; sockets, FIFOs and devices are skipped on both sides; no frame too large and no panic can wedge a transfer; rollback is a round trip for directories and kind changes; a repo's index goes with its refs; home's `Done` is acked once its names are durable. Known limits restated. Record: "Review fixes" in the notes).
 rev 14 2026-11-03 (the re-review fixed: a unit also stops if a path its plan lists holds anything else now, which rev 13 said and did not do; a read-only directory both sides agree about can be written into; Known limits restated. Record: "Re-review fixes" in the notes).
 rev 15 2026-11-04 (addresses: a leaf's `[home] address` and home's `[daemon] listen` take a list; the dialer tries IPv4 first, skips unscoped link-local IPv6, and sticks with the address that answered. The first real push ran at 52 MB/s over Tailscale's userspace WireGuard and ~190 MB/s once the data path went over the LAN; `host.local` resolved to a link-local address first and cost each connection a 5 s connect timeout. Releases 0.4.1, 0.4.2; 0.4.3 after review: handshake bound, resolved-IP stickiness, skipped-address log, repeatable --address, one attempt per error line; 0.4.4 and 0.4.5 after the re-review: wire 7 and version-before-parse on both wires, scoped IPv6 kept, saved addresses in the subscribe reply, only a TLS verdict blames the bundle, and the test suite no longer hangs: the cut fixture shut down home's own socket from another thread, the macOS SO_RCVTIMEO wedge. Record: `docs/v0.4.2-addresses-review.md`).
+rev 16 2026-11-05 (the review's second pass: every data-connection read goes through `native::polled`, a socket polled beside a pipe of its own, so a transfer stopped from another thread (an abort, a failed worker) ends its reads through the pipe rather than through `shutdown()`, which on macOS can leave a read wedged past its timeout (A21, A37); the cut fixture closes instead of shutting down (A30); `subscribe --address` reports what it replaced even when the request fails and not on a first subscribe (A28, A29); test flakes pinned (A23, A31, A39). Release 0.4.6).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -415,8 +416,9 @@ listen = ["192.168.10.199:7750", "100.64.10.99:7750"]
 ```
 
 A bare string still works for either, and `subscribe --address` can be
-repeated to write a list (one `--address` replaces the whole list, and the
-daemon logs when that shrinks it). Home binds every listener or refuses to
+repeated to write a list (one `--address` replaces the whole list; the reply
+shows the list now saved and names what was dropped, even when the request
+itself then fails). Home binds every listener or refuses to
 start (a home answering on half its interfaces is a config mistake, not a
 degraded start), and the unspecified address is still refused. A leaf tries
 its list in order and then sticks with whichever answered, down to the IP it
@@ -974,8 +976,17 @@ Home logs per-snapshot timing — discover and unit phases, worker count, and
 its five slowest units — so the next regression names itself (decided
 2026-11-01). Discovery is going parallel (in flight).
 
-## Known limits (rev 14)
+## Known limits (rev 16)
 
+- **Ending a blocked read from another thread** is done through a pipe the
+  reader polls beside its socket (`native::polled`), never through
+  `shutdown()` alone: on macOS a read blocked under `SO_RCVTIMEO` can miss
+  the wakeup of its own socket's shutdown and sleep past its timeout
+  (`AF_UNIX`: 5 wedged in 160,000 rounds under load; TCP: 0 in 48,000, which
+  does not clear it). A write blocked on a full buffer still ends on its
+  write timeout. The rule for this codebase: a socket read that another
+  thread must be able to end goes through `Polled`, or through `poll(2)`
+  with a wake pipe as `daemon::local` does.
 - **Sockets, FIFOs and devices** are never listed, opened, sent or deleted, on
   either side: they count in the unit's notes (`--verbose`). A file whose name
   one holds on the target fails its unit, saying so; nothing replaces one.

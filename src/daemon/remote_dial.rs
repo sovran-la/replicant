@@ -11,7 +11,8 @@
 use super::HANDSHAKE_TIMEOUT;
 use crate::daemon::certs::SERVER_NAME;
 use crate::daemon::tls::Identity;
-use crate::native::conn::{Conn, Sock};
+use crate::native::conn::Conn;
+use crate::native::polled::Polled;
 use crate::{Error, Result};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
@@ -21,7 +22,7 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub type Stream = StreamOwned<ClientConnection, TcpStream>;
+pub type Stream = StreamOwned<ClientConnection, Polled<TcpStream>>;
 
 /// The listed address that answered last, and the IP it answered at.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,8 +102,8 @@ impl Dialer {
     pub fn open_data_any(&self, addresses: &[String], timeout: Duration) -> Result<Conn> {
         let mut stream = self.connect_any(addresses, timeout)?;
         stream.write_all(crate::native::frame::MAGIC)?;
-        let sock = Sock::Tcp(stream.sock.try_clone()?);
-        Ok(Conn::new(Box::new(stream), sock))
+        let stop = stream.sock.stop()?;
+        Ok(Conn::new(Box::new(stream), stop))
     }
 
     /// What answered last, if anything has.
@@ -246,9 +247,11 @@ impl Dialer {
         let (tcp, addr) = tcp.ok_or(Miss::Unreachable(last))?;
         let io = |e: std::io::Error| Miss::Unreachable(e.to_string());
         let hs = deadline.min(self.handshake_timeout);
+        let _ = tcp.set_nodelay(true);
+        // Polled from the start: the handshake bound is the poll's too.
+        let (tcp, _) = Polled::tcp(tcp).map_err(io)?;
         tcp.set_read_timeout(Some(hs)).map_err(io)?;
         tcp.set_write_timeout(Some(hs)).map_err(io)?;
-        let _ = tcp.set_nodelay(true);
         let name = ServerName::try_from(SERVER_NAME).map_err(|e| Miss::Refused(e.to_string()))?;
         let conn = ClientConnection::new(self.config.clone(), name)
             .map_err(|e| Miss::Refused(e.to_string()))?;

@@ -338,37 +338,55 @@ fn home_listens_on_every_listed_address_and_a_leaf_falls_back_to_one_that_answer
     stop_within(home, std::time::Duration::from_secs(10));
 }
 
+/// Start a daemon, retrying for a moment while the lock reads as held: a
+/// child being spawned by another test inherits the lock file until its
+/// exec closes it, so right after a close `flock` can still see it busy
+/// (review A23: thousands of false busies per 300k with spawns beside it,
+/// none without). Production never starts a second daemon in-process, so
+/// `lock()` itself stays immediate: `daemon_tests.rs` relies on that.
+fn start_retrying(dirs: &Dirs) -> Result<Daemon> {
+    let by = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match Daemon::start(dirs.clone()) {
+            Err(e)
+                if e.to_string().contains("already running") && std::time::Instant::now() < by =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => return r,
+        }
+    }
+}
+
 /// One listed address that cannot bind fails the start outright: all or
-/// none. On IPv4 alone, so it runs everywhere.
+/// none, and the one that did bind is released. On IPv4 alone, so it runs
+/// everywhere.
 #[test]
 fn home_with_one_unbindable_listen_address_does_not_start() {
     let bed = Bed::new("");
-    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    testutil::hand_edit(
-        &bed.home_dirs.fleet(),
-        "listen = \"127.0.0.1:0\"",
-        &format!(
-            "listen = [\"127.0.0.1:0\", \"{}\"]",
-            taken.local_addr().unwrap()
-        ),
-    );
-    let err = Daemon::start(bed.home_dirs.clone())
-        .err()
+    // A real port for the first entry, found by binding and releasing it:
+    // only then can "nothing was left bound" be told from "a fresh port".
+    let first = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
-        .to_string();
+        .local_addr()
+        .unwrap();
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let both = format!(
+        "listen = [\"{first}\", \"{}\"]",
+        taken.local_addr().unwrap()
+    );
+    testutil::hand_edit(&bed.home_dirs.fleet(), "listen = \"127.0.0.1:0\"", &both);
+    let err = start_retrying(&bed.home_dirs).err().unwrap().to_string();
     assert!(err.contains("could not bind"), "{err}");
-    // Nothing was left bound by the failed start: the first address is free
-    // for a home that lists only it.
+    // The first address bound and was then released by the failed start: a
+    // home listing only it binds the very same port.
     testutil::hand_edit(
         &bed.home_dirs.fleet(),
-        &format!(
-            "listen = [\"127.0.0.1:0\", \"{}\"]",
-            taken.local_addr().unwrap()
-        ),
-        "listen = \"127.0.0.1:0\"",
+        &both,
+        &format!("listen = \"{first}\""),
     );
-    let home = Daemon::start(bed.home_dirs.clone()).unwrap();
-    assert_eq!(home.tcp_addrs().len(), 1);
+    let home = start_retrying(&bed.home_dirs).unwrap();
+    assert_eq!(home.tcp_addrs(), vec![first]);
     stop_within(home, std::time::Duration::from_secs(10));
 }
 
@@ -451,6 +469,30 @@ fn subscribe_address_writes_the_list_and_reports_what_it_replaced() {
         .to_string();
     assert!(err.contains("--address") && err.contains("empty"), "{err}");
     assert_eq!(std::fs::read_to_string(bed.leaf_dirs.leaf()).unwrap(), text);
+
+    // Two saved again, then one --address that cannot reach home: the list
+    // is still replaced (a home that is down can be named now), and the
+    // error says what it replaced, so the fallback is not lost in silence
+    // (review A29).
+    let LocalReply::Subscribed(_) = local(&bed.leaf_dirs, sub(vec![dead.clone(), live.clone()]))
+    else {
+        panic!()
+    };
+    let err = local::call(&bed.leaf_dirs, sub(vec![dead.clone()]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unreachable"), "{err}");
+    assert!(
+        err.contains(&format!(
+            "note: --address replaced the saved list ({dead}, {live})"
+        )),
+        "{err}"
+    );
+    let cfg = LeafConfig::load(&bed.leaf_dirs.leaf()).unwrap().unwrap();
+    assert_eq!(
+        cfg.home.address,
+        crate::config::Addresses::one(dead.clone())
+    );
 
     leaf.stop();
     home.stop();

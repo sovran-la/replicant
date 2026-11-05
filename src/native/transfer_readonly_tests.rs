@@ -79,8 +79,10 @@ fn carried(
     if ok {
         check(&target);
     }
-    open_all(&source);
-    open_all(&target);
+    // The whole bed: a rollback copy of `ro/` lands read-only under home's
+    // backup dir too, and a tempdir that cannot be removed is left behind on
+    // every run (review A39).
+    open_all(fx.bed.tmp.path());
     assert!(ok, "{direction:?}: {why}");
     assert!(again.changes.only_kept_dirs(), "{direction:?}: {again:?}");
     d.itemized.changes.iter().map(|c| c.path.clone()).collect()

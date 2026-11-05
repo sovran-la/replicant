@@ -81,7 +81,7 @@ fn parse<T: DeserializeOwned>(line: &[u8]) -> Result<T> {
     serde_json::from_slice(line).map_err(|e| Error::Remote(format!("unreadable message: {e}")))
 }
 
-pub type ServerStream = StreamOwned<ServerConnection, TcpStream>;
+pub type ServerStream = StreamOwned<ServerConnection, crate::native::polled::Polled<TcpStream>>;
 
 /// Whether the peer of `sock` is still there, without consuming anything: a
 /// non-blocking peek that would block means connected; end-of-file or an
@@ -178,6 +178,7 @@ impl MtlsListener {
         }
         tcp.set_read_timeout(None)?;
         tcp.set_write_timeout(None)?;
+        let (tcp, _) = crate::native::polled::Polled::tcp(tcp)?;
         Ok(StreamOwned::new(conn, tcp))
     }
 

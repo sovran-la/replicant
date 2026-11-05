@@ -109,81 +109,95 @@ impl HomeLink for Faulty<'_> {
                 let (leaf, from_leaf) = UnixStream::pair()?;
                 let (to_home, home_end) = UnixStream::pair()?;
                 let home = self.inner.home;
+                // The fixture's own two sockets, each the peer of a product
+                // socket, are read and written in short slices so a stop can
+                // be noticed between them. Nothing is ever shut down: a cut
+                // stops both forwarders and then the sockets are *closed*,
+                // which gives the leaf and home EOF and EPIPE at once.
+                //
+                // Why only a close: on macOS AF_UNIX a read under SO_RCVTIMEO
+                // can wedge for good when its own socket is shut down from
+                // another thread (what 0.4.4's cut did to home's end, and what
+                // hung the suite in one run of three or four), and can miss
+                // the wakeup of a peer's shutdown(Write) and return only at its
+                // timeout (0.4.5's cut: the 20 s ack timeout in a few runs per
+                // thousand under load). In 400k rounds a peer's close never
+                // lost its wakeup. See docs/v0.4.2-addresses-review.md, A21
+                // and A30.
+                const SLICE: Duration = Duration::from_millis(10);
+                for s in [&from_leaf, &to_home] {
+                    s.set_read_timeout(Some(SLICE))?;
+                    s.set_write_timeout(Some(SLICE))?;
+                }
                 Ok(DataLink {
                     conn: Conn::unix(leaf)?,
                     serve: Some(Box::new(move || {
-                        // A cut kills both directions at once, as a dead
-                        // network does, touching only the two sockets this
-                        // fixture owns: each is the peer of a product socket.
-                        // Shutting their write sides gives the leaf and home
-                        // EOF on their next read; draining their read sides
-                        // until EOF keeps a product write from ever blocking
-                        // on a full buffer (the fixture no longer forwards,
-                        // so nothing else would empty it; and a peer's
-                        // shutdown does not wake a writer already blocked).
-                        //
-                        // Never the product's own socket: on macOS a read
-                        // under SO_RCVTIMEO can hang for good when its socket
-                        // is shut down from another thread, past its timeout
-                        // (the race `daemon::local` works around with poll).
-                        // Shutting home's end here did that, and hung the
-                        // suite in one run of three or four.
-                        let cut = |a: &UnixStream, b: &UnixStream| {
-                            let _ = a.shutdown(std::net::Shutdown::Write);
-                            let _ = b.shutdown(std::net::Shutdown::Write);
-                        };
-                        let drain = |r: &UnixStream| {
-                            let mut sink = [0u8; 8192];
-                            let mut r = r;
-                            while matches!(r.read(&mut sink), Ok(n) if n > 0) {}
-                        };
+                        use std::io::ErrorKind::{Interrupted, TimedOut, WouldBlock};
+                        let stop = std::sync::atomic::AtomicBool::new(false);
                         let moved = AtomicUsize::new(0);
                         // How much of `n` bytes may still pass.
                         let pass = |n: usize| {
                             let was = moved.fetch_add(n, Ordering::SeqCst);
                             n.min(limit.saturating_sub(was))
                         };
+                        // Forward `r` to `w` until the end, the limit, or a
+                        // stop. `to_home`: a write home refuses means home is
+                        // gone, which is not a cut: the other way keeps
+                        // flowing so home's last words reach the leaf.
+                        let forward = |mut r: &UnixStream, mut w: &UnixStream, to_home: bool| {
+                            let mut buf = [0u8; 8192];
+                            'run: while !stop.load(Ordering::SeqCst) {
+                                let n = match r.read(&mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => n,
+                                    Err(e)
+                                        if matches!(
+                                            e.kind(),
+                                            WouldBlock | TimedOut | Interrupted
+                                        ) =>
+                                    {
+                                        continue;
+                                    }
+                                    Err(_) => break,
+                                };
+                                let k = pass(n);
+                                std::thread::sleep(pause);
+                                let mut left = &buf[..k];
+                                while !left.is_empty() {
+                                    if stop.load(Ordering::SeqCst) {
+                                        break 'run;
+                                    }
+                                    match w.write(left) {
+                                        Ok(m) => left = &left[m..],
+                                        Err(e)
+                                            if matches!(
+                                                e.kind(),
+                                                WouldBlock | TimedOut | Interrupted
+                                            ) => {}
+                                        Err(_) if to_home => return,
+                                        Err(_) => break 'run,
+                                    }
+                                }
+                                if k < n {
+                                    // The cut: both ways, at once.
+                                    break;
+                                }
+                            }
+                            stop.store(true, Ordering::SeqCst);
+                        };
                         std::thread::scope(|s| {
                             s.spawn(|| {
                                 let c = Conn::unix(home_end).unwrap();
                                 home.serve_data(&crate::daemon::home::Caller::Trusted, c);
                             });
-                            s.spawn(|| {
-                                let (mut r, mut w) = (&from_leaf, &to_home);
-                                let mut buf = [0u8; 8192];
-                                while let Ok(n) = r.read(&mut buf) {
-                                    let k = if n == 0 { 0 } else { pass(n) };
-                                    std::thread::sleep(pause);
-                                    if k < n {
-                                        // The cut: both ways, at once.
-                                        let _ = w.write_all(&buf[..k]);
-                                        cut(&from_leaf, &to_home);
-                                        return drain(&from_leaf);
-                                    }
-                                    if n == 0 || w.write_all(&buf[..n]).is_err() {
-                                        break;
-                                    }
-                                }
-                                // The leaf is done, or home is gone: pass the
-                                // end on, and let home's last words through.
-                                let _ = to_home.shutdown(std::net::Shutdown::Write);
-                                drain(&from_leaf);
+                            let (a, b) = (from_leaf, to_home);
+                            std::thread::scope(|f| {
+                                f.spawn(|| forward(&a, &b, true));
+                                forward(&b, &a, false);
                             });
-                            let (mut r, mut w) = (&to_home, &from_leaf);
-                            let mut buf = [0u8; 8192];
-                            while let Ok(n) = r.read(&mut buf) {
-                                let k = if n == 0 { 0 } else { pass(n) };
-                                std::thread::sleep(pause);
-                                if k < n {
-                                    let _ = w.write_all(&buf[..k]);
-                                    break;
-                                }
-                                if n == 0 || w.write_all(&buf[..n]).is_err() {
-                                    break;
-                                }
-                            }
-                            cut(&from_leaf, &to_home);
-                            drain(&to_home);
+                            // A real close: the only wakeup never lost.
+                            drop(a);
+                            drop(b);
                         });
                     })),
                 })
