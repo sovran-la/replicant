@@ -106,6 +106,7 @@ pub fn repo(abs: &Path, ex: &Excludes) -> Result<RepoFacts> {
     }
     h.update(b"\0dirty\0");
     let mut dirty = Vec::new();
+    let mut ambiguous = Vec::new();
     let mut untracked = 0;
     for e in &st.entries {
         if ex.path_excluded(&e.path, e.path.ends_with('/')) {
@@ -117,18 +118,30 @@ pub fn repo(abs: &Path, ex: &Excludes) -> Result<RepoFacts> {
         if e.worktree_changed {
             content(&mut h, &abs.join(&e.path), e.worktree_deleted)?;
         }
-        if e.raw.starts_with('?') {
-            dirty.push(e.path.clone());
+        match &e.tracked {
+            // Untracked, or unmerged: work.
+            None => dirty.push(e.path.clone()),
+            // Staged, then changed on disk: HEAD's content again, or not.
+            Some(t) if t.needs_hash() && e.orig.is_none() => ambiguous.push((e, t)),
+            // The columns decide; a rename counts both names.
+            Some(_) => {
+                dirty.push(e.path.clone());
+                if let Some(o) = &e.orig {
+                    dirty.push(o.clone());
+                }
+            }
         }
     }
-    // Tracked work is what differs from HEAD on disk, not what the index
-    // says: git names the paths, and only those count for guardrail 1.
-    if st.entries.iter().any(|e| !e.raw.starts_with('?')) {
-        dirty.extend(
-            git::worktree_vs_head(abs)?
-                .into_iter()
-                .filter(|p| !ex.path_excluded(p, false)),
-        );
+    // Only these files are read: a phantom from a copied index is usually
+    // a handful, and the rest of the repo costs nothing (rev 18).
+    if !ambiguous.is_empty() {
+        let paths: Vec<&str> = ambiguous.iter().map(|(e, _)| e.path.as_str()).collect();
+        let ids = git::blob_ids(abs, &paths)?;
+        for ((e, t), id) in ambiguous.iter().zip(ids) {
+            if id != t.blob_head || t.mode_worktree != t.mode_head {
+                dirty.push(e.path.clone());
+            }
+        }
     }
     dirty.sort();
     dirty.dedup();

@@ -158,6 +158,40 @@ fn dirty_is_the_working_tree_against_head_not_the_index() {
         vec!["MOVED", "README"]
     );
 
+    // A mode staged and put back: bookkeeping. Staged and kept: work.
+    testutil::git(&r, &["reset", "-q", "--hard"]);
+    use std::os::unix::fs::PermissionsExt;
+    let chmod =
+        |m| std::fs::set_permissions(r.join("README"), std::fs::Permissions::from_mode(m)).unwrap();
+    chmod(0o755);
+    testutil::git(&r, &["add", "README"]);
+    chmod(0o644);
+    assert!(
+        repo(&r, &Excludes::default()).unwrap().dirty.is_empty(),
+        "mode back"
+    );
+    chmod(0o755);
+    assert_eq!(
+        repo(&r, &Excludes::default()).unwrap().dirty,
+        vec!["README"]
+    );
+    testutil::git(&r, &["reset", "-q", "--hard"]);
+
+    // A symlink staged as one target and pointed back at HEAD's.
+    std::os::unix::fs::symlink("README", r.join("link")).unwrap();
+    testutil::git(&r, &["add", "link"]);
+    testutil::git(&r, &["commit", "-qm", "link"]);
+    std::fs::remove_file(r.join("link")).unwrap();
+    std::os::unix::fs::symlink("elsewhere", r.join("link")).unwrap();
+    testutil::git(&r, &["add", "link"]);
+    std::fs::remove_file(r.join("link")).unwrap();
+    std::os::unix::fs::symlink("README", r.join("link")).unwrap();
+    assert!(
+        repo(&r, &Excludes::default()).unwrap().dirty.is_empty(),
+        "link back"
+    );
+    testutil::git(&r, &["reset", "-q", "--hard"]);
+
     // Untracked is work. A repo with no commit yet: every tracked path.
     testutil::write(&r.join("new.txt"), "x");
     assert!(

@@ -5,27 +5,6 @@
 /// Processes, and every way into a transfer, are in `write_set_spawns.rs`;
 /// the native receiver's writes of synced paths in `write_set_native.rs`.
 pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
-    // A scratch copy of a repo's index in the temp dir, for `git diff
-    // HEAD` to refresh instead of the repo's own (guardrail 1, rev 18).
-    // Never under a synced path.
-    (
-        "git.rs",
-        "File::options(",
-        1,
-        "Scratch::copy_of: temp dir, created new",
-    ),
-    (
-        "git.rs",
-        "fs::copy(",
-        1,
-        "Scratch::copy_of: the index into the temp dir",
-    ),
-    (
-        "git.rs",
-        "remove_file(",
-        1,
-        "Scratch::drop: its own temp file",
-    ),
     // Records under state/: baselines, markers, contacts.
     ("record.rs", "write_atomic(", 1, "Store::put: state dir"),
     ("record.rs", "remove_file(", 1, "Store::delete: state dir"),

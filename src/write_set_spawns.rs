@@ -10,7 +10,7 @@ pub(super) const SPAWNS: &[(&str, &str, usize, &str)] = &[
         "git.rs",
         "Command::new(",
         1,
-        "git, read-only (no optional locks)",
+        "git, read-only (no optional locks); `hash-object` reads files and writes nothing",
     ),
     // A unit's transfer: the receiver writes synced paths (native/).
     (

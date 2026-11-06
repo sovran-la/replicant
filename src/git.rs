@@ -35,6 +35,36 @@ pub struct StatusEntry {
     pub worktree_changed: bool,
     /// The worktree side of the change is a deletion.
     pub worktree_deleted: bool,
+    /// What guardrail 1 needs to tell work from index bookkeeping, for a
+    /// tracked entry: `XY`, HEAD's mode and blob, the worktree's mode. An
+    /// untracked or unmerged entry has none.
+    pub tracked: Option<Tracked>,
+}
+
+/// A tracked status entry's index-vs-HEAD and worktree-vs-index columns,
+/// with the HEAD side git names by blob id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tracked {
+    /// `X`: the index against HEAD. `.` means they agree.
+    pub x: char,
+    /// `Y`: the working tree against the index. `.` means they agree.
+    pub y: char,
+    pub mode_head: String,
+    pub mode_worktree: String,
+    pub blob_head: String,
+}
+
+impl Tracked {
+    /// Whether the working tree may still match HEAD, which the columns
+    /// alone cannot tell: staged as one thing (`X` set) and then changed on
+    /// disk (`Y` is `M`), possibly back to HEAD's content. Everything else
+    /// the columns decide: `Y` clear means the tree is the index, which `X`
+    /// says differs from HEAD; `Y` set with `X` clear means it differs from
+    /// the index, which is HEAD; a deletion, type change or added entry is
+    /// never HEAD's.
+    pub fn needs_hash(&self) -> bool {
+        self.x != '.' && self.y == 'M'
+    }
 }
 
 /// What git says about one repo.
@@ -47,20 +77,11 @@ pub struct RepoStatus {
     pub entries: Vec<StatusEntry>,
 }
 
-fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    run_with(repo, args, None)
-}
-
-/// [`run`], with the index file git should use when it is not the repo's
-/// own: a copy git may refresh and rewrite without touching the repo.
-fn run_with(repo: &Path, args: &[&str], index: Option<&Path>) -> Result<Vec<u8>> {
-    let mut cmd = Command::new("git");
-    cmd.env_remove("GIT_INDEX_FILE");
-    if let Some(i) = index {
-        cmd.env("GIT_INDEX_FILE", i);
-    }
-    let out = cmd
-        .arg("--no-optional-locks")
+/// `git` in `repo`, read-only: no optional locks, no fsmonitor, no
+/// user-level excludes, none of the caller's `GIT_*` redirections.
+fn git(repo: &Path, args: &[&str]) -> Command {
+    let mut c = Command::new("git");
+    c.arg("--no-optional-locks")
         .args(["-c", "core.fsmonitor=false"])
         .args(["-c", "core.excludesFile=/dev/null"])
         .args(args)
@@ -68,8 +89,18 @@ fn run_with(repo: &Path, args: &[&str], index: Option<&Path>) -> Result<Vec<u8>>
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE");
+    c
+}
+
+fn could_not_run(repo: &Path, e: std::io::Error) -> Error {
+    Error::Git(format!("could not run git in {}: {e}", repo.display()))
+}
+
+fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let out = git(repo, args)
         .output()
-        .map_err(|e| Error::Git(format!("could not run git in {}: {e}", repo.display())))?;
+        .map_err(|e| could_not_run(repo, e))?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "git {} in {} failed: {}",
@@ -159,7 +190,19 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Result<Vec<StatusEntry>> {
                 let (Some(xy), Some(path)) = (fields.first(), fields.get(n)) else {
                     return Err(bad(t));
                 };
-                let y = xy.chars().nth(1).ok_or_else(|| bad(t))?;
+                let mut xy = xy.chars();
+                let (x, y) = (
+                    xy.next().ok_or_else(|| bad(t))?,
+                    xy.next().ok_or_else(|| bad(t))?,
+                );
+                // `1`/`2`: mH mI mW hH; `u` has no single HEAD side.
+                let tracked = (kind != "u").then(|| Tracked {
+                    x,
+                    y,
+                    mode_head: fields[2].to_string(),
+                    mode_worktree: fields[4].to_string(),
+                    blob_head: fields[5].to_string(),
+                });
                 let orig = if kind == "2" {
                     Some(tokens.next().ok_or_else(|| bad(t))?.to_string())
                 } else {
@@ -175,6 +218,7 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Result<Vec<StatusEntry>> {
                     orig,
                     worktree_changed: kind == "u" || y != '.',
                     worktree_deleted: y == 'D',
+                    tracked,
                 });
             }
             "?" => entries.push(StatusEntry {
@@ -183,6 +227,7 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Result<Vec<StatusEntry>> {
                 orig: None,
                 worktree_changed: true,
                 worktree_deleted: false,
+                tracked: None,
             }),
             "!" | "#" => {}
             _ => return Err(bad(t)),
@@ -191,68 +236,69 @@ pub fn parse_porcelain_v2(out: &[u8]) -> Result<Vec<StatusEntry>> {
     Ok(entries)
 }
 
-/// The tracked paths whose working-tree content differs from HEAD, both
-/// names of a rename: what a sync that replaced the working tree would lose
-/// (guardrail 1). The index is not consulted: a staged change whose file
-/// on disk still matches HEAD is index bookkeeping, not work, and an index
-/// carried over from another machine says "modified" about files that are
-/// not (PLAN.md, "The problem", 1). An unborn HEAD has nothing to differ
-/// from: every tracked path counts.
-///
-/// `git diff` refreshes the index's stat cache and writes it back, which
-/// `--no-optional-locks` does not stop; a status must write nothing in the
-/// repo, so the diff runs against a throwaway copy of the index.
-pub fn worktree_vs_head(repo: &Path) -> Result<Vec<String>> {
-    // `--git-path` answers for a linked worktree too, whose `.git` is a file.
-    let own = run(repo, &["rev-parse", "--git-path", "index"])?;
-    let own = repo.join(String::from_utf8_lossy(&own).trim());
-    if !own.exists() {
-        return tracked(repo);
-    }
-    let scratch = Scratch::copy_of(&own)?;
-    let args = ["diff", "--no-renames", "--name-only", "-z", "HEAD", "--"];
-    let out = match run_with(repo, &args, Some(&scratch.0)) {
-        Ok(out) => out,
-        Err(_) if run(repo, &["rev-parse", "--verify", "-q", "HEAD"]).is_err() => {
-            return tracked(repo);
+/// The blob ids git would store for these working-tree paths, in order:
+/// what the file holds, through the repo's clean filters, as `git add`
+/// would hash it. Reads only those files; writes nothing. A symlink's blob
+/// is its target. A path git cannot hash (gone meanwhile, unreadable) gets
+/// an empty id, which matches no HEAD blob.
+pub fn blob_ids(repo: &Path, paths: &[&str]) -> Result<Vec<String>> {
+    use std::io::Write;
+    let mut ids = vec![String::new(); paths.len()];
+    let mut files = Vec::new();
+    for (i, p) in paths.iter().enumerate() {
+        let abs = repo.join(p);
+        match std::fs::symlink_metadata(&abs) {
+            Ok(m) if m.file_type().is_symlink() => {
+                let target = std::fs::read_link(&abs)?;
+                let out = hash_stdin(repo, target.as_os_str().as_encoded_bytes())?;
+                ids[i] = out;
+            }
+            Ok(m) if m.is_file() && !p.contains('\n') => files.push(i),
+            _ => {}
         }
-        Err(e) => return Err(e),
-    };
-    Ok(out
-        .split(|b| *b == 0)
-        .filter(|t| !t.is_empty())
-        .filter_map(|t| std::str::from_utf8(t).ok().map(str::to_string))
-        .collect())
+    }
+    if files.is_empty() {
+        return Ok(ids);
+    }
+    let mut child = git(repo, &["hash-object", "--stdin-paths"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| could_not_run(repo, e))?;
+    {
+        let mut stdin = child.stdin.take().expect("piped");
+        for &i in &files {
+            writeln!(stdin, "{}", paths[i])?;
+        }
+    }
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "git hash-object in {} failed: {}",
+            repo.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    for (&i, id) in files.iter().zip(text.lines()) {
+        ids[i] = id.trim().to_string();
+    }
+    Ok(ids)
 }
 
-/// A copy of a file in the temp directory, gone when dropped.
-struct Scratch(std::path::PathBuf);
-
-impl Scratch {
-    fn copy_of(src: &Path) -> Result<Self> {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let name = format!(
-            "replicant-index-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        );
-        let path = std::env::temp_dir().join(name);
-        // Ours alone: created new, never reused.
-        std::fs::File::options()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        let s = Self(path);
-        std::fs::copy(src, &s.0)?;
-        Ok(s)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
+/// `git hash-object --stdin` of `bytes`.
+fn hash_stdin(repo: &Path, bytes: &[u8]) -> Result<String> {
+    use std::io::Write;
+    let mut child = git(repo, &["hash-object", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| could_not_run(repo, e))?;
+    child.stdin.take().expect("piped").write_all(bytes)?;
+    let out = child.wait_with_output()?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Every path the repo's index tracks, sorted as git sorts them. A tracked

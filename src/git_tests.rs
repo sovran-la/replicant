@@ -19,6 +19,56 @@ u UU N... 100644 100644 100644 100644 e1 e2 e3 conflict.txt\0\
     assert_eq!(e[2].path, "conflict.txt");
     assert!(e[2].worktree_changed);
     assert_eq!(e[3].path, "scratch/x y.txt");
+    // Guardrail 1's columns: HEAD's mode and blob, the worktree's mode.
+    let t = e[0].tracked.as_ref().unwrap();
+    assert_eq!((t.x, t.y), ('.', 'M'));
+    assert_eq!(
+        (t.mode_head.as_str(), t.mode_worktree.as_str()),
+        ("100644", "100644")
+    );
+    assert_eq!(t.blob_head, "aaaa");
+    assert!(
+        !t.needs_hash(),
+        "the index is HEAD, the tree differs from it"
+    );
+    assert!(e[2].tracked.is_none() && e[3].tracked.is_none());
+    let mm = parse_porcelain_v2(b"1 MM N... 100644 100755 100644 h1 h2 f\0").unwrap();
+    let t = mm[0].tracked.as_ref().unwrap();
+    assert!(
+        t.needs_hash(),
+        "staged, then changed on disk: only a hash can tell"
+    );
+    assert_eq!(
+        (t.mode_head.as_str(), t.mode_worktree.as_str()),
+        ("100644", "100644")
+    );
+    let m_ = parse_porcelain_v2(b"1 M. N... 100644 100644 100644 h1 h2 f\0").unwrap();
+    assert!(
+        !m_[0].tracked.as_ref().unwrap().needs_hash(),
+        "the tree is the index"
+    );
+}
+
+/// `blob_ids` names what git would store for a file (through its filters),
+/// a symlink (its target), and nothing for what is not there.
+#[test]
+fn blob_ids_hash_files_and_link_targets_and_skip_the_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let r = testutil::repo(&tmp.path().join("r"));
+    std::os::unix::fs::symlink("README", r.join("link")).unwrap();
+    testutil::git(&r, &["add", "link"]);
+    testutil::git(&r, &["commit", "-qm", "link"]);
+    let head = |p: &str| {
+        testutil::git(&r, &["rev-parse", &format!("HEAD:{p}")])
+            .trim()
+            .to_string()
+    };
+    let ids = blob_ids(&r, &["README", "link", "nope"]).unwrap();
+    assert_eq!(ids[0], head("README"));
+    assert_eq!(ids[1], head("link"));
+    assert_eq!(ids[2], "");
+    testutil::write(&r.join("README"), "other\n");
+    assert_ne!(blob_ids(&r, &["README"]).unwrap()[0], head("README"));
 }
 
 #[test]
@@ -207,23 +257,4 @@ fn tracked_lists_the_index_including_force_added_paths() {
     std::fs::create_dir(&empty).unwrap();
     testutil::git(&empty, &["init", "-q"]);
     assert!(tracked(&empty).unwrap().is_empty());
-}
-
-/// The scratch index is a copy in the temp dir, ours alone, gone with its
-/// handle: nothing is left behind, and nothing in the repo is touched.
-#[test]
-fn a_scratch_index_is_a_private_copy_that_goes_with_its_handle() {
-    let tmp = tempfile::tempdir().unwrap();
-    let src = tmp.path().join("index");
-    std::fs::write(&src, b"DIRC-ish bytes").unwrap();
-    let s = Scratch::copy_of(&src).unwrap();
-    let path = s.0.clone();
-    assert!(path.starts_with(std::env::temp_dir()));
-    assert_eq!(std::fs::read(&path).unwrap(), b"DIRC-ish bytes");
-    let other = Scratch::copy_of(&src).unwrap();
-    assert_ne!(other.0, path, "two at once never share a name");
-    drop(s);
-    assert!(!path.exists());
-    drop(other);
-    assert_eq!(std::fs::read(&src).unwrap(), b"DIRC-ish bytes");
 }

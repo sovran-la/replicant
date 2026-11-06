@@ -15,6 +15,7 @@ rev 16 2026-11-05 (the review's second pass: every data-connection read goes thr
 rev 17 2026-11-05 (the review's third pass: 0.4.6 as tagged killed a leaf daemon with SIGPIPE on any failed transfer, because a stop raised after its connection was dropped wrote a pipe with no reader (A41): the pipe's read end is now shared with every stop handle, and the daemon never restores SIGPIPE's default disposition; the process raises its open-file limit at start, a connection costs fewer descriptors, and the suite passes at macOS's default 256 (A42); the sync watchdog is a guard that names the test and ends with it (A43); A39, A44-A50 and the file-size rule (A33). Release 0.4.7. Do not install 0.4.6.)
 rev 18 2026-11-05 (guardrail 1 measures the working tree against HEAD plus untracked paths, not `git status`'s index column: an index synced from another machine reports staged changes whose files on disk are HEAD's, and refused a real push over them. The refusal names the machine whose work is at risk and what to do there. Release 0.4.8).
 rev 19 2026-11-06 (`sync` asks "Apply this plan?" only when applying would do something: a transfer, a deletion, or a baseline to record or drop; a plan of settled units prints "nothing to apply" and exits 0. Release 0.4.9).
+rev 20 2026-11-06 (guardrail 1's working-tree check reads only the files it must: rev 18's `git diff HEAD` re-hashed every file whose stat cache was off, which on a copied index is the whole repo, and a status on home went from 2.2 s to 5.3 s. The porcelain columns decide every entry but one shape, staged and then changed on disk, and only those files are hashed (`git hash-object`); no scratch index, no write. Release 0.4.10).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -592,7 +593,9 @@ Before any destructive apply, in order:
    index: a staged change whose file on disk matches HEAD is bookkeeping,
    and an index carried over from another machine calls files modified
    that are not (rev 18; thistledown's `tundra-tools` refused a push over
-   six such phantoms). Anything that would be overwritten and isn't on the
+   six such phantoms). Decided from `git status`'s own columns; only an
+   entry staged and then changed on disk is hashed, so a status reads no
+   more than it did (rev 20). Anything that would be overwritten and isn't on the
    source → refuse, naming the machine and the remedy (`--force` after
    printing exactly what dies: not built yet). Stays active on resume.
 2. **Stale baseline.** Push refuses if home moved since this leaf last
