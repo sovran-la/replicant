@@ -127,6 +127,30 @@ fn pull_bed() -> (Bed, Home) {
     (bed, home)
 }
 
+/// A plan with nothing to apply asks nothing: the first sync records the
+/// baselines (an `identical` unit is bookkeeping, so that one asks), and
+/// the next has no question to put. No answer is read.
+#[test]
+fn a_plan_with_nothing_to_apply_asks_no_question() {
+    let (bed, home) = pull_bed();
+    let r = cli(&bed, &home, &tty(&bed), vec![answer("y")]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.sent, ["dry-run", "sync expect:true confirm:[]"]);
+    let before = everything(&bed);
+    let r = cli(
+        &bed,
+        &home,
+        &tty(&bed),
+        vec![Err(std::io::Error::other("asked"))],
+    );
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert_eq!(r.sent, ["dry-run"], "no sync was sent");
+    assert!(!r.out.contains("Apply this plan?"), "{}", r.out);
+    assert!(r.out.contains("nothing to do with home"), "{}", r.out);
+    assert!(r.out.trim_end().ends_with("nothing to apply"), "{}", r.out);
+    assert_eq!(everything(&bed), before);
+}
+
 #[test]
 fn yes_at_the_prompt_applies_the_plan_that_was_shown() {
     let (bed, home) = pull_bed();

@@ -130,6 +130,12 @@ impl Plan {
                 .any(|u| u.decision.is_blocking() || !u.refusals.is_empty())
     }
 
+    /// Whether applying this plan would do anything at all: see
+    /// [`Decision::applies`].
+    pub fn applies_anything(&self) -> bool {
+        !self.refused.is_empty() || self.units.iter().any(|u| u.decision.applies())
+    }
+
     /// What a person confirms, hashed: per unit its path, kind, decision
     /// (direction, deletion, removal, conflict, resume…), refusals, and the
     /// set of paths its dry run would delete on the target; and the refused

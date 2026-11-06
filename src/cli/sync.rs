@@ -97,6 +97,10 @@ pub fn run(a: &Args, t: &mut Term<'_>, call: Call<'_>) -> Result<i32> {
         writeln!(t.out, "{}", t.style.red("blocked; nothing written"))?;
         return Ok(2);
     }
+    if !p.applies_anything() {
+        writeln!(t.out, "nothing to apply")?;
+        return Ok(0);
+    }
     let mut confirm = a.confirm_delete.clone();
     let pending: Vec<_> = p
         .units

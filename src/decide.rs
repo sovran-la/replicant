@@ -134,6 +134,21 @@ impl Decision {
         )
     }
 
+    /// Whether applying the plan would do anything for this unit: a
+    /// transfer, a deletion, or the bookkeeping `Nothing` rows carry (an
+    /// `identical` or `both changed identically` unit records its baseline;
+    /// a `both empty` one drops the stale baseline that named it). Only a
+    /// unit the baseline already agrees about (`unchanged`), and one home
+    /// does not serve, are settled. A plan with no unit to apply is not
+    /// worth a question (the "Apply this plan?" over "nothing to do").
+    pub fn applies(&self) -> bool {
+        match self {
+            Decision::Nothing { why } => why != "unchanged",
+            Decision::Orphaned { .. } => false,
+            _ => true,
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Decision::Nothing { why } => format!("nothing ({why})"),

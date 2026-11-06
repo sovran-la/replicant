@@ -293,3 +293,26 @@ fn labels_and_directions() {
             .starts_with("conflict")
     );
 }
+
+/// Which decisions give an apply something to do (`Plan::applies_anything`
+/// decides whether `sync` asks at all).
+#[test]
+fn only_an_unchanged_or_unserved_unit_is_settled() {
+    let nothing = |why: &str| Decision::Nothing { why: why.into() };
+    assert!(!nothing("unchanged").applies());
+    assert!(nothing("identical").applies(), "records a baseline");
+    assert!(nothing("both changed identically").applies());
+    assert!(nothing("both empty").applies(), "drops the baseline");
+    assert!(
+        !Decision::Orphaned {
+            reason: crate::decide::unserved::UnservedReason::CapNarrowed,
+            changed: true
+        }
+        .applies()
+    );
+    assert!(Decision::Pull.applies() && Decision::Push.applies() && Decision::Remove.applies());
+    assert!(
+        Decision::Conflict { why: "x".into() }.applies(),
+        "a conflict is a question, not a settled unit"
+    );
+}
