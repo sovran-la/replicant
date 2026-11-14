@@ -16,6 +16,7 @@ rev 17 2026-11-05 (the review's third pass: 0.4.6 as tagged killed a leaf daemon
 rev 18 2026-11-05 (guardrail 1 measures the working tree against HEAD plus untracked paths, not `git status`'s index column: an index synced from another machine reports staged changes whose files on disk are HEAD's, and refused a real push over them. The refusal names the machine whose work is at risk and what to do there. Release 0.4.8).
 rev 19 2026-11-06 (`sync` asks "Apply this plan?" only when applying would do something: a transfer, a deletion, or a baseline to record or drop; a plan of settled units prints "nothing to apply" and exits 0. Release 0.4.9).
 rev 20 2026-11-06 (guardrail 1's working-tree check reads only the files it must: rev 18's `git diff HEAD` re-hashed every file whose stat cache was off, which on a copied index is the whole repo, and a status on home went from 2.2 s to 5.3 s. The porcelain columns decide every entry but one shape, staged and then changed on disk, and only those files are hashed (`git hash-object`); no scratch index, no write. Release 0.4.10).
+rev 21 2026-11-14 (guardrail 1 reads the baseline: a plain push or pull onto a target whose state hash still equals its baseline moves dirt both sides agreed on at the last sync, the source's own earlier work, and is not refused. A repo synced with uncommitted work had refused every later sync of it (thistledown's `mikrotik` `Cargo.lock`). Resume, removal and a confirmed deletion keep the guard whole. Release 0.4.11).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -598,6 +599,12 @@ Before any destructive apply, in order:
    more than it did (rev 20). Anything that would be overwritten and isn't on the
    source → refuse, naming the machine and the remedy (`--force` after
    printing exactly what dies: not built yet). Stays active on resume.
+   Not for a plain push or pull onto a target still at its baseline
+   (rev 21): the dirty tree is in the state hash, so a target unchanged
+   since the baseline holds only the dirt the last sync agreed on, which
+   is the source's own earlier work. Real work on the target since then
+   moves its hash, and the table makes that a pull or a conflict, never a
+   transfer onto it. Removal and a confirmed deletion keep the guard whole.
 2. **Stale baseline.** Push refuses if home moved since this leaf last
    pulled (someone else pushed). That is the "both changed" row, caught
    before any transfer.

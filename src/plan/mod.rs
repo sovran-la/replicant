@@ -251,6 +251,7 @@ pub(crate) fn run<T>(
                 &leaf_units,
                 &mut planned,
                 &leaf_markers,
+                &baselines,
             )?;
             t.dry_run_ms = ms(started);
         }

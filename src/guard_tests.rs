@@ -84,7 +84,7 @@ fn g1_dirty_target_file_that_a_pull_would_overwrite_is_refused() {
         &diff(&Manifest::walk(&home, &ex, false).unwrap(), &target),
         &target,
     );
-    let r = dirty_target(&leaf_units[0], &diff).expect("refused");
+    let r = dirty_target(&leaf_units[0], &diff, None).expect("refused");
     assert_eq!(r.guard, Guard::DirtyTarget);
     assert!(r.detail.contains(&"README".to_string()), "{r:?}");
     assert!(
@@ -103,18 +103,18 @@ fn g1_dirty_path_the_transfer_leaves_alone_is_not_refused() {
     let mut u = unit("work/r");
     u.dirty = vec!["notes.md".into()];
     let diff = items(&[(ChangeKind::Update, "other.rs")]);
-    assert_eq!(dirty_target(&u, &diff), None);
+    assert_eq!(dirty_target(&u, &diff, None), None);
 }
 
 #[test]
 fn g1_clean_target_and_loose_units_pass() {
     let diff = items(&[(ChangeKind::Update, "a"), (ChangeKind::Delete, "b")]);
-    assert_eq!(dirty_target(&unit("work/r"), &diff), None);
+    assert_eq!(dirty_target(&unit("work/r"), &diff, None), None);
     let mut loose = unit("work");
     loose.kind = UnitKind::Loose;
     loose.dirty = vec!["a".into()];
     assert_eq!(
-        dirty_target(&loose, &diff),
+        dirty_target(&loose, &diff, None),
         None,
         "no git, no dirty concept"
     );
@@ -125,7 +125,48 @@ fn g1_untracked_directory_entry_covers_files_beneath_it() {
     let mut u = unit("work/r");
     u.dirty = vec!["build-notes/".into()];
     let diff = items(&[(ChangeKind::Delete, "build-notes/a.txt")]);
-    assert!(dirty_target(&u, &diff).is_some());
+    assert!(dirty_target(&u, &diff, None).is_some());
+}
+
+/// The dirt a push or pull would overwrite is what both sides agreed on at
+/// the last sync: the source's own earlier uncommitted work, carried there
+/// by that sync (thistledown's `mikrotik` `Cargo.lock`, 2026-11-14).
+#[test]
+fn g1_dirt_unchanged_since_baseline_is_not_target_work() {
+    let mut u = unit("work/r");
+    u.dirty = vec!["Cargo.lock".into()];
+    let diff = items(&[(ChangeKind::Update, "Cargo.lock")]);
+    let agreed = u.state.clone();
+    assert_eq!(dirty_target(&u, &diff, Some(&agreed)), None);
+}
+
+#[test]
+fn g1_target_moved_since_baseline_still_refuses() {
+    let mut u = unit("work/r");
+    u.dirty = vec!["Cargo.lock".into()];
+    let diff = items(&[(ChangeKind::Update, "Cargo.lock")]);
+    let then = UnitState::Present("before the edit".into());
+    let r = dirty_target(&u, &diff, Some(&then)).expect("refused");
+    assert_eq!(r.detail, vec!["Cargo.lock"]);
+    let r = dirty_target(&u, &diff, Some(&UnitState::Empty)).expect("refused");
+    assert_eq!(
+        r.detail,
+        vec!["Cargo.lock"],
+        "empty at baseline: all of it is new"
+    );
+}
+
+#[test]
+fn g1_clean_and_loose_units_pass_with_an_agreed_state() {
+    // A clean target and a loose unit pass with or without an agreed state.
+    let diff = items(&[(ChangeKind::Update, "a")]);
+    let u = unit("work/r");
+    let other = UnitState::Present("y".into());
+    assert_eq!(dirty_target(&u, &diff, Some(&other)), None);
+    let mut loose = unit("work");
+    loose.kind = UnitKind::Loose;
+    loose.dirty = vec!["a".into()];
+    assert_eq!(dirty_target(&loose, &diff, Some(&other)), None);
 }
 
 // ---- guardrail 3 ----

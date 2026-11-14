@@ -9,6 +9,7 @@
 use crate::changes::Itemized;
 use crate::marker::Direction;
 use crate::paths;
+use crate::state::UnitState;
 use crate::units::{SideUnit, UnitKind};
 use serde::{Deserialize, Serialize};
 
@@ -105,8 +106,23 @@ impl Refusal {
 /// `target` is the target side's view of a repo unit; `diff` the dry run in
 /// that direction. A dirty path the transfer leaves alone is not at risk: either the
 /// source has the same bytes, or the path is excluded.
-pub fn dirty_target(target: &SideUnit, diff: &Itemized) -> Option<Refusal> {
+///
+/// `agreed` is the target's state at the unit's baseline, passed only for a
+/// plain push or pull. When the target still holds exactly that state, its
+/// dirty paths are the ones both sides agreed on at the last sync (dirty
+/// entries are part of the state hash), so they are the source's own earlier
+/// work, not the target's: a repo synced with uncommitted work would
+/// otherwise refuse every later sync of it. Resume, removal and a confirmed
+/// deletion pass `None` and keep the guard whole.
+pub fn dirty_target(
+    target: &SideUnit,
+    diff: &Itemized,
+    agreed: Option<&UnitState>,
+) -> Option<Refusal> {
     if target.kind != UnitKind::Repo || target.dirty.is_empty() {
+        return None;
+    }
+    if agreed.is_some_and(|a| *a == target.state) {
         return None;
     }
     let touched: Vec<&str> = diff.touched().collect();

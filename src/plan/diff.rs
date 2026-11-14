@@ -4,6 +4,7 @@
 
 use super::xfer::{Ops, PlannedXfer, Xfer};
 use super::{DiffSummary, PlannedUnit, leaf_case_insensitive};
+use crate::baseline::Baseline;
 use crate::changes::{ChangeKind, Itemized};
 use crate::daemon::wire::HomeSnapshot;
 use crate::decide::Decision;
@@ -81,6 +82,7 @@ pub(super) fn diff_direction(me: &str, d: &Decision) -> Option<Direction> {
 /// transfer each one's dry run used and the target it saw (index-aligned;
 /// `None` for the rest): apply runs exactly those, without `--dry-run`, and
 /// holds them to that target.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     ops: &Ops<'_>,
     snap: &HomeSnapshot,
@@ -89,6 +91,7 @@ pub(super) fn run(
     leaf_units: &[SideUnit],
     planned: &mut [PlannedUnit],
     leaf_markers: &[Marker],
+    baselines: &[Baseline],
 ) -> Result<Vec<Option<PlannedXfer>>> {
     let ctx = ops.ctx;
     let mut worktrees = found.worktrees();
@@ -188,10 +191,22 @@ pub(super) fn run(
                 true => removed,
                 false => target.cloned(),
             };
+            // A plain push or pull onto a target still at its baseline
+            // moves dirt both sides already agreed on (guard::dirty_target).
+            let agreed = match p.decision {
+                Decision::Push | Decision::Pull => baselines
+                    .iter()
+                    .find(|b| b.rel == p.rel && b.kind == p.kind)
+                    .map(|b| match direction {
+                        Direction::Push => &b.home,
+                        Direction::Pull => &b.leaf,
+                    }),
+                _ => None,
+            };
             refusals.extend(
                 dirty_target
                     .as_ref()
-                    .and_then(|t| guard::dirty_target(t, &it)),
+                    .and_then(|t| guard::dirty_target(t, &it, agreed)),
             );
             // Guardrail 6 (review A3): a resumed pull, removal or confirmed
             // deletion carries a decision made before it was interrupted,
