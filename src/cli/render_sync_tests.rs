@@ -39,6 +39,7 @@ fn unit(rel: &str, action: &str, resumed: bool) -> AppliedUnit {
         files_changed: 3,
         deleted: 1,
         push: None,
+        backup: None,
         elapsed_ms: 1_400,
     }
 }
@@ -130,6 +131,7 @@ fn open(rel: &str, host: &str, on: &str, age: u64, alert: bool) -> OpenMarker {
             source_state: UnitState::Empty,
             started_at: 1,
             push: None,
+            backup: None,
         },
         on: on.into(),
         age_secs: age,
@@ -225,3 +227,19 @@ fn pushes_list_their_state_and_backups() {
 
 #[path = "render_progress_tests.rs"]
 mod progress_view;
+
+/// A resolved pull's backup on the leaf is said whether or not the units
+/// are listed: nothing else tells the person where it went (rev 22).
+#[test]
+fn a_resolved_pulls_backup_is_always_said() {
+    let mut a = unit("work/r", "pull (resolved)", false);
+    a.backup = Some("/Users/b/.sovran/replicant/backup/resolved/t/work/r".into());
+    let r = report(Outcome::Done, vec![a, unit("work/s", "pull", false)]);
+    let line = "work/r: what this pull replaced here is kept in \
+                /Users/b/.sovran/replicant/backup/resolved/t/work/r\n";
+    for list in [false, true] {
+        let s = synced(&r, list, Style { color: false });
+        assert_eq!(s.matches(line).count(), 1, "{s}");
+        assert!(!s.contains("work/s: what"), "{s}");
+    }
+}

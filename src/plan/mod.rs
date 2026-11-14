@@ -10,8 +10,11 @@
 
 pub mod apply;
 mod bases;
+mod ctx;
+pub use ctx::LeafCtx;
 mod decide_all;
 mod diff;
+mod dirty;
 mod lease;
 mod open;
 pub mod progress;
@@ -26,12 +29,10 @@ pub use types::{DiffSummary, LeafStatus, Plan, PlannedUnit, Timings, Tone};
 pub use xfer::Plane;
 
 use crate::baseline::{self, Baseline};
-use crate::config::LeafConfig;
 use crate::daemon::wire::{Enrollment, HomeReply, HomeRequest, HomeSnapshot, SubscriptionsView};
 use crate::marker::{self, Marker};
 use crate::units::{self, Discovered};
 use crate::{Error, Result};
-use std::path::Path;
 use std::time::Instant;
 
 /// How a leaf reaches home. The daemon's implementation dials over mTLS; tests
@@ -54,20 +55,6 @@ pub trait HomeLink: Sync {
 pub struct DataLink<'a> {
     pub conn: crate::native::conn::Conn,
     pub serve: Option<Box<dyn FnOnce() + Send + 'a>>,
-}
-
-/// Who and where this leaf is.
-#[derive(Debug, Clone, Copy)]
-pub struct LeafCtx<'a> {
-    pub me: &'a str,
-    pub home_dir: &'a Path,
-    pub cfg: &'a LeafConfig,
-    pub state_dir: &'a Path,
-    /// Which data plane moves the bytes.
-    pub plane: Plane,
-    /// `--accept-rollback`: units (by unit path or this leaf's path) whose
-    /// rolled-back push this host takes home's copy for (review A2).
-    pub accept_rollback: &'a [String],
 }
 
 fn ms(since: Instant) -> u64 {

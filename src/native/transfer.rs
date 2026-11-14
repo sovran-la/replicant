@@ -43,6 +43,11 @@ pub struct Transfer {
     pub union: Vec<String>,
     pub worktrees: Vec<String>,
     pub ignored: Vec<String>,
+    /// A pull that keeps what it replaces or deletes on the leaf, renamed
+    /// into this run directory first ([`super::backup`]): a resolved
+    /// conflict's (rev 22). `None`: a pull held to the target it saw
+    /// instead, the leaf's usual way. Set at apply, never by a dry run.
+    pub backup: Option<PathBuf>,
 }
 
 /// Live counts of a unit's sends.

@@ -47,6 +47,11 @@ pub struct Marker {
     /// manifest. Absent on a pull, and on a marker from before backups.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push: Option<String>,
+    /// A resolved pull's backup run directory on this leaf (rev 22): a
+    /// resume keeps what it replaces in the same place. Absent on any
+    /// other transfer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<std::path::PathBuf>,
 }
 
 impl Record for Marker {
@@ -91,6 +96,7 @@ mod tests {
             source_state: UnitState::Present("ab".into()),
             started_at: 1,
             push: None,
+            backup: None,
         }
     }
 

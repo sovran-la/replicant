@@ -55,13 +55,16 @@ pub enum Cmd {
     },
     /// Decide each unit's direction, show it, and carry it out.
     ///
-    /// On a terminal the plan is shown and `y` asked for (each deletion
-    /// first, by itself); --yes skips the question. Nothing is written
-    /// while anything needs a human: a conflict, a quarantine, a guardrail
-    /// refusal, an unconfirmed deletion (exit 2). A unit whose transfer does
-    /// not finish stops the sync there; its marker stays and the next sync
-    /// resumes it (exit 1). What a push replaces on home is kept as its
-    /// backup.
+    /// On a terminal the plan is shown and `y` asked for (each conflict
+    /// first, then each deletion, each by itself); --yes skips the
+    /// questions. A conflict is answered by taking one side's copy, whose
+    /// transfer keeps what it replaces in a backup on the other side, or by
+    /// skipping it, which lets the rest go and ends with exit 2. Nothing is
+    /// written while anything else needs a human: a conflict nobody could be
+    /// asked about, a quarantine, a guardrail refusal, an unconfirmed
+    /// deletion (exit 2). A unit whose transfer does not finish stops the
+    /// sync there; its marker stays and the next sync resumes it (exit 1).
+    /// What a push replaces on home is kept as its backup.
     Sync {
         /// Show the decision and each unit's itemized diff; write nothing.
         #[arg(long)]

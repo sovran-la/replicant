@@ -8,6 +8,13 @@
 //! `n`, an empty answer, end of input or Ctrl-C anywhere in the questions
 //! sends nothing, so nothing is written, not even a marker.
 //!
+//! A conflict a person may resolve is asked about first, by itself
+//! ([`conflicts`]): take one side's copy, or skip it. Answers that take a
+//! copy are planned again, and the units they resolve shown with what they
+//! will overwrite, before the deletions and the plan are asked about; a
+//! skipped conflict is left as it is, the rest goes on, and the run ends
+//! with it listed, exit 2.
+//!
 //! `--yes` skips the questions (and the first plan): the daemon plans and
 //! applies in one queue entry. It does not confirm deletions; only
 //! `--confirm-delete` or a `y` to that deletion's own question does.
@@ -25,10 +32,16 @@ use super::render::{self, Style};
 use crate::Result;
 use crate::daemon::wire::{LocalReply, LocalRequest};
 use crate::decide::Decision;
-use crate::guard::Guard;
 use crate::plan::Plan;
 use crate::plan::apply::{ProgressEvent, SyncOpts, confirms};
 use std::io::{BufRead, Write};
+
+#[path = "sync_conflicts.rs"]
+mod conflicts;
+use conflicts::Answers;
+#[path = "sync_blockers.rs"]
+mod blockers;
+use blockers::{applies, blockers};
 
 /// What `sync` was asked for, paths already absolutized.
 #[derive(Debug, Clone, Default)]
@@ -62,22 +75,23 @@ pub type Call<'c> = &'c dyn Fn(LocalRequest, &mut dyn FnMut(ProgressEvent)) -> R
 /// Run `sync`; the return value is the exit code.
 pub fn run(a: &Args, t: &mut Term<'_>, call: Call<'_>) -> Result<i32> {
     if a.dry_run {
-        let p = plan(a, call)?;
+        let p = plan(a, call, &[])?;
         let code = if p.blocked() { 2 } else { 0 };
         let text = render::plan(&p, a.verbose, t.style);
         return show(a, t, code, text, &p, false);
     }
     if a.yes {
-        return send(a, t, a.confirm_delete.clone(), None, true, call);
+        let none = Answers::default();
+        return send(a, t, a.confirm_delete.clone(), None, &none, true, call);
     }
     if a.json {
         return Err(crate::Error::Config(
             "--json needs --dry-run or --yes: a question cannot be answered in JSON".into(),
         ));
     }
-    let p = plan(a, call)?;
+    let p = plan(a, call, &[])?;
     let text = render::plan(&p, a.verbose, t.style);
-    let blocked = blockers(&p, &a.confirm_delete, &a.home_dir);
+    let blocked = blockers(&p, &a.confirm_delete, &a.home_dir, &[], !a.interactive);
     if !a.interactive {
         let w: &mut dyn Write = &mut *t.err;
         write!(w, "{text}")?;
@@ -97,9 +111,38 @@ pub fn run(a: &Args, t: &mut Term<'_>, call: Call<'_>) -> Result<i32> {
         writeln!(t.out, "{}", t.style.red("blocked; nothing written"))?;
         return Ok(2);
     }
-    if !p.applies_anything() {
+    let Some(answers) = conflicts::ask_all(t, &p)? else {
+        writeln!(t.out, "not answered; nothing written")?;
+        return Ok(1);
+    };
+    // A resolved conflict is a transfer with a dry run of its own: what it
+    // overwrites is shown before anything else is asked.
+    let p = match answers.resolve.is_empty() {
+        true => p,
+        false => {
+            let p = plan(a, call, &answers.resolve)?;
+            writeln!(t.out, "resolved:")?;
+            for u in p.units.iter().filter(|u| answers.takes(&u.rel)) {
+                write!(t.out, "{}", render::unit(&p, u, a.verbose, t.style))?;
+            }
+            if blockers(&p, &a.confirm_delete, &a.home_dir, &answers.skip, true) {
+                write!(t.out, "{}", render::plan(&p, a.verbose, t.style))?;
+                writeln!(t.out, "{}", t.style.red("blocked; nothing written"))?;
+                return Ok(2);
+            }
+            p
+        }
+    };
+    let skipped = |code: i32, t: &mut Term<'_>| -> Result<i32> {
+        if answers.skip.is_empty() {
+            return Ok(code);
+        }
+        write!(t.out, "{}", conflicts::unresolved(&answers.skip, t.style))?;
+        Ok(if code == 0 { 2 } else { code })
+    };
+    if !applies(&p, &answers.skip) {
         writeln!(t.out, "nothing to apply")?;
-        return Ok(0);
+        return skipped(0, t);
     }
     let mut confirm = a.confirm_delete.clone();
     let pending: Vec<_> = p
@@ -120,31 +163,20 @@ pub fn run(a: &Args, t: &mut Term<'_>, call: Call<'_>) -> Result<i32> {
         writeln!(t.out, "not applied; nothing written")?;
         return Ok(1);
     }
-    send(a, t, confirm, Some(p.digest()), false, call)
+    let code = send(a, t, confirm, Some(p.digest()), &answers, false, call)?;
+    skipped(code, t)
 }
 
-fn plan(a: &Args, call: Call<'_>) -> Result<Plan> {
+fn plan(a: &Args, call: Call<'_>, resolve: &[crate::decide::Resolution]) -> Result<Plan> {
     let req = LocalRequest::DryRun {
         no_wait: a.no_wait,
         accept_rollback: a.accept_rollback.clone(),
+        resolve: resolve.to_vec(),
     };
     match call(req, &mut |_| {})? {
         LocalReply::Plan(p) => Ok(*p),
         _ => Err(super::unexpected_reply()),
     }
-}
-
-/// Whether anything but a deletion awaiting confirmation needs a human. A
-/// resume's guardrail 6 is waived by a `--confirm-delete` naming its unit.
-fn blockers(p: &Plan, confirm: &[String], home_dir: &std::path::Path) -> bool {
-    !p.refused.is_empty()
-        || p.units.iter().any(|u| {
-            let confirmed = confirm.iter().any(|c| confirms(c, u, home_dir));
-            u.refusals
-                .iter()
-                .any(|r| !(confirmed && r.guard == Guard::ChangedSinceInterrupted))
-                || (u.decision.is_blocking() && !matches!(u.decision, Decision::DeletedOn { .. }))
-        })
 }
 
 /// `[y/N]`: only `y` or `yes` is yes. End of input, or an interrupted read
@@ -171,6 +203,7 @@ fn send(
     t: &mut Term<'_>,
     confirm_delete: Vec<String>,
     expect: Option<String>,
+    answers: &Answers,
     with_plan: bool,
     call: Call<'_>,
 ) -> Result<i32> {
@@ -179,6 +212,8 @@ fn send(
         confirm_delete,
         expect,
         accept_rollback: a.accept_rollback.clone(),
+        resolve: answers.resolve.clone(),
+        skip: answers.skip.clone(),
     };
     let mut streamed = 0;
     let reply = {

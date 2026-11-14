@@ -58,8 +58,10 @@ use crate::marker::{Direction, Marker};
 use crate::state::UnitState;
 use serde::{Deserialize, Serialize};
 
+mod resolve;
 mod rollback;
 mod unserved;
+pub use resolve::{Resolution, Resolvable, Take, resolvable};
 pub use rollback::{Held, RolledBackPush, hold_rolled_back};
 pub use unserved::{UnservedInputs, UnservedReason, decide_unserved, files_here};
 
@@ -73,6 +75,11 @@ pub enum Decision {
     Push,
     Conflict {
         why: String,
+    },
+    /// A conflict the person resolved by taking `take`'s copy whole: a
+    /// push or a pull over what the other side changed ([`resolve`]).
+    Resolved {
+        take: Take,
     },
     /// Rerun an interrupted transfer in its original direction.
     Resume {
@@ -118,6 +125,7 @@ impl Decision {
             Decision::Pull => Some(Direction::Pull),
             Decision::Push => Some(Direction::Push),
             Decision::Resume { direction } => Some(*direction),
+            Decision::Resolved { take } => Some(take.direction()),
             _ => None,
         }
     }
@@ -155,6 +163,8 @@ impl Decision {
             Decision::Pull => "pull".into(),
             Decision::Push => "push".into(),
             Decision::Conflict { why } => format!("conflict ({why})"),
+            Decision::Resolved { take: Take::Leaf } => "push (resolved: this copy)".into(),
+            Decision::Resolved { take: Take::Home } => "pull (resolved: home's copy)".into(),
             Decision::Resume { direction } => format!("resume {direction}"),
             Decision::Quarantined { by, .. } => format!("quarantined (dead push by {by})"),
             Decision::Remove => "remove (unsubscribed)".into(),

@@ -11,7 +11,7 @@ use std::cell::RefCell;
 
 #[path = "sync_term_tests.rs"]
 mod term;
-use term::{Script, answer, ctrl_c};
+use term::{Script, answer, answers, ctrl_c};
 
 struct Run {
     code: i32,
@@ -37,19 +37,26 @@ fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) ->
         state_dir: &state,
         plane: Default::default(),
         accept_rollback: &[],
+        resolve: &[],
     };
     let call = |req: LocalRequest, on: &mut dyn FnMut(ProgressEvent)| -> Result<LocalReply> {
         match req {
             LocalRequest::DryRun {
                 no_wait,
                 accept_rollback,
+                resolve,
             } => {
-                sent.borrow_mut().push(match accept_rollback.is_empty() {
-                    true => "dry-run".into(),
+                let mut line = match accept_rollback.is_empty() {
+                    true => "dry-run".to_string(),
                     false => format!("dry-run accept:{accept_rollback:?}"),
-                });
+                };
+                if !resolve.is_empty() {
+                    line.push_str(&format!(" resolve:{}", answers(&resolve)));
+                }
+                sent.borrow_mut().push(line);
                 let ctx = LeafCtx {
                     accept_rollback: &accept_rollback,
+                    resolve: &resolve,
                     ..ctx
                 };
                 Ok(LocalReply::Plan(Box::new(crate::plan::plan(
@@ -66,6 +73,14 @@ fn cli(bed: &Bed, home: &Home, a: &Args, lines: Vec<std::io::Result<String>>) ->
                         false => format!(" accept:{:?}", opts.accept_rollback),
                     }
                 ));
+                if !opts.resolve.is_empty() || !opts.skip.is_empty() {
+                    let last = sent.borrow_mut().pop().unwrap_or_default();
+                    sent.borrow_mut().push(format!(
+                        "{last} resolve:{} skip:{:?}",
+                        answers(&opts.resolve),
+                        opts.skip
+                    ));
+                }
                 // Events in order, handed to the CLI's sink once the sync
                 // returns (a unit's counters come from its transfer's own
                 // thread, and the sink is the CLI's, not shareable).
@@ -266,11 +281,12 @@ fn without_a_terminal_and_without_yes_it_only_shows_the_plan() {
     assert_eq!(everything(&bed), before);
 }
 
+/// A refusal is no question: git writing on home (guardrail 3). A conflict
+/// that may take an answer is asked about instead (sync_resolve_tests.rs).
 #[test]
 fn a_blocked_plan_is_not_asked_about() {
     let (bed, home) = pull_bed();
-    let l = testutil::repo(&bed.leaf_hd.join("work/r"));
-    testutil::git(&l, &["commit", "-q", "--allow-empty", "-m", "leaf only"]);
+    testutil::write(&bed.home_hd.join("work/r/.git/index.lock"), "");
     let before = everything(&bed);
     let r = cli(&bed, &home, &tty(&bed), vec![answer("y")]);
     assert_eq!(r.code, 2);
@@ -318,3 +334,6 @@ mod resume;
 
 #[path = "sync_progress_tests.rs"]
 mod progress;
+
+#[path = "sync_resolve_tests.rs"]
+mod resolve;

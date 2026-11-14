@@ -73,6 +73,7 @@ fn a_lost_lease_during_the_dry_runs_fails_the_plan() {
         state_dir: &state,
         plane: Default::default(),
         accept_rollback: &[],
+        resolve: &[],
     };
     let started = Instant::now();
     let err = std::thread::scope(|s| {

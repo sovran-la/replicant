@@ -20,6 +20,7 @@ fn marker(host: &str, direction: Direction, source: UnitState) -> Marker {
         source_state: source,
         started_at: 99,
         push: None,
+        backup: None,
     }
 }
 

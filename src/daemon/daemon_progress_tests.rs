@@ -83,6 +83,7 @@ fn a_sync_streams_each_unit_before_its_report() {
         LocalRequest::DryRun {
             no_wait: false,
             accept_rollback: vec![],
+            resolve: vec![],
         },
         LocalRequest::Status,
     ] {

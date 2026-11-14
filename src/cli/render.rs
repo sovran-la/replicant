@@ -108,7 +108,7 @@ pub fn unsubscribed(o: &UnsubscribeOutcome) -> String {
     s
 }
 
-fn head(h: &Option<String>) -> String {
+pub(super) fn head(h: &Option<String>) -> String {
     match h.as_deref() {
         Some(h) => h
             .strip_prefix("ref: refs/heads/")
@@ -139,6 +139,62 @@ fn unit_line(u: &PlannedUnit, st: Style) -> String {
     )
 }
 
+/// One unit of `p` as [`plan`] shows it: its line, its notes, refusals and
+/// diff.
+pub fn unit(p: &Plan, u: &PlannedUnit, verbose: bool, st: Style) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "{}", unit_line(u, st));
+    if let Some(note) = u.deletion_note(&p.me, &p.home) {
+        let _ = writeln!(s, "    {}", st.red(&note));
+    }
+    match u.unserved_note() {
+        Some((note, Tone::Alarm)) => {
+            let _ = writeln!(s, "    {}", st.red(&note));
+        }
+        Some((note, Tone::Quiet)) => {
+            let _ = writeln!(s, "    {}", st.dim(&note));
+        }
+        None => {}
+    }
+    for r in &u.refusals {
+        let _ = writeln!(s, "    {}", st.red(&format!("REFUSED {}", r.headline())));
+        if let Some(a) = r.advice(&p.me, &p.home, u.decision.direction()) {
+            let _ = writeln!(s, "      {}", st.red(&a));
+        }
+        for d in &r.detail {
+            let _ = writeln!(s, "      {}", st.red(d));
+        }
+    }
+    if let Some(d) = &u.diff {
+        let _ = writeln!(
+            s,
+            "    {} files changed, {} deleted",
+            d.files_changed, d.deleted
+        );
+        let shown = if verbose {
+            d.changes.len()
+        } else {
+            DIFF_PREVIEW
+        };
+        for c in d.changes.iter().take(shown) {
+            let _ = writeln!(s, "      {c}");
+        }
+        if d.changes.len() > shown {
+            let _ = writeln!(
+                s,
+                "      {}",
+                st.dim(&format!("… {} more (--verbose)", d.changes.len() - shown))
+            );
+        }
+        if verbose {
+            for n in &d.notes {
+                let _ = writeln!(s, "      {}", st.dim(n));
+            }
+        }
+    }
+    s
+}
+
 pub fn plan(p: &Plan, verbose: bool, st: Style) -> String {
     let mut s = String::new();
     for line in p.summary() {
@@ -166,55 +222,7 @@ pub fn plan(p: &Plan, verbose: bool, st: Style) -> String {
         if matches!(u.decision, Decision::Nothing { .. }) && !verbose {
             continue;
         }
-        let _ = writeln!(s, "{}", unit_line(u, st));
-        if let Some(note) = u.deletion_note(&p.me, &p.home) {
-            let _ = writeln!(s, "    {}", st.red(&note));
-        }
-        match u.unserved_note() {
-            Some((note, Tone::Alarm)) => {
-                let _ = writeln!(s, "    {}", st.red(&note));
-            }
-            Some((note, Tone::Quiet)) => {
-                let _ = writeln!(s, "    {}", st.dim(&note));
-            }
-            None => {}
-        }
-        for r in &u.refusals {
-            let _ = writeln!(s, "    {}", st.red(&format!("REFUSED {}", r.headline())));
-            if let Some(a) = r.advice(&p.me, &p.home, u.decision.direction()) {
-                let _ = writeln!(s, "      {}", st.red(&a));
-            }
-            for d in &r.detail {
-                let _ = writeln!(s, "      {}", st.red(d));
-            }
-        }
-        if let Some(d) = &u.diff {
-            let _ = writeln!(
-                s,
-                "    {} files changed, {} deleted",
-                d.files_changed, d.deleted
-            );
-            let shown = if verbose {
-                d.changes.len()
-            } else {
-                DIFF_PREVIEW
-            };
-            for c in d.changes.iter().take(shown) {
-                let _ = writeln!(s, "      {c}");
-            }
-            if d.changes.len() > shown {
-                let _ = writeln!(
-                    s,
-                    "      {}",
-                    st.dim(&format!("… {} more (--verbose)", d.changes.len() - shown))
-                );
-            }
-            if verbose {
-                for n in &d.notes {
-                    let _ = writeln!(s, "      {}", st.dim(n));
-                }
-            }
-        }
+        s.push_str(&unit(p, u, verbose, st));
     }
     let nothing = p
         .units

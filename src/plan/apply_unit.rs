@@ -112,10 +112,14 @@ fn transfer(
         return Ok(Done::Stopped(stopped_before(u, watch)));
     }
     let mut push = None;
+    let mut backup = None;
     match direction {
         Direction::Pull => {
-            // A resumed pull keeps the marker it is resuming.
-            if markers.get::<Marker>(&u.rel)?.is_none() {
+            // A resumed pull keeps the marker it is resuming, and with it
+            // the backup run a resolved pull began.
+            let open = markers.get::<Marker>(&u.rel)?;
+            backup = leaf_backup(ctx, u, open.as_ref())?;
+            if open.is_none() {
                 markers.put(&Marker {
                     version: RECORD_VERSION,
                     rel: u.rel.clone(),
@@ -124,6 +128,7 @@ fn transfer(
                     source_state,
                     started_at: crate::now_secs(),
                     push: None,
+                    backup: backup.clone(),
                 })?;
             }
         }
@@ -143,6 +148,17 @@ fn transfer(
         }
     }
 
+    let kept;
+    let xfer = match &backup {
+        None => xfer,
+        Some(dir) => {
+            kept = crate::plan::xfer::Xfer {
+                backup: Some(dir.clone()),
+                ..xfer.clone()
+            };
+            &kept
+        }
+    };
     let ran = ops.apply(xfer, &fresh);
     let changes = diff::summarize(&ran.itemized).changes;
     if !ran.ok() {
@@ -211,13 +227,17 @@ fn transfer(
     }
     let mut applied = applied(u, action, resumed, &ran);
     applied.push = push;
-    let detail = format!(
+    let mut detail = format!(
         "{action} {} files {} del {} {}",
         applied.files_changed,
         applied.deleted,
         crate::timefmt::elapsed(crate::plan::ms(started)),
         if resumed { "resumed → ok" } else { "ok" },
     );
+    if let Some(dir) = &backup {
+        detail.push_str(&format!(" backup:{}", dir.display()));
+    }
+    applied.backup = backup;
     expect_done(
         link.call(HomeRequest::Settle {
             lease,
@@ -230,6 +250,40 @@ fn transfer(
     )?;
     Ok(Done::Ran(applied))
 }
+
+/// Where a pull into this leaf keeps what it replaces, if it keeps it: a
+/// resolved conflict's new run directory, created before its marker names
+/// it (`backup/resolved/<when>/<rel>`), or the one the marker it resumes
+/// names. Any other pull keeps nothing; it is held to the target it saw.
+fn leaf_backup(
+    ctx: crate::plan::LeafCtx<'_>,
+    u: &PlannedUnit,
+    open: Option<&Marker>,
+) -> Result<Option<std::path::PathBuf>> {
+    if let Some(dir) = open.and_then(|m| m.backup.clone()) {
+        return Ok(Some(dir));
+    }
+    if !matches!(
+        u.decision,
+        crate::decide::Decision::Resolved {
+            take: crate::decide::Take::Home
+        }
+    ) {
+        return Ok(None);
+    }
+    let dir = ctx
+        .backup_dir()
+        .join(RESOLVED)
+        .join(crate::timefmt::compact(crate::now_secs()))
+        .join(&u.rel);
+    std::fs::create_dir_all(&dir)?;
+    Ok(Some(dir))
+}
+
+/// The leaf's backups of resolved pulls, under [`LeafCtx::backup_dir`].
+///
+/// [`LeafCtx::backup_dir`]: crate::plan::LeafCtx::backup_dir
+pub const RESOLVED: &str = "resolved";
 
 #[path = "apply_after.rs"]
 mod after;

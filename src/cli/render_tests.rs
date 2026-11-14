@@ -25,6 +25,9 @@ fn unit(rel: &str, decision: Decision) -> PlannedUnit {
         refusals: vec![],
         leaf_files: 0,
         home_files: 0,
+        resolvable: false,
+        leaf_dirty: 0,
+        home_dirty: 0,
     }
 }
 

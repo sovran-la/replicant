@@ -100,6 +100,7 @@ fn enroll_approve_status_dry_run_fleet_and_log_over_mtls() {
         LocalRequest::DryRun {
             no_wait: true,
             accept_rollback: vec![],
+            resolve: vec![],
         },
     ) else {
         panic!()
@@ -148,6 +149,7 @@ fn enroll_approve_status_dry_run_fleet_and_log_over_mtls() {
         LocalRequest::DryRun {
             no_wait: true,
             accept_rollback: vec![],
+            resolve: vec![],
         },
     )
     .unwrap_err()

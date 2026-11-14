@@ -16,6 +16,7 @@ fn marker(rel: &str, host: &str, at: u64, push: Option<&str>) -> Marker {
         source_state: UnitState::Empty,
         started_at: at,
         push: push.map(String::from),
+        backup: None,
     }
 }
 

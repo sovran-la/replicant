@@ -28,6 +28,7 @@ fn marker(host: &str, direction: Direction) -> Marker {
         source_state: p("s"),
         started_at: 99,
         push: None,
+        backup: None,
     }
 }
 

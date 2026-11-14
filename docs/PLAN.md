@@ -17,6 +17,7 @@ rev 18 2026-11-05 (guardrail 1 measures the working tree against HEAD plus untra
 rev 19 2026-11-06 (`sync` asks "Apply this plan?" only when applying would do something: a transfer, a deletion, or a baseline to record or drop; a plan of settled units prints "nothing to apply" and exits 0. Release 0.4.9).
 rev 20 2026-11-06 (guardrail 1's working-tree check reads only the files it must: rev 18's `git diff HEAD` re-hashed every file whose stat cache was off, which on a copied index is the whole repo, and a status on home went from 2.2 s to 5.3 s. The porcelain columns decide every entry but one shape, staged and then changed on disk, and only those files are hashed (`git hash-object`); no scratch index, no write. Release 0.4.10).
 rev 21 2026-11-14 (guardrail 1 reads the baseline: a plain push or pull onto a target whose state hash still equals its baseline moves dirt both sides agreed on at the last sync, the source's own earlier work, and is not refused. A repo synced with uncommitted work had refused every later sync of it (thistledown's `mikrotik` `Cargo.lock`). Resume, removal and a confirmed deletion keep the guard whole. Release 0.4.11).
+rev 22 2026-11-14 (repo conflicts are answered at the terminal: during an interactive `sync` each conflict that may take an answer (both changed since baseline, or no baseline and both populated, both sides present, no marker or rolled-back push over it) is asked about by itself, take home's copy, take this machine's, or skip. A taken copy is planned again, shown with what it overwrites, and confirmed with the plan; guardrail 1 steps aside for it. What it replaces is kept: on home by the push's backup, on the leaf by a backup of its own under `backup/resolved/<when>/<rel>`, named in the marker so a resume keeps writing into it, swept after 14 days at the next sync. A skipped conflict is left as it is and the rest of the plan goes; the run ends listing it, exit 2. Without a terminal, or with `--yes`, a conflict still blocks the whole sync. Merge is not built. Release 0.4.12).
 Captures the design discussion; nothing here is final. Rev 4 added the daemon control plane, FIFO queue + leases,
 quarantine/rollback, journal, dogfood via --as. v0.1's working record is `docs/v0.1-notes.md`,
 `docs/v0.1-review.md` and `docs/v0.1-fixes.md`; where they disagree, the review and fixes win.*
@@ -533,6 +534,22 @@ and the decision is manual.
     Skip
   ```
 
+  Built in rev 22 without Merge, for any unit (a loose one too, whole):
+  `1) use <home>'s copy`, `2) use <leaf>'s copy`, `s) skip`, asked only at
+  a terminal, never with `--yes`. Only the direction table's own conflicts
+  take an answer, with both sides present; an interrupted sync, a
+  rolled-back push or work on an unserved path says what to do instead, and
+  taking an empty side would be a whole-unit delete. A taken copy is a
+  transfer over the other side's work, so guardrail 1 does not refuse it;
+  instead it is kept. Taking the leaf's copy is a push, which home backs up
+  as it backs up every push; taking home's is a pull, which the leaf backs
+  up under `backup/resolved/<when>/<rel>` beside its state (the marker
+  names that run, so a resume keeps writing into it; the next sync sweeps
+  runs older than 14 days that no marker names). The answers are planned
+  again and the resolved units shown with what they overwrite before the
+  deletions and "Apply this plan?" are asked; the daemon applies only that
+  plan, and refuses an answer that no longer names an open conflict.
+
 - **Non-git paths conflict per file**, grouped by directory with
   "apply to all in this dir":
 
@@ -584,6 +601,11 @@ A skipped path stays flagged in the baseline. The next `sync` re-asks,
 nonzero exit, red, path list — of everything left unresolved. Skip cannot
 quietly become "ignore forever."
 
+As built (rev 22): a skipped conflict needs nothing flagged, since it is
+still a conflict by the table and the next `sync` asks again. It no longer
+stops the rest of the plan; the run ends with "N conflicts left
+unresolved" and the paths in red, exit 2.
+
 ## Guardrails
 
 Before any destructive apply, in order:
@@ -605,6 +627,9 @@ Before any destructive apply, in order:
    is the source's own earlier work. Real work on the target since then
    moves its hash, and the table makes that a pull or a conflict, never a
    transfer onto it. Removal and a confirmed deletion keep the guard whole.
+   Not for a resolved conflict either (rev 22), nor the resume of a resolved
+   pull: the person chose to overwrite that work, and it is kept in a
+   backup instead.
 2. **Stale baseline.** Push refuses if home moved since this leaf last
    pulled (someone else pushed). That is the "both changed" row, caught
    before any transfer.

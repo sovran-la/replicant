@@ -28,6 +28,7 @@ mod unit;
 pub(super) use gate::accepts_rollback;
 use gate::gate;
 pub use gate::{confirmable, confirms, names};
+pub use unit::RESOLVED;
 
 /// What `sync` was told.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +45,15 @@ pub struct SyncOpts {
     /// copy (review A2): named like `confirm_delete`. `--yes` never does.
     #[serde(default)]
     pub accept_rollback: Vec<String>,
+    /// Conflicts the person answered by taking one side's copy (rev 22).
+    /// `--yes` never does.
+    #[serde(default)]
+    pub resolve: Vec<crate::decide::Resolution>,
+    /// Conflicts the person answered with skip: left as they are, and no
+    /// longer stopping the rest of the plan (PLAN.md, "Skip is not
+    /// neutral"). Each must name a conflict this plan may resolve.
+    #[serde(default)]
+    pub skip: Vec<String>,
 }
 
 /// How a sync ended.
@@ -96,6 +106,10 @@ pub struct AppliedUnit {
     /// A push's id on home: its backup, for `replicant rollback`.
     #[serde(default)]
     pub push: Option<String>,
+    /// A resolved pull's backup on this leaf: what it replaced or deleted
+    /// here (rev 22).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<std::path::PathBuf>,
     /// From the unit's start (its marker, or a push's dry run) to its
     /// journal line.
     #[serde(default)]
@@ -142,6 +156,7 @@ pub fn sync_with(
     let stash: Mutex<Stash> = Mutex::default();
     let ctx = LeafCtx {
         accept_rollback: &opts.accept_rollback,
+        resolve: &opts.resolve,
         ..ctx
     };
     let abort = progress.abort().clone();

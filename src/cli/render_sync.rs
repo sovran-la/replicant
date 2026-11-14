@@ -122,6 +122,18 @@ pub fn synced(r: &SyncReport, list: bool, st: Style) -> String {
             );
         }
     }
+    // Where a resolved pull kept what it replaced here: said whatever else
+    // is listed, since nothing else will say it (rev 22).
+    for a in &r.applied {
+        if let Some(dir) = &a.backup {
+            let _ = writeln!(
+                s,
+                "{}: what this pull replaced here is kept in {}",
+                a.rel,
+                dir.display()
+            );
+        }
+    }
     let n = r.applied.len();
     let units = if n == 1 { "unit" } else { "units" };
     match &r.outcome {

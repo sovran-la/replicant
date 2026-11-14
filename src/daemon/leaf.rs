@@ -21,6 +21,8 @@ pub struct Leaf {
 mod link;
 #[path = "leaf_status.rs"]
 mod status;
+#[path = "leaf_sweep.rs"]
+pub mod sweep;
 
 impl Leaf {
     pub fn open(dirs: Dirs) -> Self {
@@ -98,16 +100,25 @@ impl Leaf {
             LocalRequest::DryRun {
                 no_wait,
                 accept_rollback,
-            } => self.planning(&accept_rollback, |link, ctx| {
+                resolve,
+            } => self.planning(&accept_rollback, &resolve, |link, ctx| {
                 Ok(LocalReply::Plan(Box::new(plan::plan(
                     link, ctx, true, no_wait,
                 )?)))
             }),
             LocalRequest::Sync { opts } => {
-                let (me, report) = self.planning(&opts.accept_rollback, |link, ctx| {
-                    let report = plan::apply::sync_with(link, ctx, &opts, progress)?;
-                    Ok((ctx.me.to_string(), report))
-                })?;
+                let (me, report) =
+                    self.planning(&opts.accept_rollback, &opts.resolve, |link, ctx| {
+                        // Best effort: an old backup left over costs disk, not the sync.
+                        let (backup, state) = (ctx.backup_dir(), ctx.state_dir);
+                        if let Err(e) =
+                            sweep::sweep(&backup, state, &self.journal, ctx.me, crate::now_secs())
+                        {
+                            eprintln!("replicant: could not sweep old resolved-pull backups: {e}");
+                        }
+                        let report = plan::apply::sync_with(link, ctx, &opts, progress)?;
+                        Ok((ctx.me.to_string(), report))
+                    })?;
                 journal_unheard(&self.journal, &me, &report.outcome);
                 Ok(LocalReply::Synced(Box::new(report)))
             }
@@ -128,10 +139,12 @@ impl Leaf {
     }
 
     /// Run `f` with the link to home, as this host, and the plan context
-    /// (`accept`: `--accept-rollback`).
+    /// (`accept`: `--accept-rollback`; `resolve`: the person's answers to
+    /// conflicts).
     fn planning<T>(
         &self,
         accept: &[String],
+        resolve: &[crate::decide::Resolution],
         f: impl FnOnce(&dyn HomeLink, LeafCtx<'_>) -> Result<T>,
     ) -> Result<T> {
         let cfg = self.cfg()?;
@@ -146,6 +159,7 @@ impl Leaf {
                 state_dir: &state,
                 plane: plan::Plane::default(),
                 accept_rollback: accept,
+                resolve,
             },
         )
     }

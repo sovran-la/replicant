@@ -9,6 +9,18 @@ pub(super) const ALLOWED: &[(&str, &str, usize, &str)] = &[
     ("record.rs", "write_atomic(", 1, "Store::put: state dir"),
     ("record.rs", "remove_file(", 1, "Store::delete: state dir"),
     (
+        "daemon/leaf_sweep.rs",
+        "remove_dir_all(",
+        1,
+        "a resolved pull's backup run past its keep: the leaf's backup dir (rev 22)",
+    ),
+    (
+        "plan/apply_unit.rs",
+        "create_dir_all(",
+        1,
+        "a resolved pull's backup run directory: the leaf's backup dir (rev 22)",
+    ),
+    (
         "plan/apply_unit.rs",
         ".put(",
         2,

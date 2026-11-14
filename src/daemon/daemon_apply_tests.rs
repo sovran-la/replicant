@@ -115,6 +115,7 @@ fn sync_applies_over_mtls_and_both_journals_keep_the_lines() {
             source_state: UnitState::Present("h".into()),
             started_at: crate::now_secs(),
             push: None,
+            backup: None,
         })
         .unwrap();
     status(&bed);
@@ -162,6 +163,7 @@ fn an_interrupted_pull_shows_in_status_resumes_and_clears() {
             source_state: UnitState::Present("home-then".into()),
             started_at: crate::now_secs() - 7200,
             push: None,
+            backup: None,
         })
         .unwrap();
     let st = status(&bed);
@@ -190,6 +192,7 @@ fn an_interrupted_pull_shows_in_status_resumes_and_clears() {
         LocalRequest::DryRun {
             no_wait: true,
             accept_rollback: vec![],
+            resolve: vec![],
         },
     ) else {
         panic!()

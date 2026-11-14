@@ -137,6 +137,7 @@ impl Fx {
             union: vec![],
             worktrees: vec![],
             ignored: vec![],
+            backup: None,
         }
     }
 }

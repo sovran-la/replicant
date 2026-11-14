@@ -137,6 +137,7 @@ fn plan_of_accepting(bed: &Bed, home: &Home, accept: &[&str]) -> crate::plan::Pl
     let dirs = bed.leaf_dirs.state();
     let ctx = crate::plan::LeafCtx {
         accept_rollback: &accept,
+        resolve: &[],
         ..crate::plan::apply::tests::ctx(bed, &cfg, &dirs)
     };
     crate::plan::plan(&link, ctx, true, false).unwrap()

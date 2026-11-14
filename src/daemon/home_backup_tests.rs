@@ -99,6 +99,7 @@ fn old_backups_are_swept_unless_their_push_is_still_open() {
             source_state: crate::state::UnitState::Empty,
             started_at: 0,
             push: Some(open.clone()),
+            backup: None,
         })
         .unwrap();
     assert_eq!(home.sweep_backups(now).unwrap(), 2);
@@ -176,6 +177,7 @@ fn record_run_refuses_a_change_outside_the_unit() {
             source_state: crate::state::UnitState::Empty,
             started_at: 0,
             push: Some(id.into()),
+            backup: None,
         })
         .unwrap();
     for bad in ["+ ../x", "+ /etc/passwd", "- a/../../b", "~ ./c"] {

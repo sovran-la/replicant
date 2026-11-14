@@ -13,6 +13,7 @@ fn put_marker(dir: &Path, host: &str, direction: Direction) {
             source_state: UnitState::Present("s".into()),
             started_at: 7,
             push: None,
+            backup: None,
         })
         .unwrap();
 }
@@ -151,6 +152,7 @@ fn dry_run_takes_and_releases_a_queue_entry_and_journals() {
         state_dir: &state,
         plane: Default::default(),
         accept_rollback: &[],
+        resolve: &[],
     };
     let err = plan(&link, ctx, true, true).unwrap_err().to_string();
     assert!(
@@ -239,6 +241,7 @@ fn home_dropping_the_entry_mid_plan_fails_the_dry_run_loudly() {
         state_dir: &state,
         plane: Default::default(),
         accept_rollback: &[],
+        resolve: &[],
     };
     let err = plan(&link, ctx, true, false).unwrap_err().to_string();
     assert!(err.contains("lease lost"), "{err}");
@@ -281,6 +284,7 @@ fn a_failed_final_report_does_not_fail_finished_work() {
         state_dir: &state,
         plane: Default::default(),
         accept_rollback: &[],
+        resolve: &[],
     };
     let p = plan(&link, ctx, true, false).expect("the plan stands");
     assert!(p.units.iter().any(|u| u.rel == "work/r"));

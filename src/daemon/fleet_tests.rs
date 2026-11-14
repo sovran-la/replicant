@@ -99,6 +99,7 @@ fn a_report_keeps_the_last_sync_until_the_next_sync() {
         source_state: crate::state::UnitState::Empty,
         started_at: 5,
         push: None,
+        backup: None,
     };
     let sync = LastSync {
         at: 9,

@@ -2,6 +2,7 @@
 //! diff of both sides' manifests), and guardrails 1, 3, 4 and 5 against what
 //! it reports.
 
+use super::dirty;
 use super::xfer::{Ops, PlannedXfer, Xfer};
 use super::{DiffSummary, PlannedUnit, leaf_case_insensitive};
 use crate::baseline::Baseline;
@@ -171,6 +172,7 @@ pub(super) fn run(
                 },
                 worktrees: within(&worktrees),
                 ignored,
+                backup: None,
             };
             let Diffed {
                 itemized: it,
@@ -191,23 +193,14 @@ pub(super) fn run(
                 true => removed,
                 false => target.cloned(),
             };
-            // A plain push or pull onto a target still at its baseline
-            // moves dirt both sides already agreed on (guard::dirty_target).
-            let agreed = match p.decision {
-                Decision::Push | Decision::Pull => baselines
-                    .iter()
-                    .find(|b| b.rel == p.rel && b.kind == p.kind)
-                    .map(|b| match direction {
-                        Direction::Push => &b.home,
-                        Direction::Pull => &b.leaf,
-                    }),
-                _ => None,
-            };
-            refusals.extend(
-                dirty_target
-                    .as_ref()
-                    .and_then(|t| guard::dirty_target(t, &it, agreed)),
-            );
+            refusals.extend(dirty::guard(
+                p,
+                direction,
+                dirty_target.as_ref(),
+                &it,
+                baselines,
+                leaf_markers,
+            ));
             // Guardrail 6 (review A3): a resumed pull, removal or confirmed
             // deletion carries a decision made before it was interrupted,
             // which says nothing about what the leaf has written since.

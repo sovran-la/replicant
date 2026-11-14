@@ -9,6 +9,7 @@
 
 use super::watch::Watch;
 use super::{Diffed, Done, Env, Transfer};
+use crate::native::backup::Backup;
 use crate::native::conn::Conn;
 use crate::native::frame::{self, DATA_VERSION, Frame, Kind};
 use crate::native::receive::Receiver;
@@ -146,7 +147,8 @@ impl Transfer {
     /// Pull: home sends what the leaf asks for; the leaf writes it.
     pub(super) fn pull(&self, env: &Env<'_>, d: &Diffed, done: &mut Done) -> Result<()> {
         let c = &d.changes;
-        let rx = Receiver::open(&self.leaf_path, self.is_file, None, None)?.expecting(&d.target);
+        let backup = self.backup.clone().map(Backup::new);
+        let rx = Receiver::open(&self.leaf_path, self.is_file, None, backup)?.expecting(&d.target);
         for e in &c.open {
             rx.mkdir(e)?;
         }

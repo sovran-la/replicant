@@ -129,6 +129,9 @@ pub(super) fn plan(
                 refusals: vec![],
                 leaf_files: files,
                 home_files: 0,
+                resolvable: false,
+                leaf_dirty: 0,
+                home_dirty: 0,
             }
         })
         .collect();

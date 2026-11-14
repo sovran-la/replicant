@@ -33,6 +33,7 @@ fn marker(direction: Direction) -> Marker {
         source_state: UnitState::Present("s".into()),
         started_at: 9,
         push: None,
+        backup: None,
     }
 }
 

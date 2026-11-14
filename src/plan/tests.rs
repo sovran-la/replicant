@@ -2,6 +2,7 @@
 //! end to end, guardrails against real dry runs, and proof nothing is written.
 
 use super::*;
+use crate::config::LeafConfig;
 use crate::daemon::home::Home;
 use crate::daemon::queue::EntryKind;
 use crate::decide::Decision;
@@ -11,6 +12,7 @@ use crate::record::{RECORD_VERSION, Store};
 use crate::state::UnitState;
 use crate::testutil::{self, Bed, InProcess};
 use crate::units::UnitKind;
+use std::path::Path;
 use std::path::PathBuf;
 
 fn go(bed: &Bed, home: &Home, cfg: &LeafConfig, dry: bool) -> Result<Plan> {
@@ -30,6 +32,7 @@ fn go(bed: &Bed, home: &Home, cfg: &LeafConfig, dry: bool) -> Result<Plan> {
             state_dir: &state,
             plane: Default::default(),
             accept_rollback: &[],
+            resolve: &[],
         },
         dry,
         false,

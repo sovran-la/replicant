@@ -46,6 +46,7 @@ impl Leaf {
                     state_dir: &state,
                     plane: plan::Plane::default(),
                     accept_rollback: &[],
+                    resolve: &[],
                 },
                 false,
                 false,

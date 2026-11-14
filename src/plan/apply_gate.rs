@@ -38,10 +38,13 @@ pub(super) fn gate(
                 u.decision.label(),
                 u.rel
             )),
+            // Skipped by the person: left as it is, the rest goes on.
+            Decision::Conflict { .. } if u.resolvable && opts.skip.contains(&u.rel) => {}
             d if d.is_blocking() => why.push(format!("{}: {}", u.rel, d.label())),
             _ => {}
         }
     }
+    why.extend(answers(plan, opts));
     for c in &opts.confirm_delete {
         let named = plan
             .units
@@ -71,6 +74,42 @@ pub(super) fn gate(
         Some(d) if *d != plan.digest() => Some(Outcome::Changed),
         _ => None,
     }
+}
+
+/// Answers that name no conflict this plan may resolve: a unit that is no
+/// longer one (resolved since on the other side, or never), or a path in
+/// no plan. A resolution only becomes [`Decision::Resolved`] where it may,
+/// so one that did not is the plan having changed under the answer.
+fn answers(plan: &Plan, opts: &SyncOpts) -> Vec<String> {
+    let unit = |rel: &str| plan.units.iter().find(|u| u.rel == rel);
+    let mut why = Vec::new();
+    for r in &opts.resolve {
+        match unit(&r.rel) {
+            Some(u) if matches!(u.decision, Decision::Resolved { take } if take == r.take) => {}
+            Some(u) => why.push(format!(
+                "{}: answered as a conflict, but it is {} now; run `replicant sync` again",
+                r.rel,
+                u.decision.label()
+            )),
+            None => why.push(format!(
+                "{}: answered as a conflict, but no unit has that path",
+                r.rel
+            )),
+        }
+    }
+    for s in &opts.skip {
+        match unit(s) {
+            Some(u) if u.resolvable && matches!(u.decision, Decision::Conflict { .. }) => {}
+            Some(u) => why.push(format!(
+                "{s}: skipped as a conflict, but it is {} now; run `replicant sync` again",
+                u.decision.label()
+            )),
+            None => why.push(format!(
+                "{s}: skipped as a conflict, but no unit has that path"
+            )),
+        }
+    }
+    why
 }
 
 /// Whether `--confirm-delete` has anything to confirm on `u`: a deletion

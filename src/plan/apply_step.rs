@@ -44,6 +44,12 @@ pub(super) fn step<'p>(
     let (action, resumed) = match &u.decision {
         Decision::Pull => ("pull", false),
         Decision::Push => ("push", false),
+        Decision::Resolved {
+            take: crate::decide::Take::Leaf,
+        } => ("push (resolved)", false),
+        Decision::Resolved {
+            take: crate::decide::Take::Home,
+        } => ("pull (resolved)", false),
         Decision::Remove => ("remove", false),
         Decision::DeletedOn { host } if host == ctx.me => ("delete on home", false),
         Decision::DeletedOn { .. } => ("delete here", false),

@@ -47,6 +47,9 @@ pub enum LocalRequest {
         /// `--accept-rollback`, so the plan shown is the one `Sync` makes.
         #[serde(default)]
         accept_rollback: Vec<String>,
+        /// The person's answers to conflicts so far, likewise.
+        #[serde(default)]
+        resolve: Vec<crate::decide::Resolution>,
     },
     /// `sync` without `--dry-run`: plan, and apply what may be applied.
     Sync {

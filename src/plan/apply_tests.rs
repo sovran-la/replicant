@@ -31,6 +31,8 @@ mod more;
 mod plan_compare_tests;
 #[path = "apply_progress_tests.rs"]
 pub(crate) mod progress_tests;
+#[path = "apply_resolve_tests.rs"]
+mod resolve_tests;
 #[path = "apply_resume_tests.rs"]
 mod resume_tests;
 
@@ -46,6 +48,7 @@ pub(crate) fn ctx<'a>(
         state_dir: state,
         plane: Default::default(),
         accept_rollback: &[],
+        resolve: &[],
     }
 }
 

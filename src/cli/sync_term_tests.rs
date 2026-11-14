@@ -36,3 +36,18 @@ pub(super) fn ctrl_c() -> std::io::Result<String> {
 pub(super) fn answer(s: &str) -> std::io::Result<String> {
     Ok(format!("{s}\n"))
 }
+
+/// Answers as the harness logs them: `rel=leaf` or `rel=home`, in order.
+pub(super) fn answers(r: &[crate::decide::Resolution]) -> String {
+    let each: Vec<String> = r
+        .iter()
+        .map(|r| {
+            let side = match r.take {
+                crate::decide::Take::Leaf => "leaf",
+                crate::decide::Take::Home => "home",
+            };
+            format!("{}={side}", r.rel)
+        })
+        .collect();
+    each.join(",")
+}

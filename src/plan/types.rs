@@ -38,6 +38,16 @@ pub struct PlannedUnit {
     pub leaf_files: u64,
     #[serde(default)]
     pub home_files: u64,
+    /// A conflict the person may resolve by taking one side's copy
+    /// ([`crate::decide::resolvable`]); still true once resolved.
+    #[serde(default)]
+    pub resolvable: bool,
+    /// [`crate::units::SideUnit::dirty`]'s length on each side: what the
+    /// conflict question shows.
+    #[serde(default)]
+    pub leaf_dirty: usize,
+    #[serde(default)]
+    pub home_dirty: usize,
 }
 
 impl PlannedUnit {
@@ -211,10 +221,13 @@ impl Plan {
 fn key_of(d: &Decision) -> &'static str {
     match d {
         Decision::Pull
+        | Decision::Resolved {
+            take: crate::decide::Take::Home,
+        }
         | Decision::Resume {
             direction: crate::marker::Direction::Pull,
         } => "pull ←",
-        Decision::Push | Decision::Resume { .. } => "push →",
+        Decision::Push | Decision::Resume { .. } | Decision::Resolved { .. } => "push →",
         Decision::Remove => "remove",
         Decision::DeletedOn { .. } => "deleted, needs confirmation",
         Decision::Orphaned { .. } => "orphaned, not served",

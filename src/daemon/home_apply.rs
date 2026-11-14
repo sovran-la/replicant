@@ -214,6 +214,7 @@ impl Home {
             direction: Direction::Push,
             host: host.into(),
             push: Some(push.clone()),
+            backup: None,
             ..own.unwrap_or(Marker {
                 version: RECORD_VERSION,
                 rel: rel.into(),
@@ -222,6 +223,7 @@ impl Home {
                 source_state,
                 started_at: crate::now_secs(),
                 push: None,
+                backup: None,
             })
         })?;
         Ok(push)

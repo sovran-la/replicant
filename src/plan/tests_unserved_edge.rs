@@ -17,6 +17,7 @@ fn an_unsubscribed_path_under_an_interrupted_sync_is_never_remove() {
             source_state: UnitState::Present("s".into()),
             started_at: 7,
             push: None,
+            backup: None,
         })
         .unwrap();
     let p = status(&bed, &home);
@@ -41,6 +42,7 @@ fn a_dead_push_marker_on_home_fences_an_unsubscribed_path() {
             source_state: UnitState::Present("s".into()),
             started_at: 7,
             push: None,
+            backup: None,
         })
         .unwrap();
     let w = why(unit(&status(&bed, &home), "work/b/r")).to_string();
@@ -93,6 +95,7 @@ fn a_baseline_an_older_home_says_nothing_about_is_not_served() {
         state_dir: &state,
         plane: Default::default(),
         accept_rollback: &[],
+        resolve: &[],
     };
     let p = plan(&link, ctx, false, false).unwrap();
     assert_eq!(

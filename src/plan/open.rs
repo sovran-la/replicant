@@ -63,6 +63,7 @@ mod tests {
             source_state: UnitState::Empty,
             started_at: at,
             push: None,
+            backup: None,
         }
     }
 
