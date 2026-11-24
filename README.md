@@ -46,15 +46,31 @@ Git-ignored files do not sync.
 
 ## Install
 
+Clone the release your home runs and run the installer for the machine. It
+builds replicant, installs it to `~/.cargo/bin`, and runs the daemon as a
+service that starts with your session:
+
 ```sh
-cargo install --git https://github.com/sovran-la/replicant --tag v0.4.12
+git clone --depth 1 --branch v0.4.13 https://github.com/sovran-la/replicant
+sh replicant/scripts/install-linux.sh    # a systemd user service
+sh replicant/scripts/install-macos.sh    # a launchd job
 ```
 
-Every machine in a fleet should run the same version.
+Every machine in a fleet should run the same version. Running an installer
+again upgrades the binary and restarts the daemon; a unit file or plist that
+is already there is left as it is.
 
-On macOS, `scripts/install-macos.sh` builds from a checkout, codesigns the
-binary with a fixed identifier and restarts the launchd job. The signature
-keeps Local Network privacy from treating each rebuild as a new program.
+On macOS the installer codesigns the binary with a fixed identifier when the
+keychain holds an `Apple Development` certificate. The signature keeps Local
+Network privacy from treating each rebuild as a new program. Without one it
+installs unsigned, which works; macOS asks about the local network again
+after each rebuild.
+
+For the binary alone, with no service:
+
+```sh
+cargo install --git https://github.com/sovran-la/replicant --tag v0.4.13
+```
 
 ## Quick start
 
@@ -69,11 +85,10 @@ replicant daemon
 replicant config export-creds
 ```
 
-On a new leaf, save that bundle as `~/.sovran/replicant/home.pem`, start the
-daemon, and ask for what the machine should hold:
+On a new leaf, save that bundle as `~/.sovran/replicant/home.pem` and, with
+the daemon running, ask for what the machine should hold:
 
 ```sh
-replicant daemon
 replicant subscribe <home> ~/work
 ```
 
