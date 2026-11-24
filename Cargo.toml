@@ -5,6 +5,8 @@ edition = "2024"
 rust-version = "1.88"
 description = "Home-base-mediated sync for keeping ~/work identical across machines"
 license = "MIT"
+repository = "https://github.com/sovran-la/replicant"
+readme = "README.md"
 authors = ["Brandon Sneed <brandon@redf.net>"]
 
 [lib]
